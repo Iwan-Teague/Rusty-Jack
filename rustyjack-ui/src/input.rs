@@ -35,7 +35,7 @@ mod platform {
                 .with_context(|| format!("requesting GPIO line {}", pin))?;
             let handle = line
                 .request(
-                    LineRequestFlags::INPUT | LineRequestFlags::BIAS_PULL_UP,
+                    LineRequestFlags::INPUT,
                     1,
                     "rustyjack-ui",
                 )

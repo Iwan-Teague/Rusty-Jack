@@ -9,7 +9,7 @@ chrono = { version = "0.4", features = ["clock"] }
 embedded-graphics = "0.8"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-st7735-lcd = { version = "0.10", features = ["graphics"] }
+st7735-lcd = { version = "0.9", features = ["graphics"] }
 thiserror = "1.0"
 rustyjack-core = { path = "../rustyjack-core" }
 embedded-hal = "0.2"

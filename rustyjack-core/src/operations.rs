@@ -569,12 +569,32 @@ fn handle_wifi_list() -> Result<HandlerResult> {
 }
 
 fn handle_wifi_status(root: &Path, args: WifiStatusArgs) -> Result<HandlerResult> {
+    log::info!("Collecting WiFi status information");
+    
     let interface_name = args.interface.clone();
     let info = if let Some(name) = interface_name.clone() {
-        detect_interface(Some(name))?
+        log::info!("Getting status for specified interface: {name}");
+        match detect_interface(Some(name.clone())) {
+            Ok(i) => i,
+            Err(e) => {
+                log::error!("Failed to detect interface {name}: {e}");
+                bail!("Failed to get interface info for {name}: {e}");
+            }
+        }
     } else {
-        detect_interface(None)?
+        log::info!("Auto-detecting default interface");
+        match detect_interface(None) {
+            Ok(i) => {
+                log::info!("Detected default interface: {}", i.name);
+                i
+            },
+            Err(e) => {
+                log::error!("Failed to detect default interface: {e}");
+                bail!("Failed to detect default interface: {e}");
+            }
+        }
     };
+    
     let stats = read_interface_stats(&info.name).ok();
     let gateway = if let Some(name) = interface_name.clone() {
         interface_gateway(&name)
@@ -587,10 +607,23 @@ fn handle_wifi_status(root: &Path, args: WifiStatusArgs) -> Result<HandlerResult
             .flatten()
             .or_else(|| default_gateway_ip().ok())
     };
+    
     let preferred = read_interface_preference(root, "system_preferred")
         .ok()
         .flatten();
+    
     let link = read_wifi_link_info(&info.name);
+    
+    // Determine if this is the active interface
+    let default_route = read_default_route().ok().flatten();
+    let is_active = default_route
+        .as_ref()
+        .and_then(|r| r.interface.as_ref())
+        .map(|iface| iface == &info.name)
+        .unwrap_or(false);
+    
+    log::info!("Interface {} status: active={}, connected={}", 
+        info.name, is_active, link.connected);
 
     let data = json!({
         "interface": info.name,
@@ -603,6 +636,8 @@ fn handle_wifi_status(root: &Path, args: WifiStatusArgs) -> Result<HandlerResult
         "ssid": link.ssid,
         "signal_dbm": link.signal_dbm,
         "tx_bitrate": link.tx_bitrate,
+        "is_active": is_active,
+        "default_route_interface": default_route.and_then(|r| r.interface),
     });
     Ok(("Interface status collected".to_string(), data))
 }
@@ -785,18 +820,56 @@ fn handle_autopilot_status() -> Result<HandlerResult> {
 
 
 fn handle_wifi_scan(args: WifiScanArgs) -> Result<HandlerResult> {
-    let interface = select_wifi_interface(args.interface)?;
-    let networks = scan_wifi_networks(&interface)?;
+    log::info!("Starting WiFi scan");
+    
+    let interface = match select_wifi_interface(args.interface) {
+        Ok(iface) => {
+            log::info!("Selected interface: {iface}");
+            iface
+        },
+        Err(e) => {
+            log::error!("Failed to select WiFi interface: {e}");
+            bail!("Failed to select WiFi interface: {e}");
+        }
+    };
+    
+    let networks = match scan_wifi_networks(&interface) {
+        Ok(nets) => {
+            log::info!("Scan completed, found {} network(s)", nets.len());
+            nets
+        },
+        Err(e) => {
+            log::error!("WiFi scan failed on {interface}: {e}");
+            bail!("WiFi scan failed: {e}");
+        }
+    };
+    
     let data = json!({
         "interface": interface,
         "networks": networks,
+        "count": networks.len(),
     });
     Ok(("Wi-Fi scan completed".to_string(), data))
 }
 
 fn handle_wifi_profile_list(root: &Path) -> Result<HandlerResult> {
-    let profiles = list_wifi_profiles(root)?;
-    let data = json!({ "profiles": profiles });
+    log::info!("Listing WiFi profiles");
+    
+    let profiles = match list_wifi_profiles(root) {
+        Ok(p) => {
+            log::info!("Found {} profile(s)", p.len());
+            p
+        },
+        Err(e) => {
+            log::error!("Failed to list WiFi profiles: {e}");
+            bail!("Failed to list WiFi profiles: {e}");
+        }
+    };
+    
+    let data = json!({ 
+        "profiles": profiles,
+        "count": profiles.len(),
+    });
     Ok(("Wi-Fi profiles loaded".to_string(), data))
 }
 
@@ -808,6 +881,8 @@ fn handle_wifi_profile_save(root: &Path, args: WifiProfileSaveArgs) -> Result<Ha
         priority,
         auto_connect,
     } = args;
+    
+    log::info!("Saving WiFi profile for SSID: {ssid}");
 
     let profile = WifiProfile {
         ssid: ssid.clone(),
@@ -820,7 +895,17 @@ fn handle_wifi_profile_save(root: &Path, args: WifiProfileSaveArgs) -> Result<Ha
         notes: None,
     };
 
-    let path = save_wifi_profile(root, &profile)?;
+    let path = match save_wifi_profile(root, &profile) {
+        Ok(p) => {
+            log::info!("Profile saved successfully to: {}", p.display());
+            p
+        },
+        Err(e) => {
+            log::error!("Failed to save WiFi profile for {ssid}: {e}");
+            bail!("Failed to save WiFi profile: {e}");
+        }
+    };
+    
     let data = json!({
         "ssid": ssid,
         "path": path,
@@ -829,11 +914,37 @@ fn handle_wifi_profile_save(root: &Path, args: WifiProfileSaveArgs) -> Result<Ha
 }
 
 fn handle_wifi_profile_connect(root: &Path, args: WifiProfileConnectArgs) -> Result<HandlerResult> {
-    let interface = select_wifi_interface(args.interface.clone())?;
+    log::info!("Attempting WiFi profile connection");
+    
+    let interface = match select_wifi_interface(args.interface.clone()) {
+        Ok(iface) => {
+            log::info!("Selected interface: {iface}");
+            iface
+        },
+        Err(e) => {
+            log::error!("Failed to select interface: {e}");
+            bail!("Failed to select interface: {e}");
+        }
+    };
+    
     let stored = if let Some(ref profile_name) = args.profile {
-        load_wifi_profile(root, profile_name)?
+        log::info!("Loading profile: {profile_name}");
+        match load_wifi_profile(root, profile_name) {
+            Ok(p) => p,
+            Err(e) => {
+                log::error!("Failed to load profile '{profile_name}': {e}");
+                bail!("Failed to load profile: {e}");
+            }
+        }
     } else if let Some(ref ssid) = args.ssid {
-        load_wifi_profile(root, ssid)?
+        log::info!("Loading profile by SSID: {ssid}");
+        match load_wifi_profile(root, ssid) {
+            Ok(p) => p,
+            Err(e) => {
+                log::warn!("Could not load profile for SSID '{ssid}': {e}");
+                None
+            }
+        }
     } else {
         None
     };
@@ -842,14 +953,24 @@ fn handle_wifi_profile_connect(root: &Path, args: WifiProfileConnectArgs) -> Res
         .ssid
         .clone()
         .or_else(|| stored.as_ref().map(|p| p.profile.ssid.clone()))
-        .ok_or_else(|| anyhow!("Provide --ssid or --profile when connecting to Wi-Fi"))?;
+        .ok_or_else(|| {
+            log::error!("No SSID provided and no profile found");
+            anyhow!("Provide --ssid or --profile when connecting to Wi-Fi")
+        })?;
 
     let password = args
         .password
         .clone()
         .or_else(|| stored.as_ref().and_then(|p| p.profile.password.clone()));
 
-    connect_wifi_network(&interface, &ssid, password.as_deref())?;
+    log::info!("Connecting to SSID: {ssid} on interface: {interface}");
+    
+    if let Err(e) = connect_wifi_network(&interface, &ssid, password.as_deref()) {
+        log::error!("Failed to connect to {ssid}: {e}");
+        bail!("WiFi connection failed: {e}");
+    }
+    
+    log::info!("WiFi connection successful");
 
     let mut remembered = false;
     if let Some(mut stored_profile) = stored {
@@ -857,12 +978,17 @@ fn handle_wifi_profile_connect(root: &Path, args: WifiProfileConnectArgs) -> Res
         if args.remember {
             if let Some(pass) = password.clone() {
                 stored_profile.profile.password = Some(pass);
+                log::info!("Updating stored profile with new password");
             } else {
                 log::warn!("--remember flag set but no password available to store");
             }
         }
-        write_wifi_profile(&stored_profile.path, &stored_profile.profile)?;
-        remembered = true;
+        if let Err(e) = write_wifi_profile(&stored_profile.path, &stored_profile.profile) {
+            log::error!("Failed to update profile: {e}");
+        } else {
+            remembered = true;
+            log::info!("Profile updated successfully");
+        }
     } else if args.remember {
         if let Some(pass) = password.clone() {
             let profile = WifiProfile {
@@ -875,8 +1001,15 @@ fn handle_wifi_profile_connect(root: &Path, args: WifiProfileConnectArgs) -> Res
                 last_used: None,
                 notes: None,
             };
-            let _ = save_wifi_profile(root, &profile)?;
-            remembered = true;
+            match save_wifi_profile(root, &profile) {
+                Ok(_) => {
+                    remembered = true;
+                    log::info!("New profile created and saved");
+                },
+                Err(e) => {
+                    log::error!("Failed to save new profile: {e}");
+                }
+            }
         } else {
             log::warn!("--remember flag ignored because no password was supplied");
         }
@@ -891,13 +1024,38 @@ fn handle_wifi_profile_connect(root: &Path, args: WifiProfileConnectArgs) -> Res
 }
 
 fn handle_wifi_profile_delete(root: &Path, args: WifiProfileDeleteArgs) -> Result<HandlerResult> {
-    delete_wifi_profile(root, &args.ssid)?;
-    let data = json!({ "ssid": args.ssid });
-    Ok(("Wi-Fi profile deleted".to_string(), data))
+    log::info!("Attempting to delete WiFi profile: {}", args.ssid);
+    
+    match delete_wifi_profile(root, &args.ssid) {
+        Ok(()) => {
+            log::info!("Profile deleted successfully: {}", args.ssid);
+            let data = json!({ "ssid": args.ssid });
+            Ok(("Wi-Fi profile deleted".to_string(), data))
+        },
+        Err(e) => {
+            log::error!("Failed to delete profile '{}': {e}", args.ssid);
+            bail!("Failed to delete profile: {e}");
+        }
+    }
 }
 
 fn handle_wifi_disconnect(args: WifiDisconnectArgs) -> Result<HandlerResult> {
-    let interface = disconnect_wifi_interface(args.interface.clone())?;
+    log::info!("Attempting WiFi disconnect");
+    
+    let interface = match disconnect_wifi_interface(args.interface.clone()) {
+        Ok(iface) => {
+            log::info!("Successfully disconnected interface: {iface}");
+            iface
+        },
+        Err(e) => {
+            log::error!("Failed to disconnect WiFi: {e}");
+            bail!("WiFi disconnect failed: {e}");
+        }
+    };
+    
+    let data = json!({ "interface": interface });
+    Ok(("Wi-Fi interface disconnected".to_string(), data))
+}
     let data = json!({ "interface": interface });
     Ok(("Wi-Fi interface disconnected".to_string(), data))
 }

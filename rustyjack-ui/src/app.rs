@@ -488,6 +488,28 @@ impl App {
         thread::sleep(Duration::from_millis(1200));
         Ok(())
     }
+    
+    fn show_progress<I, S>(&mut self, title: &str, lines: I) -> Result<()>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let overlay = self.stats.snapshot();
+        let content: Vec<String> = std::iter::once(title.to_string())
+            .chain(lines.into_iter().map(|line| line.as_ref().to_string()))
+            .collect();
+        self.display.draw_dialog(&content, &overlay)?;
+        Ok(())
+    }
+    
+    fn execute_with_progress<F, T>(&mut self, title: &str, message: &str, operation: F) -> Result<T>
+    where
+        F: FnOnce() -> Result<T>,
+    {
+        self.show_progress(title, [message, "Please wait..."])?;
+        let result = operation();
+        result
+    }
 
     fn reload_config(&mut self) -> Result<()> {
         self.config = GuiConfig::load(&self.root)?;
@@ -782,14 +804,24 @@ impl App {
 
     fn show_wifi_scan_menu(&mut self) -> Result<()> {
         loop {
-            let scan = self.fetch_wifi_scan()?;
+            self.show_progress("Wi-Fi Scan", ["Scanning networks...", "Please wait"])?;
+            
+            let scan = match self.fetch_wifi_scan() {
+                Ok(s) => s,
+                Err(e) => {
+                    self.show_message("Scan Error", [format!("{e}")])?;
+                    return Ok(());
+                }
+            };
+            
             if scan.networks.is_empty() {
                 self.show_message("Wi-Fi", ["No networks detected"])?;
                 return Ok(());
             }
+            
             let mut labels: Vec<String> = scan.networks.iter().map(format_network_label).collect();
             labels.push("Rescan networks".to_string());
-            let title = format!("Networks ({})", scan.interface);
+            let title = format!("Networks ({}) [{}]", scan.networks.len(), scan.interface);
             let Some(index) = self.choose_from_list(&title, &labels)? else {
                 break;
             };
@@ -863,38 +895,53 @@ impl App {
     fn show_wifi_status_view(&mut self) -> Result<()> {
         let status = self.fetch_wifi_status()?;
         let snapshot = self.fetch_route_snapshot()?;
+        
+        // Determine if this interface is the active default route
+        let is_active = snapshot.default_route
+            .as_ref()
+            .and_then(|r| r.interface.as_ref())
+            .map(|iface| iface == &status.interface)
+            .unwrap_or(false);
+        
+        let active_indicator = if is_active { " [ACTIVE]" } else { "" };
+        
         let mut lines = vec![
-            format!("Active: {}", status.interface),
+            format!("Iface: {}{}", status.interface, active_indicator),
             format!(
                 "IP: {}",
                 status.address.unwrap_or_else(|| "n/a".to_string())
             ),
         ];
+        
         if let Some(ssid) = status.ssid {
-            let extra = if status.connected.unwrap_or(false) {
-                format!("SSID: {ssid}")
+            let conn_status = if status.connected.unwrap_or(false) {
+                "connected"
             } else {
-                format!("SSID: (not connected)")
+                "not connected"
             };
-            lines.push(extra);
+            lines.push(format!("SSID: {} ({})", ssid, conn_status));
         }
+        
         if let Some(gateway) = status.gateway {
             lines.push(format!("GW: {gateway}"));
         }
+        
         if let Some(route) = snapshot.default_route {
             if let Some(iface) = route.interface {
-                lines.push(format!("Default: {iface}"));
+                lines.push(format!("Default via: {iface}"));
             }
             if let Some(gw) = route.gateway {
                 lines.push(format!("Route GW: {gw}"));
             }
         }
+        
         if !snapshot.dns_servers.is_empty() {
             lines.push("DNS:".to_string());
-            for dns in snapshot.dns_servers.iter().take(3) {
+            for dns in snapshot.dns_servers.iter().take(2) {
                 lines.push(format!("  {dns}"));
             }
         }
+        
         self.show_message("Wi-Fi info", lines.iter().map(|s| s.as_str()))
     }
 
@@ -1104,6 +1151,8 @@ impl App {
     }
 
     fn connect_named_profile(&mut self, ssid: &str) -> Result<()> {
+        self.show_progress("Wi-Fi", ["Connecting...", ssid, "Please wait"])?;
+        
         let args = WifiProfileConnectArgs {
             profile: Some(ssid.to_string()),
             ssid: None,
@@ -1111,15 +1160,16 @@ impl App {
             interface: None,
             remember: false,
         };
+        
         match self.core.dispatch(Commands::Wifi(WifiCommand::Profile(
             WifiProfileCommand::Connect(args),
         ))) {
             Ok(_) => {
-                let msg = vec![format!("Connecting to {ssid}")];
+                let msg = vec![format!("Connected to {ssid}")];
                 self.show_message("Wi-Fi", msg.iter().map(|s| s.as_str()))?;
             }
             Err(err) => {
-                let msg = vec![format!("{err}")];
+                let msg = vec![format!("Connection failed:"), format!("{err}")];
                 self.show_message("Wi-Fi error", msg.iter().map(|s| s.as_str()))?;
             }
         }

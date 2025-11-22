@@ -1,3 +1,30 @@
+//! # Rustyjack Core System Module
+//! 
+//! This module provides core system functionality for network operations, WiFi management,
+//! and system integration.
+//!
+//! ## Security Notes
+//! 
+//! ### WiFi Password Storage
+//! **IMPORTANT**: WiFi passwords are currently stored as **PLAINTEXT** in JSON profile files
+//! located at `<root>/wifi/profiles/*.json`. This is intentional for this pentesting tool
+//! but presents a security risk. Ensure proper file permissions are set:
+//! 
+//! ```bash
+//! chmod 600 <root>/wifi/profiles/*.json
+//! chmod 700 <root>/wifi/profiles/
+//! ```
+//!
+//! The tool is designed to run as root on a Raspberry Pi Zero W 2 and assumes physical
+//! security of the device. For production use, consider implementing:
+//! - Encrypted password storage using `keyring` or `secret-service`
+//! - Hardware-backed encryption via TPM
+//! - Kernel keyring integration
+//!
+//! ### Permission Requirements
+//! All network operations require root privileges (UID 0). Operations will fail with
+//! explicit error messages if not run as root.
+
 use std::{
     env, fs,
     net::Ipv4Addr,
@@ -1161,17 +1188,32 @@ pub fn select_wifi_interface(preferred: Option<String>) -> Result<String> {
 }
 
 pub fn scan_wifi_networks(interface: &str) -> Result<Vec<WifiNetwork>> {
+    // Check permissions first
+    check_network_permissions()?;
+    
+    // Ensure interface is up before scanning
+    let _ = Command::new("ip")
+        .args(["link", "set", interface, "up"])
+        .output()
+        .with_context(|| format!("bringing interface {interface} up before scan"))?;
+    
+    // Give interface time to initialize
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    
     let output = Command::new("iwlist")
         .arg(interface)
         .arg("scan")
         .output()
         .with_context(|| format!("scanning Wi-Fi networks on {interface}"))?;
+    
     if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        log::error!("WiFi scan failed on {interface}: {stderr}");
         bail!(
-            "iwlist scan failed: {}",
-            String::from_utf8_lossy(&output.stderr)
+            "WiFi scan failed on {interface}: {stderr}"
         );
     }
+    
     let stdout = String::from_utf8_lossy(&output.stdout);
     let mut networks = Vec::new();
     let mut current: Option<WifiNetwork> = None;
@@ -1238,17 +1280,40 @@ pub fn list_wifi_profiles(root: &Path) -> Result<Vec<WifiProfileRecord>> {
     let mut profiles = Vec::new();
     let dir = wifi_profiles_dir(root);
     if !dir.exists() {
+        log::info!("WiFi profiles directory does not exist yet: {}", dir.display());
         return Ok(profiles);
     }
-    for entry in fs::read_dir(&dir)? {
-        let entry = entry?;
+    
+    log::info!("Loading WiFi profiles from: {}", dir.display());
+    
+    let entries = fs::read_dir(&dir)
+        .with_context(|| format!("reading profiles directory {}", dir.display()))?;
+    
+    for entry in entries {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(e) => {
+                log::warn!("Error reading directory entry: {e}");
+                continue;
+            }
+        };
+        
         if !entry.path().is_file() {
             continue;
         }
+        
         if entry.path().extension().and_then(|s| s.to_str()) != Some("json") {
             continue;
         }
-        let contents = fs::read_to_string(entry.path())?;
+        
+        let contents = match fs::read_to_string(entry.path()) {
+            Ok(c) => c,
+            Err(e) => {
+                log::warn!("Failed to read profile {}: {e}", entry.path().display());
+                continue;
+            }
+        };
+        
         match serde_json::from_str::<WifiProfile>(&contents) {
             Ok(profile) => {
                 let filename = entry
@@ -1257,6 +1322,9 @@ pub fn list_wifi_profiles(root: &Path) -> Result<Vec<WifiProfileRecord>> {
                     .and_then(|s| s.to_str())
                     .unwrap_or_default()
                     .to_string();
+                
+                log::debug!("Loaded profile: {} from {}", profile.ssid, filename);
+                
                 profiles.push(WifiProfileRecord {
                     ssid: profile.ssid,
                     interface: profile.interface,
@@ -1275,86 +1343,183 @@ pub fn list_wifi_profiles(root: &Path) -> Result<Vec<WifiProfileRecord>> {
             }
         }
     }
+    
     profiles.sort_by(|a, b| {
         b.priority
             .cmp(&a.priority)
-            .then_with(|| a.ssid.cmp(&b.ssid))
+            .then_with(|| a.ssid.to_lowercase().cmp(&b.ssid.to_lowercase()))
     });
+    
+    log::info!("Loaded {} WiFi profile(s)", profiles.len());
     Ok(profiles)
 }
 
 pub fn load_wifi_profile(root: &Path, identifier: &str) -> Result<Option<StoredWifiProfile>> {
     let dir = wifi_profiles_dir(root);
     if !dir.exists() {
+        log::warn!("WiFi profiles directory does not exist: {}", dir.display());
         return Ok(None);
     }
+    
+    let identifier_lower = identifier.trim().to_lowercase();
+    log::info!("Loading WiFi profile for identifier: {identifier}");
+    
+    // Try direct filename match first (case-insensitive)
     let sanitized = sanitize_profile_name(identifier);
     let direct = dir.join(format!("{sanitized}.json"));
     if direct.exists() {
-        let profile = serde_json::from_str::<WifiProfile>(&fs::read_to_string(&direct)?)?;
+        log::info!("Found profile by direct match: {}", direct.display());
+        let contents = fs::read_to_string(&direct)
+            .with_context(|| format!("reading profile from {}", direct.display()))?;
+        let profile = serde_json::from_str::<WifiProfile>(&contents)
+            .with_context(|| format!("parsing profile from {}", direct.display()))?;
         return Ok(Some(StoredWifiProfile {
             profile,
             path: direct,
         }));
     }
-    for entry in fs::read_dir(&dir)? {
-        let entry = entry?;
+    
+    // Search all profiles for case-insensitive SSID match
+    log::info!("Direct match not found, searching all profiles...");
+    for entry in fs::read_dir(&dir)
+        .with_context(|| format!("reading profiles directory {}", dir.display()))? 
+    {
+        let entry = entry.with_context(|| "reading directory entry")?;
         if !entry.path().is_file() {
             continue;
         }
-        let contents = fs::read_to_string(entry.path())?;
-        if let Ok(profile) = serde_json::from_str::<WifiProfile>(&contents) {
-            if profile.ssid.eq_ignore_ascii_case(identifier) {
-                return Ok(Some(StoredWifiProfile {
-                    profile,
-                    path: entry.path(),
-                }));
+        
+        let contents = match fs::read_to_string(entry.path()) {
+            Ok(c) => c,
+            Err(e) => {
+                log::warn!("Could not read profile file {}: {e}", entry.path().display());
+                continue;
             }
+        };
+        
+        let profile = match serde_json::from_str::<WifiProfile>(&contents) {
+            Ok(p) => p,
+            Err(e) => {
+                log::warn!("Could not parse profile file {}: {e}", entry.path().display());
+                continue;
+            }
+        };
+        
+        // Case-insensitive comparison
+        if profile.ssid.trim().to_lowercase() == identifier_lower {
+            log::info!("Found profile by SSID match: {}", entry.path().display());
+            return Ok(Some(StoredWifiProfile {
+                profile,
+                path: entry.path(),
+            }));
         }
     }
+    
+    log::info!("No matching profile found for: {identifier}");
     Ok(None)
 }
 
 pub fn save_wifi_profile(root: &Path, profile: &WifiProfile) -> Result<PathBuf> {
+    // Validate profile before saving
+    if profile.ssid.trim().is_empty() {
+        bail!("Cannot save profile: SSID cannot be empty");
+    }
+    
+    if profile.ssid.len() > 32 {
+        bail!("Cannot save profile: SSID too long (max 32 characters)");
+    }
+    
+    // Validate interface name
+    let interface = profile.interface.trim();
+    if !interface.is_empty() && interface != "auto" {
+        let valid_chars = interface.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+        if !valid_chars {
+            bail!("Cannot save profile: Invalid interface name '{interface}'");
+        }
+    }
+    
+    log::info!("Saving WiFi profile for SSID: {}", profile.ssid);
+    
     let dir = wifi_profiles_dir(root);
-    fs::create_dir_all(&dir)?;
+    fs::create_dir_all(&dir)
+        .with_context(|| format!("creating WiFi profiles directory at {}", dir.display()))?;
+    
     let mut to_save = profile.clone();
     let now = Local::now().to_rfc3339();
     if to_save.created.is_none() {
         to_save.created = Some(now.clone());
     }
     to_save.last_used = Some(now);
+    
     let filename = format!("{}.json", sanitize_profile_name(&to_save.ssid));
     let path = dir.join(filename);
-    write_wifi_profile(&path, &to_save)?;
+    
+    log::info!("Writing profile to: {}", path.display());
+    write_wifi_profile(&path, &to_save)
+        .with_context(|| format!("writing WiFi profile to {}", path.display()))?;
+    
+    log::info!("WiFi profile saved successfully");
     Ok(path)
 }
 
 pub fn delete_wifi_profile(root: &Path, identifier: &str) -> Result<()> {
     let dir = wifi_profiles_dir(root);
     if !dir.exists() {
-        bail!("profile directory missing at {}", dir.display());
+        log::error!("Profile directory does not exist: {}", dir.display());
+        bail!("Profile directory missing at {}", dir.display());
     }
+    
+    let identifier_lower = identifier.trim().to_lowercase();
+    log::info!("Attempting to delete WiFi profile: {identifier}");
+    
+    // Try direct filename match first
     let sanitized = sanitize_profile_name(identifier);
     let path = dir.join(format!("{sanitized}.json"));
     if path.exists() {
-        fs::remove_file(&path)?;
+        log::info!("Deleting profile by direct match: {}", path.display());
+        fs::remove_file(&path)
+            .with_context(|| format!("deleting profile at {}", path.display()))?;
+        log::info!("Profile deleted successfully");
         return Ok(());
     }
-    for entry in fs::read_dir(&dir)? {
-        let entry = entry?;
+    
+    // Search for case-insensitive match
+    log::info!("Direct match not found, searching all profiles...");
+    for entry in fs::read_dir(&dir)
+        .with_context(|| format!("reading profiles directory {}", dir.display()))?
+    {
+        let entry = entry.with_context(|| "reading directory entry")?;
         if !entry.path().is_file() {
             continue;
         }
-        let contents = fs::read_to_string(entry.path())?;
-        if let Ok(profile) = serde_json::from_str::<WifiProfile>(&contents) {
-            if profile.ssid.eq_ignore_ascii_case(identifier) {
-                fs::remove_file(entry.path())?;
-                return Ok(());
+        
+        let contents = match fs::read_to_string(entry.path()) {
+            Ok(c) => c,
+            Err(e) => {
+                log::warn!("Could not read profile {}: {e}", entry.path().display());
+                continue;
             }
+        };
+        
+        let profile = match serde_json::from_str::<WifiProfile>(&contents) {
+            Ok(p) => p,
+            Err(e) => {
+                log::warn!("Could not parse profile {}: {e}", entry.path().display());
+                continue;
+            }
+        };
+        
+        if profile.ssid.trim().to_lowercase() == identifier_lower {
+            log::info!("Deleting profile by SSID match: {}", entry.path().display());
+            fs::remove_file(entry.path())
+                .with_context(|| format!("deleting profile at {}", entry.path().display()))?;
+            log::info!("Profile deleted successfully");
+            return Ok(());
         }
     }
-    bail!("profile {identifier} not found")
+    
+    log::error!("Profile not found: {identifier}");
+    bail!("Profile '{identifier}' not found")
 }
 
 pub fn write_wifi_profile(path: &Path, profile: &WifiProfile) -> Result<()> {
@@ -1367,52 +1532,187 @@ pub fn write_wifi_profile(path: &Path, profile: &WifiProfile) -> Result<()> {
 }
 
 pub fn connect_wifi_network(interface: &str, ssid: &str, password: Option<&str>) -> Result<()> {
-    let _ = Command::new("pkill")
-        .args(["-f", &format!("wpa_supplicant.*{interface}")])
-        .status();
+    // Check permissions first
+    check_network_permissions()?;
+    
+    // Validate inputs
+    if ssid.trim().is_empty() {
+        bail!("SSID cannot be empty");
+    }
+    if interface.trim().is_empty() {
+        bail!("Interface name cannot be empty");
+    }
+    
+    log::info!("Connecting to WiFi: ssid={ssid}, interface={interface}");
+    
+    // Clean up existing connections with retry logic
+    for attempt in 1..=3 {
+        let result = Command::new("pkill")
+            .args(["-f", &format!("wpa_supplicant.*{interface}")])
+            .status();
+        
+        if result.is_ok() {
+            break;
+        }
+        
+        if attempt < 3 {
+            log::warn!("pkill attempt {attempt} failed, retrying...");
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+    }
+    
+    // Release DHCP lease
     let _ = Command::new("dhclient").args(["-r", interface]).status();
-    let _ = Command::new("ip")
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    
+    // Ensure interface is up
+    let up_result = Command::new("ip")
         .args(["link", "set", interface, "up"])
-        .status();
+        .status()
+        .with_context(|| format!("bringing interface {interface} up"))?;
+    
+    if !up_result.success() {
+        log::error!("Failed to bring interface {interface} up");
+        let _ = cleanup_wifi_interface(interface);
+        bail!("Failed to bring interface {interface} up");
+    }
+    
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    
+    // Connect with nmcli with timeout
     let mut cmd = Command::new("nmcli");
-    cmd.args(["--terse", "--wait", "10", "device", "wifi", "connect", ssid]);
+    cmd.args(["--terse", "--wait", "20", "device", "wifi", "connect", ssid]);
+    
     if !interface.is_empty() {
         cmd.args(["ifname", interface]);
     }
+    
     if let Some(pass) = password {
         if !pass.is_empty() {
             cmd.args(["password", pass]);
         }
     }
-    let output = cmd.output().context("executing nmcli")?;
+    
+    log::info!("Executing nmcli connect command...");
+    let output = cmd.output().context("executing nmcli to connect WiFi")?;
+    
     if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        log::error!("nmcli connect failed for {ssid} on {interface}");
+        log::error!("stderr: {stderr}");
+        log::error!("stdout: {stdout}");
+        
+        // Attempt cleanup before failing
+        let _ = cleanup_wifi_interface(interface);
+        
         bail!(
-            "nmcli connect failed: {}",
-            String::from_utf8_lossy(&output.stderr)
+            "Failed to connect to {ssid} on {interface}: {stderr}"
         );
     }
-    let _ = Command::new("dhclient").arg(interface).status();
+    
+    log::info!("nmcli connection successful, requesting DHCP lease...");
+    
+    // Request DHCP lease with retry
+    let mut dhcp_success = false;
+    for attempt in 1..=3 {
+        let dhcp_result = Command::new("dhclient")
+            .arg(interface)
+            .output();
+        
+        match dhcp_result {
+            Ok(output) if output.status.success() => {
+                dhcp_success = true;
+                log::info!("DHCP lease acquired on attempt {attempt}");
+                break;
+            }
+            Ok(output) => {
+                log::warn!("DHCP attempt {attempt} failed: {}", String::from_utf8_lossy(&output.stderr));
+            }
+            Err(e) => {
+                log::warn!("DHCP attempt {attempt} error: {e}");
+            }
+        }
+        
+        if attempt < 3 {
+            std::thread::sleep(std::time::Duration::from_secs(2));
+        }
+    }
+    
+    if !dhcp_success {
+        log::warn!("DHCP lease acquisition failed after 3 attempts, but connection may still work");
+    }
+    
+    log::info!("WiFi connection process completed for {ssid}");
     Ok(())
 }
 
 pub fn disconnect_wifi_interface(interface: Option<String>) -> Result<String> {
+    check_network_permissions()?;
+    
     let iface = if let Some(iface) = interface {
         iface
     } else {
-        auto_detect_wifi_interface()?.ok_or_else(|| anyhow!("No Wi-Fi interface to disconnect"))?
+        auto_detect_wifi_interface()?.ok_or_else(|| {
+            log::error!("No Wi-Fi interface found to disconnect");
+            anyhow!("No Wi-Fi interface to disconnect")
+        })?
     };
+    
+    log::info!("Disconnecting WiFi interface: {iface}");
+    
     let output = Command::new("nmcli")
         .args(["device", "disconnect", &iface])
         .output()
         .with_context(|| format!("disconnecting {iface}"))?;
+    
     if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        log::error!("nmcli disconnect failed for {iface}: {stderr}");
         bail!(
-            "nmcli disconnect failed: {}",
-            String::from_utf8_lossy(&output.stderr)
+            "Failed to disconnect {iface}: {stderr}"
         );
     }
+    
+    log::info!("Releasing DHCP lease for {iface}");
     let _ = Command::new("dhclient").args(["-r", &iface]).status();
+    
+    log::info!("Interface {iface} disconnected successfully");
     Ok(iface)
+}
+
+fn check_network_permissions() -> Result<()> {
+    // Check if running as root or with necessary capabilities
+    let euid = unsafe { libc::geteuid() };
+    if euid != 0 {
+        log::error!("Network operations require root privileges (current euid: {euid})");
+        bail!("Network operations require root privileges. Please run as root or with sudo.");
+    }
+    Ok(())
+}
+
+/// Cleanup function for graceful WiFi operation failures
+/// Attempts to restore interface to a working state after errors
+pub fn cleanup_wifi_interface(interface: &str) -> Result<()> {
+    log::info!("Performing cleanup for interface: {interface}");
+    
+    // Kill any hanging wpa_supplicant processes
+    let _ = Command::new("pkill")
+        .args(["-f", &format!("wpa_supplicant.*{interface}")])
+        .status();
+    
+    // Release DHCP if any
+    let _ = Command::new("dhclient")
+        .args(["-r", interface])
+        .status();
+    
+    // Ensure interface is up
+    let _ = Command::new("ip")
+        .args(["link", "set", interface, "up"])
+        .status();
+    
+    log::info!("Cleanup completed for {interface}");
+    Ok(())
 }
 
 fn auto_detect_wifi_interface() -> Result<Option<String>> {

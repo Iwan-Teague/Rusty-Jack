@@ -12,13 +12,12 @@ use std::{
 use anyhow::{Result, Context, anyhow};
 use log::{info, warn, error, debug};
 use serde::{Serialize, Deserialize};
-use serde_json::json;
 
 use crate::{
     cli::AutopilotMode,
     system::{
-        detect_interface, process_running_exact, process_running_pattern,
-        kill_process, kill_process_pattern, KillResult,
+        detect_interface, process_running_exact,
+        kill_process, kill_process_pattern,
     },
 };
 

@@ -23,8 +23,8 @@ use tinybmp::Bmp;
 
 #[cfg(target_os = "linux")]
 use linux_embedded_hal::{
-    Delay, Spidev,
-    spidev::{SpiModeFlags, SpidevOptions},
+    Delay,
+    spidev::{SpiModeFlags, SpidevOptions, Spidev},
     sysfs_gpio::{Direction, Pin},
 };
 
@@ -42,7 +42,7 @@ const LCD_OFFSET_Y: u16 = 1;
 
 #[cfg(target_os = "linux")]
 pub struct Display {
-    lcd: ST7735<Spidev, Pin>,
+    lcd: ST7735<Spidev, Pin, Pin>,
     palette: Palette,
     font_regular: MonoTextStyle<'static, Rgb565>,
     font_highlight: MonoTextStyle<'static, Rgb565>,

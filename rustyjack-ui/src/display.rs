@@ -27,9 +27,6 @@ use linux_embedded_hal::{
 };
 
 #[cfg(target_os = "linux")]
-use embedded_hal::spi::SpiDevice;
-
-#[cfg(target_os = "linux")]
 use st7735_lcd::{Orientation, ST7735};
 
 #[cfg(target_os = "linux")]
@@ -68,14 +65,13 @@ pub struct Palette {
 #[cfg(target_os = "linux")]
 impl Display {
     pub fn new(colors: &ColorScheme) -> Result<Self> {
-        let mut spi = Spidev::open("/dev/spidev0.0").context("opening SPI device")?;
+        let mut spi_dev = SpidevDevice::open("/dev/spidev0.0").map_err(|e| anyhow::anyhow!("Failed to open SPI: {:?}", e))?;
         let options = SpidevOptions::new()
             .bits_per_word(8)
             .max_speed_hz(12_000_000)
             .mode(SpiModeFlags::SPI_MODE_0)
             .build();
-        spi.configure(&options).context("configuring SPI")?;
-        let spi_dev = SpidevDevice::new(spi);
+        spi_dev.0.configure(&options).context("configuring SPI")?;
 
         let mut dc = SysfsPin(Pin::new(25));  // GPIO 25 - DC (Data/Command)
         init_output_pin(&mut dc)?;

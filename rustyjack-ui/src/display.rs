@@ -748,6 +748,11 @@ impl RppalPinWrapper {
         self.pin.set_high();
         Ok(())
     }
+
+    pub fn set_low(&mut self) -> Result<()> {
+        self.pin.set_low();
+        Ok(())
+    }
 }
 
 #[cfg(target_os = "linux")]

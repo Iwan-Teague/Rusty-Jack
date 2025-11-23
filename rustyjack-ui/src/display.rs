@@ -77,8 +77,8 @@ impl Display {
         let gpio = Gpio::new().context("initializing GPIO")?;
         
         let dc = RppalPinWrapper::new(gpio.get(25)?.into_output());
-        let rst = RppalPinWrapper::new(gpio.get(24)?.into_output());
-        let mut backlight = RppalPinWrapper::new(gpio.get(18)?.into_output());
+        let rst = RppalPinWrapper::new(gpio.get(27)?.into_output());
+        let mut backlight = RppalPinWrapper::new(gpio.get(24)?.into_output());
         backlight.set_high().context("turning on backlight")?;
 
         let mut delay = Delay {};

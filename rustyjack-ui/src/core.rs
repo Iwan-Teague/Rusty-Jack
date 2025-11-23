@@ -24,14 +24,14 @@ impl CoreBridge {
         dispatch_command(&self.root, command)
     }
 
-    pub fn run_scan_with_progress<F>(&self, args: ScanRunArgs, mut on_progress: F) -> Result<HandlerResult>
+    pub fn run_scan_with_progress<F>(&self, args: ScanRunArgs, on_progress: F) -> Result<HandlerResult>
     where
         F: FnMut(f32, &str),
     {
         run_scan_with_progress(&self.root, args, on_progress)
     }
 
-    pub fn run_system_update_with_progress<F>(&self, args: SystemUpdateArgs, mut on_progress: F) -> Result<HandlerResult>
+    pub fn run_system_update_with_progress<F>(&self, args: SystemUpdateArgs, on_progress: F) -> Result<HandlerResult>
     where
         F: FnMut(f32, &str),
     {

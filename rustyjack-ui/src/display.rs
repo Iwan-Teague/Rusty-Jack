@@ -4,7 +4,7 @@ use embedded_graphics::{
     image::Image,
     pixelcolor::{Rgb565, Rgb888},
     prelude::*,
-    primitives::{PrimitiveStyle, PrimitiveStyleBuilder, Rectangle},
+    primitives::{PrimitiveStyle, Rectangle},
     mono_font::{ascii::FONT_6X10, MonoTextStyle, MonoTextStyleBuilder},
     text::{Baseline, Text},
 };
@@ -80,7 +80,7 @@ impl Display {
         backlight.set_value(1)?;
 
         let mut delay = Delay {};
-        let mut lcd = ST7735::new(spi, dc, rst, true, false, LCD_WIDTH, LCD_HEIGHT);
+        let mut lcd = ST7735::new(spi, dc, rst, true, false, LCD_WIDTH as u32, LCD_HEIGHT as u32);
         lcd.init(&mut delay)?;
         lcd.set_orientation(&Orientation::Portrait)?;
         lcd.set_offset(LCD_OFFSET_X, LCD_OFFSET_Y);

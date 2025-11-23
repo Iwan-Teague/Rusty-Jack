@@ -360,6 +360,7 @@ impl App {
             MenuAction::AutopilotStop => self.autopilot_stop()?,
             MenuAction::AutopilotStatus => self.autopilot_status()?,
             MenuAction::ToggleDiscord => self.toggle_discord()?,
+            MenuAction::TransferToUSB => self.transfer_to_usb()?,
         }
         Ok(())
     }
@@ -1373,6 +1374,130 @@ impl App {
             }
         }
         Ok(())
+    }
+
+    fn transfer_to_usb(&mut self) -> Result<()> {
+        // Find USB mount point
+        let usb_path = self.find_usb_mount()?;
+        
+        let loot_dir = self.root.join("loot");
+        let responder_logs = self.root.join("Responder").join("logs");
+        
+        if !loot_dir.exists() && !responder_logs.exists() {
+            self.show_message("USB Transfer", ["No loot to transfer"])?;
+            return Ok(());
+        }
+
+        // Collect all files to transfer
+        let mut files = Vec::new();
+        if loot_dir.exists() {
+            for entry in WalkDir::new(&loot_dir) {
+                let entry = entry?;
+                if entry.file_type().is_file() {
+                    files.push(entry.path().to_path_buf());
+                }
+            }
+        }
+        if responder_logs.exists() {
+            for entry in WalkDir::new(&responder_logs) {
+                let entry = entry?;
+                if entry.file_type().is_file() {
+                    files.push(entry.path().to_path_buf());
+                }
+            }
+        }
+
+        if files.is_empty() {
+            self.show_message("USB Transfer", ["No files to transfer"])?;
+            return Ok(());
+        }
+
+        let total_files = files.len();
+        let status = self.stats.snapshot();
+
+        // Transfer files with progress
+        for (idx, file_path) in files.iter().enumerate() {
+            let progress = ((idx + 1) as f32 / total_files as f32) * 100.0;
+            
+            let filename = file_path.file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("file");
+            
+            self.display.draw_progress_dialog(
+                "USB Transfer",
+                filename,
+                progress,
+                &status
+            )?;
+
+            // Determine destination path
+            let dest = if file_path.starts_with(&loot_dir) {
+                let rel = file_path.strip_prefix(&loot_dir).unwrap_or(file_path);
+                usb_path.join("Rustyjack_Loot").join("loot").join(rel)
+            } else if file_path.starts_with(&responder_logs) {
+                let rel = file_path.strip_prefix(&responder_logs).unwrap_or(file_path);
+                usb_path.join("Rustyjack_Loot").join("ResponderLogs").join(rel)
+            } else {
+                continue;
+            };
+
+            // Create destination directory
+            if let Some(parent) = dest.parent() {
+                fs::create_dir_all(parent)?;
+            }
+
+            // Copy file
+            fs::copy(file_path, &dest)?;
+        }
+
+        self.show_message("USB Transfer", [
+            &format!("Transferred {} files", total_files),
+            "to USB drive"
+        ])?;
+        
+        Ok(())
+    }
+
+    fn find_usb_mount(&self) -> Result<PathBuf> {
+        // Check common mount points
+        let mount_points = [
+            "/media",
+            "/mnt",
+            "/run/media",
+        ];
+
+        for base in &mount_points {
+            let base_path = Path::new(base);
+            if !base_path.exists() {
+                continue;
+            }
+
+            // Iterate through subdirectories
+            if let Ok(entries) = fs::read_dir(base_path) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        // Check if it looks like a USB mount (has write permission)
+                        if self.is_writable_mount(&path) {
+                            return Ok(path);
+                        }
+                    }
+                }
+            }
+        }
+
+        bail!("No USB drive found. Please insert a USB drive.")
+    }
+
+    fn is_writable_mount(&self, path: &Path) -> bool {
+        // Try to create a test file to verify write access
+        let test_file = path.join(".rustyjack_test");
+        if fs::write(&test_file, b"test").is_ok() {
+            let _ = fs::remove_file(&test_file);
+            true
+        } else {
+            false
+        }
     }
 
     fn run_system_update(&mut self) -> Result<()> {

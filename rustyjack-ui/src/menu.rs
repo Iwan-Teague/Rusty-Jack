@@ -38,6 +38,7 @@ pub enum MenuAction {
     AutopilotStop,
     AutopilotStatus,
     ToggleDiscord,
+    TransferToUSB,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -314,6 +315,7 @@ fn system_menu() -> Vec<MenuEntry> {
 
 fn loot_menu() -> Vec<MenuEntry> {
     vec![
+        MenuEntry::new(" Transfer to USB", MenuAction::TransferToUSB),
         MenuEntry::new(" Nmap", MenuAction::Loot(LootSection::Nmap)),
         MenuEntry::new(" Responder", MenuAction::Loot(LootSection::Responder)),
         MenuEntry::new(" DNSSpoof", MenuAction::Loot(LootSection::DnsSpoof)),

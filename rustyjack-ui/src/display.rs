@@ -20,7 +20,7 @@ use tinybmp::Bmp;
 #[cfg(target_os = "linux")]
 use linux_embedded_hal::{
     Delay,
-    spidev::{SpiModeFlags, SpidevOptions, Spidev},
+    spidev::{SpiModeFlags, SpidevOptions},
     sysfs_gpio::{Direction, Pin},
     SysfsPin,
     SpidevDevice,
@@ -34,9 +34,9 @@ const LCD_WIDTH: u32 = 128;
 #[cfg(target_os = "linux")]
 const LCD_HEIGHT: u32 = 128;
 #[cfg(target_os = "linux")]
-const LCD_OFFSET_X: u32 = 2;
+const LCD_OFFSET_X: u16 = 2;
 #[cfg(target_os = "linux")]
-const LCD_OFFSET_Y: u32 = 1;
+const LCD_OFFSET_Y: u16 = 1;
 
 #[cfg(target_os = "linux")]
 pub struct Display {
@@ -83,8 +83,8 @@ impl Display {
 
         let mut delay = Delay {};
         let mut lcd = ST7735::new(spi_dev, dc, rst, true, false, LCD_WIDTH, LCD_HEIGHT);
-        lcd.init(&mut delay)?;
-        lcd.set_orientation(&Orientation::Portrait)?;
+        lcd.init(&mut delay).map_err(|_| anyhow::anyhow!("Failed to init LCD"))?;
+        lcd.set_orientation(&Orientation::Portrait).map_err(|_| anyhow::anyhow!("Failed to set orientation"))?;
         lcd.set_offset(LCD_OFFSET_X, LCD_OFFSET_Y);
 
         let palette = Palette::from_scheme(colors);

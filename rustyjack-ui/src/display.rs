@@ -74,12 +74,12 @@ impl Display {
         spi_dev.0.configure(&options).context("configuring SPI")?;
 
         let mut dc = SysfsPin(Pin::new(25));  // GPIO 25 - DC (Data/Command)
-        init_output_pin(&mut dc)?;
+        init_output_pin(&mut dc).context("initializing DC pin (GPIO 25)")?;
         let mut rst = SysfsPin(Pin::new(24));  // GPIO 24 - RST (Reset)
-        init_output_pin(&mut rst)?;
+        init_output_pin(&mut rst).context("initializing RST pin (GPIO 24)")?;
         let mut backlight = SysfsPin(Pin::new(18));  // GPIO 18 - BL (Backlight)
-        init_output_pin(&mut backlight)?;
-        backlight.0.set_value(1)?;
+        init_output_pin(&mut backlight).context("initializing BL pin (GPIO 18)")?;
+        backlight.0.set_value(1).context("turning on backlight")?;
 
         let mut delay = Delay {};
         let mut lcd = ST7735::new(spi_dev, dc, rst, true, false, LCD_WIDTH, LCD_HEIGHT);
@@ -706,10 +706,10 @@ impl Display {
 
 #[cfg(target_os = "linux")]
 fn init_output_pin(pin: &mut SysfsPin) -> Result<()> {
-    pin.0.export()?;
+    pin.0.export().context("exporting pin")?;
     std::thread::sleep(std::time::Duration::from_millis(10));
-    pin.0.set_direction(Direction::Out)?;
-    pin.0.set_value(0)?;
+    pin.0.set_direction(Direction::Out).context("setting direction")?;
+    pin.0.set_value(0).context("setting initial value")?;
     Ok(())
 }
 

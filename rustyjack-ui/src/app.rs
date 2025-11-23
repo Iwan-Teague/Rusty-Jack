@@ -150,7 +150,7 @@ fn format_network_label(net: &WifiNetworkEntry) -> String {
         .signal_dbm
         .map(|s| format!("{s} dBm"))
         .unwrap_or_else(|| "".to_string());
-    let lock = if net.encrypted { "🔒" } else { "🔓" };
+    let lock = if net.encrypted { "[E]" } else { "[ ]" };
     if signal.is_empty() {
         format!("{lock} {ssid}")
     } else {

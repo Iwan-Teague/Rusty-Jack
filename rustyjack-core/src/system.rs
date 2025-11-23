@@ -328,11 +328,11 @@ pub fn send_scan_to_discord(
         Local::now().format("%Y-%m-%d %H:%M:%S")
     );
     let embed = json!({
-        "title": format!("🔍 Nmap Scan Complete: {label}"),
+        "title": format!("Nmap Scan Complete: {label}"),
         "description": description,
         "color": 0x00ff00,
         "fields": [{
-            "name": "📁 Scan Results",
+            "name": "Scan Results",
             "value": format!(
                 "**File:** `{}`\n**Size:** {} bytes\nDownload the attached file for full details",
                 filename,

@@ -97,10 +97,21 @@ impl Display {
         let _backlight = CdevPin::new(bl_handle).context("creating backlight pin")?;
 
         let mut delay = Delay {};
-        let mut lcd = ST7735::new(spi, dc, rst, true, false, LCD_WIDTH as u32, LCD_HEIGHT as u32);
+        // Try RGB mode with inverted colors (common fix for white screen)
+        let mut lcd = ST7735::new(spi, dc, rst, true, true, LCD_WIDTH as u32, LCD_HEIGHT as u32);
         lcd.init(&mut delay).map_err(|_| anyhow::anyhow!("LCD init failed"))?;
         lcd.set_orientation(&Orientation::Portrait).map_err(|_| anyhow::anyhow!("LCD orientation failed"))?;
         lcd.set_offset(LCD_OFFSET_X, LCD_OFFSET_Y);
+        
+        // Clear screen to black on startup to test display is working
+        lcd.clear(Rgb565::BLACK).map_err(|_| anyhow::anyhow!("LCD clear failed"))?;
+        
+        // Draw test pattern to verify display is responsive
+        // Draw a green border to confirm display is working
+        Rectangle::new(Point::new(0, 0), Size::new(LCD_WIDTH as u32, LCD_HEIGHT as u32))
+            .into_styled(PrimitiveStyle::with_stroke(Rgb565::GREEN, 2))
+            .draw(&mut lcd)
+            .map_err(|_| anyhow::anyhow!("LCD test pattern failed"))?;
 
         let palette = Palette::from_scheme(colors);
         let text_style_regular = MonoTextStyleBuilder::new()

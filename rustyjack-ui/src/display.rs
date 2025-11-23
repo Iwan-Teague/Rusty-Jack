@@ -21,10 +21,11 @@ use tinybmp::Bmp;
 use linux_embedded_hal::{
     Delay,
     spidev::{SpiModeFlags, SpidevOptions},
-    sysfs_gpio::{Direction, Pin},
-    SysfsPin,
     SpidevDevice,
 };
+
+#[cfg(target_os = "linux")]
+use gpio_cdev::{Chip, LineHandle, LineRequestFlags};
 
 #[cfg(target_os = "linux")]
 use st7735_lcd::{Orientation, ST7735};

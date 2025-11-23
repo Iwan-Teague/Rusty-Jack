@@ -102,7 +102,7 @@ impl Display {
         lcd.init(&mut delay).map_err(|_| anyhow::anyhow!("Failed to init LCD"))?;
         println!("LCD init complete");
         
-        lcd.set_orientation(&Orientation::Portrait).map_err(|_| anyhow::anyhow!("Failed to set orientation"))?;
+        lcd.set_orientation(&Orientation::Landscape).map_err(|_| anyhow::anyhow!("Failed to set orientation"))?;
         lcd.set_offset(LCD_OFFSET_X, LCD_OFFSET_Y);
         
         // Clear screen to blue to verify drawing
@@ -310,8 +310,15 @@ impl Display {
         Text::with_baseline(title, Point::new(4, 16), self.text_style_small, Baseline::Top)
             .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
 
+        let max_items = 7;
+        let start_index = if selected >= max_items {
+            selected - max_items + 1
+        } else {
+            0
+        };
+
         let mut y = 30;
-        for (idx, label) in items.iter().enumerate() {
+        for (idx, label) in items.iter().enumerate().skip(start_index).take(max_items) {
             if idx == selected {
                 Rectangle::new(
                     Point::new(2, y - 2),

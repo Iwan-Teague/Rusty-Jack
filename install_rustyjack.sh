@@ -192,6 +192,27 @@ else
   warn "NetworkManager not active - WiFi attacks may need manual setup"
 fi
 
+# Optionally run the repository's WiFi setup helper automatically.
+# To skip automatic invocation set NO_WIFI_SETUP=1 in the environment.
+if [ "${NO_WIFI_SETUP:-0}" != "1" ]; then
+  WIFI_HELPER="$PROJECT_ROOT/setup_wifi.sh"
+  if [ -f "$WIFI_HELPER" ]; then
+    info "Running WiFi setup helper: $WIFI_HELPER"
+    sudo chmod +x "$WIFI_HELPER" || true
+    # If WIFI_COUNTRY env is set pass it through; otherwise run non-interactively
+    if [ -n "${WIFI_COUNTRY:-}" ]; then
+      sudo WIFI_COUNTRY="$WIFI_COUNTRY" "$WIFI_HELPER" || warn "WiFi setup helper failed"
+    else
+      # Run non-interactive and default country to US.
+      sudo "$WIFI_HELPER" -y || warn "WiFi setup helper failed"
+    fi
+  else
+    info "No WiFi setup helper found at $WIFI_HELPER — skipping"
+  fi
+else
+  info "NO_WIFI_SETUP=1 set — skipping WiFi automatic setup"
+fi
+
 # Create loot directories
 sudo mkdir -p "$PROJECT_ROOT/loot"/{Nmap,Responder,DNSSpoof}
 sudo chmod -R 755 "$PROJECT_ROOT/loot"

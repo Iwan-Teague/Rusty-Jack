@@ -3,6 +3,23 @@
 # Fixes rfkill block and configures WiFi
 
 set -e
+COUNTRY=""
+NONINTERACTIVE=0
+
+# parse args: --country|-c <code> and -y/--yes for non-interactive
+while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+        -c|--country)
+            COUNTRY="$2"; shift 2;;
+        -y|--yes|--noninteractive)
+            NONINTERACTIVE=1; shift;;
+        --help)
+            echo "Usage: sudo ./setup_wifi.sh [-c|--country <CC>] [-y|--yes]"; exit 0;;
+        *)
+            # unknown arg
+            echo "Unknown arg: $1"; echo "Usage: sudo ./setup_wifi.sh [-c|--country <CC>] [-y|--yes]"; exit 1;;
+    esac
+done
 
 echo "=========================================="
 echo "Rustyjack WiFi Setup Helper"
@@ -43,11 +60,20 @@ echo "  CA - Canada"
 echo "  AU - Australia"
 echo "  JP - Japan"
 echo ""
-read -p "Enter your country code (e.g., US): " COUNTRY_CODE
-
+# Use provided flag/env or prompt when interactive
+COUNTRY_CODE="${COUNTRY:-${WIFI_COUNTRY:-}}"
 if [ -z "$COUNTRY_CODE" ]; then
-    echo "[ERROR] Country code cannot be empty"
-    exit 1
+    if [ "$NONINTERACTIVE" -eq 1 ]; then
+        # sensible default when non-interactive
+        COUNTRY_CODE=US
+        echo "[INFO] No country provided in non-interactive mode — defaulting to $COUNTRY_CODE"
+    else
+        read -p "Enter your country code (e.g., US): " COUNTRY_CODE
+        if [ -z "$COUNTRY_CODE" ]; then
+            echo "[ERROR] Country code cannot be empty"
+            exit 1
+        fi
+    fi
 fi
 
 # Convert to uppercase

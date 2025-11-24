@@ -87,6 +87,18 @@ impl Display {
         spi.configure(&options)
             .context("configuring SPI")?;
 
+        // If diagnostic mode is enabled via env var we run a set of init
+        // permutations to help identify a working configuration on a
+        // problematic module. The diagnostic routine needs to open SPI and
+        // claim GPIO lines itself — so we must run diagnostics before this
+        // function requests any gpio lines.
+        if std::env::var("RUSTYJACK_DISPLAY_DIAG").is_ok() {
+            if let Err(e) = Self::run_diagnostics(colors) {
+                eprintln!("Display diagnostics failed: {:#}", e);
+            }
+            std::process::exit(0);
+        }
+
         // Use CdevPin for GPIO (embedded-hal 1.0 compatible)
         let mut chip = Chip::new("/dev/gpiochip0").context("opening GPIO chip")?;
         

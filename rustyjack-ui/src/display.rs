@@ -241,6 +241,35 @@ impl Display {
                                                 sleep(StdDuration::from_millis(120));
                                                 continue;
                                             }
+
+                                            // Before giving up, dump some system state so the
+                                            // user (and us) can see who owns the gpiochip and
+                                            // why the request failed.
+                                            eprintln!("diag: requesting {} line for diag: failed after retries — dumping system state:", consumer);
+                                            // Try `gpioinfo` (preferred) and a few helpful utilities
+                                            // — these may or may not be present on the minimal image,
+                                            // so we ignore errors.
+                                            fn run_cmd(name: &str, args: &[&str]) {
+                                                match std::process::Command::new(name).args(args).output() {
+                                                    Ok(o) => {
+                                                        if !o.stdout.is_empty() {
+                                                            let out = String::from_utf8_lossy(&o.stdout);
+                                                            eprintln!("--- {} {} stdout ---\n{}", name, args.join(" "), out);
+                                                        }
+                                                        if !o.stderr.is_empty() {
+                                                            let err = String::from_utf8_lossy(&o.stderr);
+                                                            eprintln!("--- {} {} stderr ---\n{}", name, args.join(" "), err);
+                                                        }
+                                                    }
+                                                    Err(e) => eprintln!("--- {} not available: {:#}", name, e),
+                                                }
+                                            }
+
+                                            run_cmd("gpioinfo", &[]);
+                                            run_cmd("lsof", &["/dev/gpiochip0"]);
+                                            run_cmd("fuser", &["-v", "/dev/gpiochip0"]);
+                                            run_cmd("ls", &["-l", "/dev/gpiochip0", "/dev/spidev0.0", "/dev/spidev0.1"]);
+
                                             return Err(anyhow::anyhow!("requesting {} line for diag: failed after retries", consumer));
                                         }
                                     },

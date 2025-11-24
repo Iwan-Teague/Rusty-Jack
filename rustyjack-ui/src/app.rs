@@ -156,6 +156,52 @@ fn format_network_label(net: &WifiNetworkEntry) -> String {
     } else {
         format!("{lock} {ssid} {signal}")
     }
+
+    fn map_button(&self, b: Button) -> ButtonAction {
+        match b {
+            Button::Up => ButtonAction::Up,
+            Button::Down => ButtonAction::Down,
+            Button::Left => ButtonAction::Back,
+            Button::Right | Button::Select => ButtonAction::Select,
+            Button::Key1 => ButtonAction::Refresh,
+            Button::Key2 => ButtonAction::MainMenu,
+            Button::Key3 => ButtonAction::Reboot,
+        }
+    }
+
+    fn confirm_reboot(&mut self) -> Result<()> {
+        // Ask the user to confirm reboot — waits for explicit confirmation
+        let overlay = self.stats.snapshot();
+        let content = vec![
+            "Confirm reboot".to_string(),
+            "SELECT = Reboot".to_string(),
+            "LEFT = Cancel".to_string(),
+        ];
+
+        self.display.draw_dialog(&content, &overlay)?;
+
+        loop {
+            let button = self.buttons.wait_for_press()?;
+            match self.map_button(button) {
+                ButtonAction::Select => {
+                    // Run reboot command and then exit
+                    let _ = ProcessCommand::new("systemctl").arg("reboot").status();
+                    // If the command succeeded the system will reboot; exit the app regardless.
+                    std::process::exit(0);
+                }
+                ButtonAction::Back | ButtonAction::MainMenu => {
+                    // Cancel and return
+                    break;
+                }
+                ButtonAction::Refresh => {
+                    // redraw the dialog
+                    self.display.draw_dialog(&content, &overlay)?;
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
 }
 
 struct MenuState {
@@ -225,6 +271,23 @@ impl MenuState {
             self.offset = self.selection.saturating_sub(VISIBLE - 1);
         }
     }
+
+    fn home(&mut self) {
+        self.stack = vec!["a".to_string()];
+        self.selection = 0;
+        self.offset = 0;
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ButtonAction {
+    Up,
+    Down,
+    Back,
+    Select,
+    Refresh,
+    MainMenu,
+    Reboot,
 }
 
 impl App {
@@ -268,12 +331,12 @@ impl App {
                 self.display.draw_dashboard(view, &status)?;
                 
                 let button = self.buttons.wait_for_press()?;
-                match button {
-                    Button::Left | Button::Key3 => {
+                match self.map_button(button) {
+                    ButtonAction::Back => {
                         // Exit dashboard, return to menu
                         self.dashboard_view = None;
                     }
-                    Button::Right | Button::Select => {
+                    ButtonAction::Select => {
                         // Cycle to next dashboard
                         self.dashboard_view = Some(match view {
                             DashboardView::SystemHealth => DashboardView::AttackMetrics,
@@ -282,24 +345,37 @@ impl App {
                             DashboardView::NetworkTraffic => DashboardView::SystemHealth,
                         });
                     }
+                    ButtonAction::Refresh => {
+                        // force redraw; nothing else required (loop will redraw)
+                    }
+                    ButtonAction::MainMenu => {
+                        self.menu_state.home();
+                    }
+                    ButtonAction::Reboot => {
+                        self.confirm_reboot()?;
+                    }
                     _ => {}
                 }
             } else {
                 // Menu mode
                 let entries = self.render_menu()?;
                 let button = self.buttons.wait_for_press()?;
-                match button {
-                    Button::Up => self.menu_state.move_up(entries.len()),
-                    Button::Down => self.menu_state.move_down(entries.len()),
-                    Button::Left | Button::Key3 => self.menu_state.back(),
-                    Button::Right | Button::Select => {
+                match self.map_button(button) {
+                    ButtonAction::Up => self.menu_state.move_up(entries.len()),
+                    ButtonAction::Down => self.menu_state.move_down(entries.len()),
+                    ButtonAction::Back => self.menu_state.back(),
+                    ButtonAction::Select => {
                         if let Some(entry) = entries.get(self.menu_state.selection) {
                             let action = entry.action.clone();
                             self.execute_action(action)?;
                         }
                     }
-                    Button::Key1 => {} // View toggles reserved for future layouts
-                    Button::Key2 => {} // Reserved
+                    ButtonAction::Refresh => {
+                        // Force refresh — nothing required here because the loop redraws
+                    }
+                    ButtonAction::MainMenu => self.menu_state.home(),
+                    ButtonAction::Reboot => self.confirm_reboot()?,
+                    _ => {}
                 }
             }
         }
@@ -550,8 +626,28 @@ impl App {
         let content: Vec<String> = std::iter::once(title.to_string())
             .chain(lines.into_iter().map(|line| line.as_ref().to_string()))
             .collect();
+        // Draw the dialog and require an explicit button press to dismiss
         self.display.draw_dialog(&content, &overlay)?;
-        thread::sleep(Duration::from_millis(1200));
+        loop {
+            let button = self.buttons.wait_for_press()?;
+            match self.map_button(button) {
+                ButtonAction::Select | ButtonAction::Back => break,
+                ButtonAction::MainMenu => {
+                    self.menu_state.home();
+                    break;
+                }
+                ButtonAction::Refresh => {
+                    // redraw the dialog so user can refresh view content if desired
+                    self.display.draw_dialog(&content, &overlay)?;
+                }
+                ButtonAction::Reboot => {
+                    // confirm and perform reboot if accepted
+                    self.confirm_reboot()?;
+                    break;
+                }
+                _ => {}
+            }
+        }
         Ok(())
     }
     
@@ -603,16 +699,18 @@ impl App {
             let label = format!("{:?}: {}", target, name);
             self.display.draw_dialog(&[label.clone()], &overlay)?;
             let button = self.buttons.wait_for_press()?;
-            match button {
-                Button::Left => index = (index + choices.len() - 1) % choices.len(),
-                Button::Right | Button::Select => {
+            match self.map_button(button) {
+                ButtonAction::Back => index = (index + choices.len() - 1) % choices.len(),
+                ButtonAction::Select => {
                     self.apply_color(target.clone(), hex);
                     self.display
                         .draw_dialog(&["Color updated".into()], &overlay)?;
                     thread::sleep(Duration::from_millis(600));
                     break;
                 }
-                Button::Key3 => break,
+                ButtonAction::Reboot => {
+                    self.confirm_reboot()?;
+                }
                 _ => {}
             }
         }
@@ -1071,17 +1169,24 @@ impl App {
             let overlay = self.stats.snapshot();
             let content = vec![title.to_string(), items[index].clone()];
             self.display.draw_dialog(&content, &overlay)?;
-            match self.buttons.wait_for_press()? {
-                Button::Up => {
+            match self.map_button(self.buttons.wait_for_press()?) {
+                ButtonAction::Up => {
                     if index == 0 {
                         index = items.len() - 1;
                     } else {
                         index -= 1;
                     }
                 }
-                Button::Down => index = (index + 1) % items.len(),
-                Button::Select | Button::Right => return Ok(Some(index)),
-                Button::Left | Button::Key3 => return Ok(None),
+                ButtonAction::Down => index = (index + 1) % items.len(),
+                ButtonAction::Select => return Ok(Some(index)),
+                ButtonAction::Back => return Ok(None),
+                ButtonAction::MainMenu => {
+                    self.menu_state.home();
+                    return Ok(None);
+                }
+                ButtonAction::Reboot => {
+                    self.confirm_reboot()?;
+                }
                 _ => {}
             }
         }
@@ -1098,13 +1203,19 @@ impl App {
                 "OK to confirm".to_string(),
             ];
             self.display.draw_dialog(&content, &overlay)?;
-            match self.buttons.wait_for_press()? {
-                Button::Up => value = (value + 1).min(255),
-                Button::Down => value = (value - 1).max(0),
-                Button::Key1 => value = (value + 5).min(255),
-                Button::Key2 => value = (value - 5).max(0),
-                Button::Select | Button::Right => return Ok(Some(value as u8)),
-                Button::Left | Button::Key3 => return Ok(None),
+            match self.map_button(self.buttons.wait_for_press()?) {
+                ButtonAction::Up => value = (value + 1).min(255),
+                ButtonAction::Down => value = (value - 1).max(0),
+                ButtonAction::Select => return Ok(Some(value as u8)),
+                ButtonAction::Back => return Ok(None),
+                ButtonAction::MainMenu => {
+                    self.menu_state.home();
+                    return Ok(None);
+                }
+                ButtonAction::Reboot => {
+                    self.confirm_reboot()?;
+                }
+                _ => {}
             }
         }
     }

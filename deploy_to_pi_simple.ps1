@@ -44,16 +44,52 @@ echo "\nAll commands finished successfully. Dropping to an interactive shell..."
 exec bash -l
 '@
 
-# Save script to a temp file and run it over one SSH connection so the commands run sequentially
-$tmp = [System.IO.Path]::GetTempFileName()
-$remoteScript | Out-File -FilePath $tmp -Encoding ASCII
+try {
+	# Save script to a temp file and run it over one SSH connection so the commands run sequentially
+	$tmp = [System.IO.Path]::GetTempFileName()
+	$remoteScript | Out-File -FilePath $tmp -Encoding ASCII
 
-Write-Host "Connecting to Pi..." -ForegroundColor Green
-Write-Host "Please enter password when prompted: Beakyblue123" -ForegroundColor Yellow
-Write-Host ""
+	Write-Host "Connecting to Pi..." -ForegroundColor Green
+	Write-Host "Please enter password when prompted: Beakyblue123" -ForegroundColor Yellow
+	Write-Host ""
 
-# Copy the script into ssh stdin and run it on the remote side. Using one SSH connection keeps a single password prompt
-ssh -t ${piUser}@${piHost} "bash -s" < $tmp
+	# Preflight network checks — ping and SSH port
+	if (-not (Test-Connection -Count 1 -Quiet -ComputerName $piHost)) {
+		Write-Host "WARNING: Host $piHost did not respond to ping. Host may be offline or unreachable." -ForegroundColor Yellow
+		Write-Host "Press Enter to continue anyway or Ctrl+C to abort." -ForegroundColor Yellow
+		Read-Host | Out-Null
+	}
 
-# Clean up
-Remove-Item $tmp -ErrorAction SilentlyContinue
+	if (Get-Command Test-NetConnection -ErrorAction SilentlyContinue) {
+		$portCheck = Test-NetConnection -ComputerName $piHost -Port 22 -WarningAction SilentlyContinue
+		if (-not $portCheck.TcpTestSucceeded) {
+			Write-Host "WARNING: Port 22 (SSH) on $piHost is not responding. Remote SSH may not be available." -ForegroundColor Yellow
+			Write-Host "Press Enter to continue anyway or Ctrl+C to abort." -ForegroundColor Yellow
+			Read-Host | Out-Null
+		}
+	}
+
+	# Stream local script into ssh stdin in a PowerShell-friendly way
+	if (Get-Command ssh -ErrorAction SilentlyContinue) {
+		Get-Content -Raw $tmp | ssh -t ${piUser}@${piHost} "bash -s"
+		$sshExit = $LASTEXITCODE
+	} else {
+		Write-Host "ERROR: 'ssh' command not found on this machine. Please install OpenSSH client or use plink." -ForegroundColor Red
+		$sshExit = 1
+	}
+
+	if ($sshExit -ne 0) {
+		Write-Host "Remote connection or command failed (exit code: $sshExit)" -ForegroundColor Red
+	} else {
+		Write-Host "Remote commands completed — interactive shell should be open." -ForegroundColor Green
+	}
+}
+catch {
+	Write-Host "EXCEPTION: $($_.Exception.Message)" -ForegroundColor Red
+}
+finally {
+	# Clean up
+	if (Test-Path $tmp) { Remove-Item $tmp -ErrorAction SilentlyContinue }
+	Write-Host "\nDone — press Enter to close this window." -ForegroundColor Cyan
+	Read-Host | Out-Null
+}

@@ -38,25 +38,64 @@ Write-Host $sshCommands
 Write-Host ""
 Write-Host "Connecting to Pi..." -ForegroundColor Cyan
 
-# Use plink (PuTTY) if available, otherwise use OpenSSH
-if (Get-Command plink -ErrorAction SilentlyContinue) {
-    # Using PuTTY's plink
-    Write-Host "Using plink (PuTTY)..." -ForegroundColor Gray
-    # Run the script file via plink (-m feeds the remote commands). plink will execute the temp script sequentially.
-    plink -ssh -pw $piPassword ${piUser}@${piHost} -m $tempFile -t
-} else {
-    # Using OpenSSH with sshpass (if available) or manual password entry
-    if (Get-Command sshpass -ErrorAction SilentlyContinue) {
-        Write-Host "Using OpenSSH with sshpass..." -ForegroundColor Gray
-        # sshpass with provided password runs the script sequentially (-T to read script from file)
-        sshpass -p $piPassword ssh -o StrictHostKeyChecking=no -t ${piUser}@${piHost} "bash -s" < $tempFile
-    } else {
-        # Manual password entry required
-        Write-Host "Please enter password when prompted: $piPassword" -ForegroundColor Yellow
-        Write-Host ""
-        # interactive mode: feed the temp script to a single SSH session so commands execute sequentially then drop to shell
-        ssh -t ${piUser}@${piHost} "bash -s" < $tempFile
+# Basic preflight checks: ping and port 22 availability (helps diagnose immediate failures)
+if (-not (Test-Connection -Count 1 -Quiet -ComputerName $piHost)) {
+    Write-Host "WARNING: Host $piHost did not respond to ping. Network issue or host is down." -ForegroundColor Yellow
+    Write-Host "Press Enter to continue anyway or Ctrl+C to abort." -ForegroundColor Yellow
+    Read-Host | Out-Null
+}
+
+if (Get-Command Test-NetConnection -ErrorAction SilentlyContinue) {
+    $portCheck = Test-NetConnection -ComputerName $piHost -Port 22 -WarningAction SilentlyContinue
+    if (-not $portCheck.TcpTestSucceeded) {
+        Write-Host "WARNING: Port 22 (SSH) on $piHost is not open/accepting. Remote SSH may be blocked or service stopped." -ForegroundColor Yellow
+        Write-Host "Press Enter to continue anyway or Ctrl+C to abort." -ForegroundColor Yellow
+        Read-Host | Out-Null
     }
+}
+
+# Try to run remote script; capture exit codes and provide clear diagnostics
+try {
+    $sshExit = 99
+
+    # Use plink (PuTTY) if available
+    if (Get-Command plink -ErrorAction SilentlyContinue) {
+        Write-Host "Using plink (PuTTY) to run remote script..." -ForegroundColor Gray
+        plink -ssh -pw $piPassword ${piUser}@${piHost} -m $tempFile -t
+        $sshExit = $LASTEXITCODE
+    }
+    else {
+        # Try OpenSSH with sshpass (unattended password), otherwise interactive ssh
+        if (Get-Command sshpass -ErrorAction SilentlyContinue) {
+            Write-Host "Using OpenSSH + sshpass to run remote script..." -ForegroundColor Gray
+            sshpass -p $piPassword ssh -o StrictHostKeyChecking=no -t ${piUser}@${piHost} "bash -s" < $tempFile
+            $sshExit = $LASTEXITCODE
+        }
+        else {
+            # Check if ssh exists — if not, warn user and bail
+            if (-not (Get-Command ssh -ErrorAction SilentlyContinue)) {
+                Write-Host "ERROR: No suitable SSH client found (ssh, sshpass, or plink). Please install OpenSSH (Windows feature) or PuTTY (plink)." -ForegroundColor Red
+                $sshExit = 2
+            }
+            else {
+                Write-Host "No sshpass found, falling back to interactive OpenSSH. You will be prompted for the password." -ForegroundColor Yellow
+                # Feed script to single SSH session so commands run sequentially and then exec into interactive shell
+                Get-Content -Raw $tempFile | ssh -t ${piUser}@${piHost} "bash -s"
+                $sshExit = $LASTEXITCODE
+            }
+        }
+    }
+
+    if ($sshExit -ne 0) {
+        Write-Host "\nERROR: Remote deployment or connection returned non-zero exit code: $sshExit" -ForegroundColor Red
+        Write-Host "Please check the remote host logs and verify credentials/keys. If you need to run interactively, use PuTTY/plink or an OpenSSH client." -ForegroundColor Yellow
+    }
+    else {
+        Write-Host "\nRemote commands completed successfully." -ForegroundColor Green
+    }
+}
+catch {
+    Write-Host "EXCEPTION while running remote commands: $($_.Exception.Message)" -ForegroundColor Red
 }
 
 # Cleanup

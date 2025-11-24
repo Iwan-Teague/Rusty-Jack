@@ -35,6 +35,8 @@ Rectangle::new(Point::new(0, 0), Size::new(128, 128))
 cd ~/Rustyjack
 chmod +x fix_display.sh
 ./fix_display.sh
+
+Note: The installer script now reboots the Pi automatically at the end of setup to apply GPIO and kernel config changes. To skip the automatic reboot set SKIP_REBOOT=1 when running the installer.
 ```
 
 ### Option 2: Manual deployment

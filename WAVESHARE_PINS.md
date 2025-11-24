@@ -221,12 +221,14 @@ spi-config -d /dev/spidev0.0 -q
    # or on newer systems:
    grep "gpio=6,19,5,26,13,21,20,16=pu" /boot/firmware/config.txt
    
-   # If missing, the installer adds it automatically:
+   # If missing, the installer adds it automatically and will REBOOT by default
+   # so the change is applied. To skip the automatic reboot set SKIP_REBOOT=1.
    cd ~/Rustyjack
+   # Run installer — installer will reboot the Pi unless SKIP_REBOOT=1 is set
    sudo ./install_rustyjack.sh
-   
-   # REBOOT to apply the configuration:
-   sudo reboot
+
+   # To run the installer and *not* reboot automatically:
+   SKIP_REBOOT=1 sudo ./install_rustyjack.sh
    ```
 
 2. **Test individual buttons:**

@@ -91,7 +91,7 @@ const LCD_WIDTH: u16 = 128;
 const LCD_HEIGHT: u16 = 128;
 // Offset adjusted to utilize full screen width and avoid dead pixels on bottom row
 #[cfg(target_os = "linux")]
-const LCD_OFFSET_X: u16 = 2;
+const LCD_OFFSET_X: u16 = 0;
 #[cfg(target_os = "linux")]
 const LCD_OFFSET_Y: u16 = 2;
 
@@ -610,7 +610,7 @@ impl Display {
             Point::new(6, 32),
             Size::new(116, 64)
         )
-        .into_styled(PrimitiveStyle::with_fill(self.palette.selected_background))
+        .into_styled(PrimitiveStyle::with_fill(self.palette.background))
         .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
         
         let mut y = 38;
@@ -646,7 +646,7 @@ impl Display {
             Point::new(6, 32),
             Size::new(116, 64)
         )
-        .into_styled(PrimitiveStyle::with_fill(self.palette.selected_background))
+        .into_styled(PrimitiveStyle::with_fill(self.palette.background))
         .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
 
         // Draw title (wrap if needed)

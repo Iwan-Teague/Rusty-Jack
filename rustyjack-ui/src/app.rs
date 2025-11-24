@@ -690,6 +690,7 @@ impl App {
     fn pick_color(&mut self, target: ColorTarget) -> Result<()> {
         let choices = [
             ("White", "#ffffff"),
+            ("Black", "#000000"),
             ("Green", "#05ff00"),
             ("Red", "#ff0000"),
             ("Blue", "#2d0fff"),
@@ -783,13 +784,10 @@ impl App {
         
         // Interactive file browser - keeps looping until user backs out
         loop {
-            let Some(index) = self.choose_from_list("Loot files", &labels)? else {
+            let Some(index) = self.choose_from_menu("Loot files", &labels)? else {
                 return Ok(());
             };
-            let path = paths
-                .get(index)
-                .cloned()
-                .unwrap_or_else(|| paths.first().cloned().unwrap());
+            let path = paths.get(index).cloned().unwrap_or_else(|| paths.first().cloned().unwrap());
             
             // Open the selected file in scrollable viewer
             self.view_loot_file(&path)?;
@@ -1088,13 +1086,34 @@ impl App {
             let mut labels: Vec<String> = scan.networks.iter().map(format_network_label).collect();
             labels.push("Rescan networks".to_string());
             let title = format!("Networks ({}) [{}]", scan.networks.len(), scan.interface);
-            let Some(index) = self.choose_from_list(&title, &labels)? else {
-                break;
-            };
+
+            // Present scan results as a menu list (like main menu)
+            let Some(index) = self.choose_from_menu(&title, &labels)? else { break; };
             if index == scan.networks.len() {
                 continue;
             }
-            self.handle_network_selection(&scan.networks[index])?;
+
+            // Show details in menu style rows
+            let network = &scan.networks[index];
+            let mut detail_lines = Vec::new();
+            detail_lines.push(format!("SSID: {}", network.ssid.as_deref().unwrap_or("<hidden>")));
+            if let Some(sig) = network.signal_dbm { detail_lines.push(format!("Signal: {} dBm", sig)); }
+            if let Some(chan) = network.channel { detail_lines.push(format!("Channel: {}", chan)); }
+            if let Some(bssid) = network.bssid.as_deref() { detail_lines.push(format!("BSSID: {}", bssid)); }
+            detail_lines.push(format!("Encrypted: {}", if network.encrypted { "yes" } else { "no" }));
+
+            // Use draw_menu to show the details rows (user can press Back to return)
+            loop {
+                let overlay = self.stats.snapshot();
+                self.display.draw_menu("Network details", &detail_lines, usize::MAX, &overlay)?;
+                let btn = self.buttons.wait_for_press()?;
+                match self.map_button(btn) {
+                    ButtonAction::Back | ButtonAction::Select => break,
+                    ButtonAction::MainMenu => { self.menu_state.home(); break; }
+                    ButtonAction::Reboot => { self.confirm_reboot()?; }
+                    _ => {}
+                }
+            }
         }
         Ok(())
     }
@@ -1116,7 +1135,7 @@ impl App {
                 })
                 .collect();
             labels.push("Refresh profiles".to_string());
-            let Some(index) = self.choose_from_list("Saved profiles", &labels)? else {
+            let Some(index) = self.choose_from_menu("Saved profiles", &labels)? else {
                 break;
             };
             if index == profiles.len() {
@@ -1142,7 +1161,7 @@ impl App {
                 })
                 .collect();
             labels.push("Refresh list".to_string());
-            let Some(index) = self.choose_from_list("Interface config", &labels)? else {
+            let Some(index) = self.choose_from_menu("Interface config", &labels)? else {
                 break;
             };
             if index == interfaces.len() {
@@ -1283,6 +1302,48 @@ impl App {
                 ButtonAction::Reboot => {
                     self.confirm_reboot()?;
                 }
+                _ => {}
+            }
+        }
+    }
+
+    /// Show a paginated menu (styled like the main menu) and return index
+    fn choose_from_menu(&mut self, title: &str, items: &[String]) -> Result<Option<usize>> {
+        if items.is_empty() {
+            return Ok(None);
+        }
+
+        const VISIBLE: usize = 7;
+        let mut index: usize = 0;
+        let mut offset: usize = 0;
+
+        loop {
+            let total = items.len();
+            // Clamp offset so selected is visible
+            if index < offset {
+                offset = index;
+            } else if index >= offset + VISIBLE {
+                offset = index.saturating_sub(VISIBLE - 1);
+            }
+
+            let overlay = self.stats.snapshot();
+
+            // Build window slice of labels
+            let slice: Vec<String> = items.iter().skip(offset).take(VISIBLE).cloned().collect();
+            // Display menu with selected relative index
+            let displayed_selected = index.saturating_sub(offset);
+            self.display.draw_menu(title, &slice, displayed_selected, &overlay)?;
+
+            let button = self.buttons.wait_for_press()?;
+            match self.map_button(button) {
+                ButtonAction::Up => {
+                    if index == 0 { index = total - 1; } else { index -= 1; }
+                }
+                ButtonAction::Down => index = (index + 1) % total,
+                ButtonAction::Select => return Ok(Some(index)),
+                ButtonAction::Back => return Ok(None),
+                ButtonAction::MainMenu => { self.menu_state.home(); return Ok(None); }
+                ButtonAction::Reboot => { self.confirm_reboot()?; }
                 _ => {}
             }
         }
@@ -1951,38 +2012,59 @@ impl App {
                 let ethernet_ports = data.get("ethernet_ports").and_then(|v| v.as_array()).cloned().unwrap_or_default();
                 let wifi_modules = data.get("wifi_modules").and_then(|v| v.as_array()).cloned().unwrap_or_default();
                 
-                // Build detailed view
-                let mut lines = vec![
-                    format!("Ethernet: {}", eth_count),
-                    format!("WiFi: {}", wifi_count),
-                    format!("Other: {}", other_count),
-                    "".to_string(),
-                ];
-                
-                if !ethernet_ports.is_empty() {
-                    lines.push("Ethernet Ports:".to_string());
-                    for port in &ethernet_ports {
-                        if let Some(name) = port.get("name").and_then(|v| v.as_str()) {
-                            let status = port.get("oper_state").and_then(|v| v.as_str()).unwrap_or("?");
-                            let ip = port.get("ip").and_then(|v| v.as_str()).unwrap_or("no ip");
-                            lines.push(format!("  {}: {} {}", name, status, ip));
-                        }
-                    }
-                    lines.push("".to_string());
-                }
-                
-                if !wifi_modules.is_empty() {
-                    lines.push("WiFi Modules:".to_string());
-                    for module in &wifi_modules {
-                        if let Some(name) = module.get("name").and_then(|v| v.as_str()) {
-                            let status = module.get("oper_state").and_then(|v| v.as_str()).unwrap_or("?");
-                            let ip = module.get("ip").and_then(|v| v.as_str()).unwrap_or("no ip");
-                            lines.push(format!("  {}: {} {}", name, status, ip));
-                        }
+                // Build list of detected interfaces (clickable)
+                let mut all_interfaces = Vec::new();
+                let mut labels = Vec::new();
+
+                for port in &ethernet_ports {
+                    if let Some(name) = port.get("name").and_then(|v| v.as_str()) {
+                        let status = port.get("oper_state").and_then(|v| v.as_str()).unwrap_or("?");
+                        let ip = port.get("ip").and_then(|v| v.as_str()).unwrap_or("no ip");
+                        labels.push(format!("{} (eth) {} {}", name, status, ip));
+                        all_interfaces.push(port.clone());
                     }
                 }
-                
-                self.show_message("Hardware Detected", lines.iter().map(|s| s.as_str()))?;
+                for module in &wifi_modules {
+                    if let Some(name) = module.get("name").and_then(|v| v.as_str()) {
+                        let status = module.get("oper_state").and_then(|v| v.as_str()).unwrap_or("?");
+                        let ip = module.get("ip").and_then(|v| v.as_str()).unwrap_or("no ip");
+                        labels.push(format!("{} (wifi) {} {}", name, status, ip));
+                        all_interfaces.push(module.clone());
+                    }
+                }
+
+                // If nothing to show, just present summary
+                if labels.is_empty() {
+                    let summary_lines = vec![
+                        format!("Ethernet: {}", eth_count),
+                        format!("WiFi: {}", wifi_count),
+                        format!("Other: {}", other_count),
+                    ];
+                    self.show_message("Hardware Detected", summary_lines.iter().map(|s| s.as_str()))?;
+                } else {
+                    // Present clickable list and show details on selection
+                    loop {
+                        let Some(idx) = self.choose_from_menu("Detected interfaces", &labels)? else { break; };
+                        let info = &all_interfaces[idx];
+                        // Build detail lines
+                        let mut details = Vec::new();
+                        if let Some(name) = info.get("name").and_then(|v| v.as_str()) { details.push(format!("Name: {}", name)); }
+                        if let Some(kind) = info.get("kind").and_then(|v| v.as_str()) { details.push(format!("Kind: {}", kind)); }
+                        if let Some(state) = info.get("oper_state").and_then(|v| v.as_str()) { details.push(format!("State: {}", state)); }
+                        if let Some(ip) = info.get("ip").and_then(|v| v.as_str()) { details.push(format!("IP: {}", ip)); }
+                        self.display.draw_menu("Interface details", &details, usize::MAX, &self.stats.snapshot())?;
+                        // Wait for back/select to return
+                        loop {
+                            let btn = self.buttons.wait_for_press()?;
+                            match self.map_button(btn) {
+                                ButtonAction::Back | ButtonAction::Select => break,
+                                ButtonAction::MainMenu => { self.menu_state.home(); break; }
+                                ButtonAction::Reboot => { self.confirm_reboot()?; }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
             }
             Err(err) => {
                 let msg = vec![format!("Scan failed: {}", err)];

@@ -152,11 +152,13 @@ fn format_network_label(net: &WifiNetworkEntry) -> String {
         .unwrap_or_else(|| "".to_string());
     let lock = if net.encrypted { "[E]" } else { "[ ]" };
     if signal.is_empty() {
-        format!("{lock} {ssid}")
-    } else {
-        format!("{lock} {ssid} {signal}")
+        return format!("{lock} {ssid}");
     }
+    format!("{lock} {ssid} {signal}")
+}
 
+// Map low-level Button values to higher-level ButtonAction values
+impl App {
     fn map_button(&self, b: Button) -> ButtonAction {
         match b {
             Button::Up => ButtonAction::Up,
@@ -185,7 +187,7 @@ fn format_network_label(net: &WifiNetworkEntry) -> String {
             match self.map_button(button) {
                 ButtonAction::Select => {
                     // Run reboot command and then exit
-                    let _ = ProcessCommand::new("systemctl").arg("reboot").status();
+                    let _ = Command::new("systemctl").arg("reboot").status();
                     // If the command succeeded the system will reboot; exit the app regardless.
                     std::process::exit(0);
                 }

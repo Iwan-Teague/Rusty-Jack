@@ -335,7 +335,7 @@ fi
 echo ""
 step "Installation finished successfully!"
 info "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-info "RUST UI ACTIVE - Phase 3 Complete!"
+info "RUST UI ACTIVE"
 info "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 info ""
 info "REBOOT REQUIRED to ensure overlays & services start cleanly — the installer will now reboot the Pi unless explicitly skipped."

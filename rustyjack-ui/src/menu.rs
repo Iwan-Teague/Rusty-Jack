@@ -29,6 +29,7 @@ pub enum MenuAction {
     SwitchToWifi,
     SwitchToEthernet,
     WifiManager,
+    WifiScan,
     BridgeStart,
     BridgeStop,
     DiscordUpload,
@@ -227,6 +228,7 @@ fn main_menu() -> Vec<MenuEntry> {
         MenuEntry::new(" Settings", MenuAction::Submenu("as")),
         MenuEntry::new(" Loot", MenuAction::Submenu("ah")),
         MenuEntry::new(" Bridge mode", MenuAction::Submenu("abg")),
+        MenuEntry::new(" Scan for networks", MenuAction::WifiScan),
     ]
 }
 
@@ -326,6 +328,7 @@ fn wifi_menu() -> Vec<MenuEntry> {
     vec![
         MenuEntry::new(" FAST WiFi Switcher", MenuAction::WifiManager),
         MenuEntry::new(" INSTANT Toggle 0↔1", MenuAction::QuickWifiToggle),
+        MenuEntry::new(" Scan for networks", MenuAction::WifiScan),
         MenuEntry::new(" Switch Interface", MenuAction::SwitchInterfaceMenu),
         MenuEntry::new(" Show Interface Info", MenuAction::ShowInterfaceInfo),
         MenuEntry::new(" Network Health", MenuAction::ShowNetworkHealth),

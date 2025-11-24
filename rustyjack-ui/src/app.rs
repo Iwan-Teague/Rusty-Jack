@@ -349,6 +349,7 @@ impl App {
             MenuAction::SwitchToWifi => self.switch_to_wifi()?,
             MenuAction::SwitchToEthernet => self.switch_to_ethernet()?,
             MenuAction::WifiManager => self.launch_wifi_manager()?,
+            MenuAction::WifiScan => { self.show_wifi_scan_menu()?; }
             MenuAction::BridgeStart => self.start_bridge()?,
             MenuAction::BridgeStop => self.stop_bridge()?,
             MenuAction::DiscordUpload => self.discord_upload()?,

@@ -201,8 +201,14 @@ impl Display {
 
                         // Open fresh SPI and GPIO lines for each attempt so ownership
                         // is clean between iterations.
-                        let mut spi = SpidevDevice::open("/dev/spidev0.0")
-                            .context("opening SPI device for diag")?;
+                        let mut spi = match SpidevDevice::open("/dev/spidev0.0") {
+                            Ok(s) => s,
+                            Err(e) => {
+                                eprintln!("diag: opening SPI device failed: {:#}", e);
+                                // skip this iteration
+                                continue;
+                            }
+                        };
 
                         let options = SpidevOptions::new()
                             .bits_per_word(8)
@@ -211,11 +217,47 @@ impl Display {
                             .build();
                         spi.configure(&options).context("configuring spi for diag")?;
 
-                        let mut chip = Chip::new("/dev/gpiochip0").context("opening gpio chip for diag")?;
+                        let mut chip = match Chip::new("/dev/gpiochip0") {
+                            Ok(c) => c,
+                            Err(e) => {
+                                eprintln!("diag: opening gpiochip failed: {:#}", e);
+                                continue;
+                            }
+                        };
 
-                        let dc_line = chip.get_line(25).context("getting DC line for diag")?;
-                        let dc_handle = dc_line.request(LineRequestFlags::OUTPUT, 0, "rustyjack-dc")
-                            .context("requesting DC line for diag")?;
+                        // helper to request a line but retry briefly if it's busy
+                        fn request_line_with_retry(chip: &mut Chip, line: u32, consumer: &str, default: i32) -> Result<CdevPin, anyhow::Error> {
+                            let mut tries = 0usize;
+                            loop {
+                                match chip.get_line(line) {
+                                    Ok(l) => match l.request(LineRequestFlags::OUTPUT, default, consumer) {
+                                        Ok(handle) => return CdevPin::new(handle).map_err(|e| e.into()),
+                                        Err(_e) => {
+                                            // Common case is EBUSY (line owned by another
+                                            // process). Retry a few times with a short backoff
+                                            // in case the other process is shutting down.
+                                            tries += 1;
+                                            if tries < 8 {
+                                                sleep(StdDuration::from_millis(120));
+                                                continue;
+                                            }
+                                            return Err(anyhow::anyhow!("requesting {} line for diag: failed after retries", consumer));
+                                        }
+                                    },
+                                    Err(e) => return Err(anyhow::anyhow!("getting {} line for diag: {:#}", consumer, e)),
+                                }
+                            }
+                        }
+
+                        let dc = match request_line_with_retry(&mut chip, 25, "rustyjack-dc", 0) {
+                            Ok(p) => p,
+                            Err(e) => { eprintln!("diag: {}", e); continue; }
+                        };
+
+                        let rst = match request_line_with_retry(&mut chip, 24, "rustyjack-rst", 0) {
+                            Ok(p) => p,
+                            Err(e) => { eprintln!("diag: {}", e); continue; }
+                        };
                         let dc = CdevPin::new(dc_handle).context("creating DC pin for diag")?;
 
                         let rst_line = chip.get_line(24).context("getting RST line for diag")?;
@@ -223,10 +265,10 @@ impl Display {
                             .context("requesting RST line for diag")?;
                         let rst = CdevPin::new(rst_handle).context("creating RST pin for diag")?;
 
-                        let bl_line = chip.get_line(18).context("getting BL line for diag")?;
-                        let bl_handle = bl_line.request(LineRequestFlags::OUTPUT, 1, "rustyjack-bl")
-                            .context("requesting BL line for diag")?;
-                        let _backlight = CdevPin::new(bl_handle).context("creating BL pin for diag")?;
+                        let _backlight = match request_line_with_retry(&mut chip, 18, "rustyjack-bl", 1) {
+                            Ok(p) => p,
+                            Err(e) => { eprintln!("diag: {}", e); continue; }
+                        };
 
                         let mut delay = Delay {};
                         // Create the LCD with this combination

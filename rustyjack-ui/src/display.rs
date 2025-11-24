@@ -607,13 +607,13 @@ impl Display {
         self.clear()?;
         self.draw_toolbar(status)?;
         Rectangle::new(
-            Point::new(6, 32),
-            Size::new(116, 64)
+            Point::new(6, 18),
+            Size::new(116, 100)
         )
         .into_styled(PrimitiveStyle::with_fill(self.palette.background))
         .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
         
-        let mut y = 38;
+        let mut y = 22;
         const MAX_CHARS: usize = 18;
         
         for line in lines {

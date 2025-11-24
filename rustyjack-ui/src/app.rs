@@ -1083,8 +1083,10 @@ impl App {
                 return Ok(());
             }
             
-            let mut labels: Vec<String> = scan.networks.iter().map(format_network_label).collect();
-            labels.push("Rescan networks".to_string());
+            let mut labels: Vec<String> = scan.networks.iter()
+                .map(|net| net.ssid.as_deref().unwrap_or("<hidden>").to_string())
+                .collect();
+            labels.push("⟳ Rescan networks".to_string());
             let title = format!("Networks ({}) [{}]", scan.networks.len(), scan.interface);
 
             // Present scan results as a menu list (like main menu)
@@ -2018,23 +2020,22 @@ impl App {
 
                 for port in &ethernet_ports {
                     if let Some(name) = port.get("name").and_then(|v| v.as_str()) {
-                        let status = port.get("oper_state").and_then(|v| v.as_str()).unwrap_or("?");
-                        let ip = port.get("ip").and_then(|v| v.as_str()).unwrap_or("no ip");
-                        labels.push(format!("{} (eth) {} {}", name, status, ip));
+                        labels.push(name.to_string());
                         all_interfaces.push(port.clone());
                     }
                 }
                 for module in &wifi_modules {
                     if let Some(name) = module.get("name").and_then(|v| v.as_str()) {
-                        let status = module.get("oper_state").and_then(|v| v.as_str()).unwrap_or("?");
-                        let ip = module.get("ip").and_then(|v| v.as_str()).unwrap_or("no ip");
-                        labels.push(format!("{} (wifi) {} {}", name, status, ip));
+                        labels.push(name.to_string());
                         all_interfaces.push(module.clone());
                     }
                 }
 
+                // Add option to change network tool at the end of list
+                labels.push("⚙ Network tool".to_string());
+                
                 // If nothing to show, just present summary
-                if labels.is_empty() {
+                if all_interfaces.is_empty() {
                     let summary_lines = vec![
                         format!("Ethernet: {}", eth_count),
                         format!("WiFi: {}", wifi_count),
@@ -2045,6 +2046,13 @@ impl App {
                     // Present clickable list and show details on selection
                     loop {
                         let Some(idx) = self.choose_from_menu("Detected interfaces", &labels)? else { break; };
+                        
+                        // Check if user selected network tool option
+                        if idx == all_interfaces.len() {
+                            self.show_network_tool_selector()?;
+                            continue;
+                        }
+                        
                         let info = &all_interfaces[idx];
                         // Build detail lines
                         let mut details = Vec::new();
@@ -2070,6 +2078,31 @@ impl App {
                 let msg = vec![format!("Scan failed: {}", err)];
                 self.show_message("Hardware Error", msg.iter().map(|s| s.as_str()))?;
             }
+        }
+        Ok(())
+    }
+    
+    fn show_network_tool_selector(&mut self) -> Result<()> {
+        let current_tool = self.config.settings.network_tool.clone();
+        let tools = vec!["aircrack-ng", "bettercap"];
+        let labels: Vec<String> = tools.iter().map(|t| {
+            if *t == current_tool {
+                format!("{} ✓", t)
+            } else {
+                (*t).to_string()
+            }
+        }).collect();
+        
+        let Some(idx) = self.choose_from_menu("Network Tool", &labels)? else { return Ok(()); };
+        let selected_tool = tools[idx];
+        
+        // Update config and save
+        self.config.settings.network_tool = selected_tool.to_string();
+        let config_path = self.root.join("gui_conf.json");
+        if let Err(e) = self.config.save(&config_path) {
+            self.show_message("Error", [format!("Failed to save: {}", e)])?;
+        } else {
+            self.show_message("Network Tool", [format!("Set to: {}", selected_tool)])?;
         }
         Ok(())
     }

@@ -203,12 +203,15 @@ impl PathConfig {
 pub struct SettingsConfig {
     #[serde(default = "SettingsConfig::default_discord_enabled")]
     pub discord_enabled: bool,
+    #[serde(default = "SettingsConfig::default_network_tool")]
+    pub network_tool: String,
 }
 
 impl Default for SettingsConfig {
     fn default() -> Self {
         Self {
             discord_enabled: Self::default_discord_enabled(),
+            network_tool: Self::default_network_tool(),
         }
     }
 }
@@ -216,5 +219,9 @@ impl Default for SettingsConfig {
 impl SettingsConfig {
     fn default_discord_enabled() -> bool {
         true
+    }
+    
+    fn default_network_tool() -> String {
+        "aircrack-ng".to_string()
     }
 }

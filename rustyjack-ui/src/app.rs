@@ -779,22 +779,34 @@ impl App {
                 labels.push(display);
             }
         }
-        let Some(index) = self.choose_from_list("Loot files", &labels)? else {
-            return Ok(());
-        };
-        let path = paths
-            .get(index)
-            .cloned()
-            .unwrap_or_else(|| paths.first().cloned().unwrap());
+        
+        // Interactive file browser - keeps looping until user backs out
+        loop {
+            let Some(index) = self.choose_from_list("Loot files", &labels)? else {
+                return Ok(());
+            };
+            let path = paths
+                .get(index)
+                .cloned()
+                .unwrap_or_else(|| paths.first().cloned().unwrap());
+            
+            // Open the selected file in scrollable viewer
+            self.view_loot_file(&path)?;
+        }
+    }
+    
+    fn view_loot_file(&mut self, path: &str) -> Result<()> {
+        // Read the file with a high line limit
         let read_args = LootReadArgs {
-            path: PathBuf::from(&path),
-            max_lines: 500,
+            path: PathBuf::from(path),
+            max_lines: 5000,
         };
         let (_, data) = self
             .core
             .dispatch(Commands::Loot(LootCommand::Read(read_args)))?;
+        
         let lines = data
-            .get("content")
+            .get("lines")
             .and_then(Value::as_array)
             .map(|arr| {
                 arr.iter()
@@ -803,7 +815,87 @@ impl App {
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
-        self.show_message("Loot file", lines.iter().map(|s| s.as_str()))
+        
+        let truncated = data
+            .get("truncated")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        
+        if lines.is_empty() {
+            return self.show_message("Loot", ["File is empty"]);
+        }
+        
+        let filename = Path::new(path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("file")
+            .to_string();
+        
+        // Scrollable file viewer
+        self.scrollable_text_viewer(&filename, &lines, truncated)
+    }
+    
+    fn scrollable_text_viewer(&mut self, title: &str, lines: &[String], truncated: bool) -> Result<()> {
+        const LINES_PER_PAGE: usize = 5;
+        let total_lines = lines.len();
+        let mut offset = 0;
+        
+        loop {
+            let overlay = self.stats.snapshot();
+            let end = (offset + LINES_PER_PAGE).min(total_lines);
+            let visible_lines: Vec<String> = lines[offset..end].to_vec();
+            
+            // Build display content with navigation hints
+            let mut content = vec![
+                format!("{} ({}/{})", title, offset + 1, total_lines),
+            ];
+            content.extend(visible_lines);
+            
+            // Add navigation hint
+            if offset + LINES_PER_PAGE < total_lines {
+                content.push("↓ More below ↓".to_string());
+            } else if truncated {
+                content.push("[File truncated]".to_string());
+            }
+            
+            self.display.draw_dialog(&content, &overlay)?;
+            
+            let button = self.buttons.wait_for_press()?;
+            match self.map_button(button) {
+                ButtonAction::Down => {
+                    // Scroll down by one line
+                    if offset + LINES_PER_PAGE < total_lines {
+                        offset += 1;
+                    }
+                }
+                ButtonAction::Up => {
+                    // Scroll up by one line
+                    if offset > 0 {
+                        offset = offset.saturating_sub(1);
+                    }
+                }
+                ButtonAction::Select => {
+                    // Page down
+                    if offset + LINES_PER_PAGE < total_lines {
+                        offset = (offset + LINES_PER_PAGE).min(total_lines.saturating_sub(LINES_PER_PAGE));
+                    }
+                }
+                ButtonAction::Back => {
+                    // Exit viewer and return to file list
+                    return Ok(());
+                }
+                ButtonAction::MainMenu => {
+                    self.menu_state.home();
+                    return Ok(());
+                }
+                ButtonAction::Refresh => {
+                    // Redraw current page
+                }
+                ButtonAction::Reboot => {
+                    self.confirm_reboot()?;
+                }
+            }
+        }
     }
 
     fn quick_wifi_toggle(&mut self) -> Result<()> {

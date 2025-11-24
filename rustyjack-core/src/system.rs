@@ -1191,14 +1191,44 @@ pub fn scan_wifi_networks(interface: &str) -> Result<Vec<WifiNetwork>> {
     // Check permissions first
     check_network_permissions()?;
     
+    // Check if wireless-tools is installed
+    let iwlist_check = Command::new("which")
+        .arg("iwlist")
+        .output();
+    
+    if iwlist_check.is_err() || !iwlist_check.unwrap().status.success() {
+        log::error!("iwlist not found - wireless-tools may not be installed");
+        bail!("WiFi scanning requires wireless-tools package. Install with: apt-get install wireless-tools");
+    }
+    
     // Ensure interface is up before scanning
-    let _ = Command::new("ip")
+    let up_output = Command::new("ip")
         .args(["link", "set", interface, "up"])
         .output()
         .with_context(|| format!("bringing interface {interface} up before scan"))?;
     
+    if !up_output.status.success() {
+        let stderr = String::from_utf8_lossy(&up_output.stderr);
+        log::warn!("Could not bring interface up: {stderr}");
+    }
+    
     // Give interface time to initialize
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    std::thread::sleep(std::time::Duration::from_millis(1000));
+    
+    // Verify interface is wireless
+    let wireless_check = Command::new("iwconfig")
+        .arg(interface)
+        .output();
+    
+    if let Ok(check) = wireless_check {
+        let output_str = String::from_utf8_lossy(&check.stdout);
+        if output_str.contains("no wireless extensions") {
+            log::error!("Interface {interface} does not support wireless extensions");
+            bail!("Interface {interface} is not a wireless interface");
+        }
+    }
+    
+    log::info!("Starting WiFi scan on {interface}...");
     
     let output = Command::new("iwlist")
         .arg(interface)
@@ -1208,9 +1238,25 @@ pub fn scan_wifi_networks(interface: &str) -> Result<Vec<WifiNetwork>> {
     
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        log::error!("WiFi scan failed on {interface}: {stderr}");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        log::error!("WiFi scan failed on {interface}");
+        log::error!("stderr: {stderr}");
+        log::error!("stdout: {stdout}");
+        
+        // Try alternative iw command if iwlist fails
+        log::info!("Attempting fallback scan with 'iw scan'...");
+        let iw_output = Command::new("iw")
+            .args(["dev", interface, "scan"])
+            .output();
+        
+        if let Ok(iw_out) = iw_output {
+            if iw_out.status.success() {
+                return parse_iw_scan(&String::from_utf8_lossy(&iw_out.stdout));
+            }
+        }
+        
         bail!(
-            "WiFi scan failed on {interface}: {stderr}"
+            "WiFi scan failed on {interface}. Check if interface supports scanning and wireless-tools is installed: {stderr}"
         );
     }
     
@@ -1272,6 +1318,79 @@ pub fn scan_wifi_networks(interface: &str) -> Result<Vec<WifiNetwork>> {
     if let Some(net) = current {
         networks.push(net);
     }
+    networks.retain(|n| n.ssid.is_some());
+    Ok(networks)
+}
+
+/// Parse iw scan output as a fallback
+fn parse_iw_scan(output: &str) -> Result<Vec<WifiNetwork>> {
+    let mut networks = Vec::new();
+    let mut current: Option<WifiNetwork> = None;
+    
+    for line in output.lines() {
+        let line = line.trim();
+        
+        if line.starts_with("BSS ") {
+            // Save previous network
+            if let Some(net) = current.take() {
+                networks.push(net);
+            }
+            
+            // Start new network
+            let mut network = WifiNetwork {
+                ssid: None,
+                bssid: None,
+                quality: None,
+                signal_dbm: None,
+                channel: None,
+                encrypted: true,
+            };
+            
+            // Extract BSSID from "BSS aa:bb:cc:dd:ee:ff(on wlan0)"
+            if let Some(bssid_part) = line.split_whitespace().nth(1) {
+                let bssid = bssid_part.split('(').next().unwrap_or(bssid_part);
+                network.bssid = Some(bssid.to_string());
+            }
+            
+            current = Some(network);
+            continue;
+        }
+        
+        if let Some(net) = current.as_mut() {
+            if line.starts_with("SSID: ") {
+                let ssid = line[6..].trim();
+                if !ssid.is_empty() {
+                    net.ssid = Some(ssid.to_string());
+                }
+            } else if line.starts_with("signal: ") {
+                if let Some(signal_part) = line.split_whitespace().nth(1) {
+                    let dbm_str = signal_part.trim_end_matches(" dBm");
+                    if let Ok(dbm) = dbm_str.parse::<i32>() {
+                        net.signal_dbm = Some(dbm);
+                    }
+                }
+            } else if line.starts_with("freq: ") {
+                // Convert frequency to channel
+                if let Some(freq_str) = line.split_whitespace().nth(1) {
+                    if let Ok(freq) = freq_str.parse::<u32>() {
+                        // Simple 2.4GHz channel calculation
+                        if freq >= 2412 && freq <= 2484 {
+                            let channel = ((freq - 2407) / 5) as u8;
+                            net.channel = Some(channel);
+                        }
+                    }
+                }
+            } else if line.contains("WPA") || line.contains("RSN") || line.contains("WEP") {
+                net.encrypted = true;
+            }
+        }
+    }
+    
+    // Save last network
+    if let Some(net) = current {
+        networks.push(net);
+    }
+    
     networks.retain(|n| n.ssid.is_some());
     Ok(networks)
 }

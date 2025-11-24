@@ -1423,7 +1423,17 @@ impl App {
 
     fn transfer_to_usb(&mut self) -> Result<()> {
         // Find USB mount point
-        let usb_path = self.find_usb_mount()?;
+        let usb_path = match self.find_usb_mount() {
+            Ok(path) => path,
+            Err(e) => {
+                self.show_message("USB Transfer Error", [
+                    "No USB drive detected",
+                    "Please insert a USB drive",
+                    "and try again"
+                ])?;
+                return Ok(());
+            }
+        };
         
         let loot_dir = self.root.join("loot");
         let responder_logs = self.root.join("Responder").join("logs");

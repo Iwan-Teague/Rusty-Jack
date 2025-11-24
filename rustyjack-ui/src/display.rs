@@ -91,7 +91,7 @@ const LCD_WIDTH: u16 = 128;
 const LCD_HEIGHT: u16 = 128;
 // Offset adjusted to avoid dead pixels on left column and bottom row
 #[cfg(target_os = "linux")]
-const LCD_OFFSET_X: u16 = 3;
+const LCD_OFFSET_X: u16 = 4;
 #[cfg(target_os = "linux")]
 const LCD_OFFSET_Y: u16 = 2;
 

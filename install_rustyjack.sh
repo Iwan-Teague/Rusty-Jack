@@ -275,9 +275,22 @@ info "━━━━━━━━━━━━━━━━━━━━━━━━�
 info "RUST UI ACTIVE - Phase 3 Complete!"
 info "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 info ""
-info "REBOOT RECOMMENDED to ensure overlays & services start cleanly."
+info "REBOOT REQUIRED to ensure overlays & services start cleanly — the installer will now reboot the Pi unless explicitly skipped."
 info ""
 info "After reboot, the LCD will display the Rust-powered menu system."
+info ""
+info "To skip automatic reboot (advanced users), run the installer with SKIP_REBOOT=1 or NO_REBOOT=1 in the environment."
+info ""
+
+# By default we reboot so required changes (kernel config, gpio pulls, overlays)
+# are applied immediately. If an env flag is set to skip, we will not reboot.
+if [ "${SKIP_REBOOT:-0}" != "1" ] && [ "${NO_REBOOT:-0}" != "1" ]; then
+  info "System rebooting in 5 seconds to finish setup — press Ctrl+C to abort."
+  sleep 5
+  sudo reboot
+else
+  info "SKIP_REBOOT set — installer finished without reboot. You must reboot manually for some changes to take effect."
+fi
 info ""
 info "For WiFi attacks: Plug in USB WiFi dongle and use WiFi Manager"
 info "Manage service: systemctl status/restart rustyjack"

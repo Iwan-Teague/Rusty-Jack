@@ -835,7 +835,7 @@ impl App {
     }
     
     fn scrollable_text_viewer(&mut self, title: &str, lines: &[String], truncated: bool) -> Result<()> {
-        const LINES_PER_PAGE: usize = 5;
+        const LINES_PER_PAGE: usize = 9;
         let total_lines = lines.len();
         let mut offset = 0;
         
@@ -2018,21 +2018,30 @@ impl App {
                 let mut all_interfaces = Vec::new();
                 let mut labels = Vec::new();
 
+                let active_interface = self.config.settings.active_network_interface.clone();
+                
                 for port in &ethernet_ports {
                     if let Some(name) = port.get("name").and_then(|v| v.as_str()) {
-                        labels.push(name.to_string());
+                        let label = if name == active_interface {
+                            format!("{} ✓", name)
+                        } else {
+                            name.to_string()
+                        };
+                        labels.push(label);
                         all_interfaces.push(port.clone());
                     }
                 }
                 for module in &wifi_modules {
                     if let Some(name) = module.get("name").and_then(|v| v.as_str()) {
-                        labels.push(name.to_string());
+                        let label = if name == active_interface {
+                            format!("{} ✓", name)
+                        } else {
+                            name.to_string()
+                        };
+                        labels.push(label);
                         all_interfaces.push(module.clone());
                     }
                 }
-
-                // Add option to change network tool at the end of list
-                labels.push("⚙ Network tool".to_string());
                 
                 // If nothing to show, just present summary
                 if all_interfaces.is_empty() {
@@ -2047,25 +2056,53 @@ impl App {
                     loop {
                         let Some(idx) = self.choose_from_menu("Detected interfaces", &labels)? else { break; };
                         
-                        // Check if user selected network tool option
-                        if idx == all_interfaces.len() {
-                            self.show_network_tool_selector()?;
-                            continue;
-                        }
-                        
                         let info = &all_interfaces[idx];
+                        let interface_name = info.get("name").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
+                        
                         // Build detail lines
                         let mut details = Vec::new();
-                        if let Some(name) = info.get("name").and_then(|v| v.as_str()) { details.push(format!("Name: {}", name)); }
+                        details.push(format!("Name: {}", interface_name));
                         if let Some(kind) = info.get("kind").and_then(|v| v.as_str()) { details.push(format!("Kind: {}", kind)); }
                         if let Some(state) = info.get("oper_state").and_then(|v| v.as_str()) { details.push(format!("State: {}", state)); }
                         if let Some(ip) = info.get("ip").and_then(|v| v.as_str()) { details.push(format!("IP: {}", ip)); }
+                        details.push("".to_string());
+                        details.push("[SELECT] Set as active".to_string());
+                        
                         self.display.draw_menu("Interface details", &details, usize::MAX, &self.stats.snapshot())?;
-                        // Wait for back/select to return
+                        // Wait for action
                         loop {
                             let btn = self.buttons.wait_for_press()?;
                             match self.map_button(btn) {
-                                ButtonAction::Back | ButtonAction::Select => break,
+                                ButtonAction::Select => {
+                                    // Set this interface as active
+                                    self.config.settings.active_network_interface = interface_name.clone();
+                                    let config_path = self.root.join("gui_conf.json");
+                                    if let Err(e) = self.config.save(&config_path) {
+                                        self.show_message("Error", [format!("Failed to save: {}", e)])?;
+                                    } else {
+                                        self.show_message("Active Interface", [format!("Set to: {}", interface_name)])?;
+                                    }
+                                    // Refresh the labels to show new active indicator
+                                    labels.clear();
+                                    all_interfaces.clear();
+                                    let active = self.config.settings.active_network_interface.clone();
+                                    for port in &ethernet_ports {
+                                        if let Some(name) = port.get("name").and_then(|v| v.as_str()) {
+                                            let label = if name == active { format!("{} ✓", name) } else { name.to_string() };
+                                            labels.push(label);
+                                            all_interfaces.push(port.clone());
+                                        }
+                                    }
+                                    for module in &wifi_modules {
+                                        if let Some(name) = module.get("name").and_then(|v| v.as_str()) {
+                                            let label = if name == active { format!("{} ✓", name) } else { name.to_string() };
+                                            labels.push(label);
+                                            all_interfaces.push(module.clone());
+                                        }
+                                    }
+                                    break;
+                                }
+                                ButtonAction::Back => break,
                                 ButtonAction::MainMenu => { self.menu_state.home(); break; }
                                 ButtonAction::Reboot => { self.confirm_reboot()?; }
                                 _ => {}
@@ -2078,31 +2115,6 @@ impl App {
                 let msg = vec![format!("Scan failed: {}", err)];
                 self.show_message("Hardware Error", msg.iter().map(|s| s.as_str()))?;
             }
-        }
-        Ok(())
-    }
-    
-    fn show_network_tool_selector(&mut self) -> Result<()> {
-        let current_tool = self.config.settings.network_tool.clone();
-        let tools = vec!["aircrack-ng", "bettercap"];
-        let labels: Vec<String> = tools.iter().map(|t| {
-            if *t == current_tool {
-                format!("{} ✓", t)
-            } else {
-                (*t).to_string()
-            }
-        }).collect();
-        
-        let Some(idx) = self.choose_from_menu("Network Tool", &labels)? else { return Ok(()); };
-        let selected_tool = tools[idx];
-        
-        // Update config and save
-        self.config.settings.network_tool = selected_tool.to_string();
-        let config_path = self.root.join("gui_conf.json");
-        if let Err(e) = self.config.save(&config_path) {
-            self.show_message("Error", [format!("Failed to save: {}", e)])?;
-        } else {
-            self.show_message("Network Tool", [format!("Set to: {}", selected_tool)])?;
         }
         Ok(())
     }

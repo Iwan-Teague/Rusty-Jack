@@ -41,6 +41,8 @@ pub enum MenuAction {
     ToggleDiscord,
     TransferToUSB,
     HardwareDetect,
+    CrackPasswords,
+    DeauthAttack,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -217,8 +219,10 @@ pub enum LootSection {
 
 fn main_menu() -> Vec<MenuEntry> {
     vec![
-        MenuEntry::new(" View Dashboards", MenuAction::ViewDashboards),
+        MenuEntry::new(" Scan for networks", MenuAction::WifiScan),
         MenuEntry::new(" Hardware Detect", MenuAction::HardwareDetect),
+        MenuEntry::new(" Crack Passwords", MenuAction::CrackPasswords),
+        MenuEntry::new(" View Dashboards", MenuAction::ViewDashboards),
         MenuEntry::new(" Autopilot", MenuAction::Submenu("ap")),
         MenuEntry::new(" Scan Nmap", MenuAction::Submenu("ab")),
         MenuEntry::new(" Reverse Shell", MenuAction::Submenu("ac")),
@@ -230,7 +234,6 @@ fn main_menu() -> Vec<MenuEntry> {
         MenuEntry::new(" Settings", MenuAction::Submenu("as")),
         MenuEntry::new(" Loot", MenuAction::Submenu("ah")),
         MenuEntry::new(" Bridge mode", MenuAction::Submenu("abg")),
-        MenuEntry::new(" Scan for networks", MenuAction::WifiScan),
     ]
 }
 

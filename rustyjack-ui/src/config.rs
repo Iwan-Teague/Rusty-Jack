@@ -205,6 +205,8 @@ pub struct SettingsConfig {
     pub discord_enabled: bool,
     #[serde(default = "SettingsConfig::default_active_interface")]
     pub active_network_interface: String,
+    #[serde(default = "SettingsConfig::default_target_network")]
+    pub target_network: String,
 }
 
 impl Default for SettingsConfig {
@@ -212,6 +214,7 @@ impl Default for SettingsConfig {
         Self {
             discord_enabled: Self::default_discord_enabled(),
             active_network_interface: Self::default_active_interface(),
+            target_network: Self::default_target_network(),
         }
     }
 }
@@ -223,5 +226,9 @@ impl SettingsConfig {
     
     fn default_active_interface() -> String {
         "eth0".to_string()
+    }
+    
+    fn default_target_network() -> String {
+        String::new()
     }
 }

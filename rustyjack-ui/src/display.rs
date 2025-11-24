@@ -91,9 +91,9 @@ const LCD_WIDTH: u16 = 128;
 const LCD_HEIGHT: u16 = 128;
 // Offset adjusted to utilize full screen width and avoid dead pixels on bottom row
 #[cfg(target_os = "linux")]
-const LCD_OFFSET_X: u16 = 2;
+const LCD_OFFSET_X: u16 = 0;
 #[cfg(target_os = "linux")]
-const LCD_OFFSET_Y: u16 = 2;
+const LCD_OFFSET_Y: u16 = 0;
 
 #[cfg(target_os = "linux")]
 pub struct Display {

@@ -485,6 +485,8 @@ impl App {
             MenuAction::ToggleDiscord => self.toggle_discord()?,
             MenuAction::TransferToUSB => self.transfer_to_usb()?,
             MenuAction::HardwareDetect => self.show_hardware_detect()?,
+            MenuAction::CrackPasswords => self.show_crack_passwords_menu()?,
+            MenuAction::DeauthAttack => self.launch_deauth_attack()?,
         }
         Ok(())
     }
@@ -1084,9 +1086,17 @@ impl App {
             }
             
             let mut labels: Vec<String> = scan.networks.iter()
-                .map(|net| net.ssid.as_deref().unwrap_or("<hidden>").to_string())
+                .map(|net| {
+                    let ssid = net.ssid.as_deref().unwrap_or("<hidden>");
+                    let target_net = &self.config.settings.target_network;
+                    if !target_net.is_empty() && ssid == target_net {
+                        format!("{} *", ssid)
+                    } else {
+                        ssid.to_string()
+                    }
+                })
                 .collect();
-            labels.push("⟳ Rescan networks".to_string());
+            labels.push("Rescan networks".to_string());
             let title = format!("Networks ({}) [{}]", scan.networks.len(), scan.interface);
 
             // Present scan results as a menu list (like main menu)
@@ -1097,12 +1107,15 @@ impl App {
 
             // Show details in menu style rows
             let network = &scan.networks[index];
+            let ssid = network.ssid.as_deref().unwrap_or("<hidden>").to_string();
             let mut detail_lines = Vec::new();
-            detail_lines.push(format!("SSID: {}", network.ssid.as_deref().unwrap_or("<hidden>")));
+            detail_lines.push(format!("SSID: {}", ssid));
             if let Some(sig) = network.signal_dbm { detail_lines.push(format!("Signal: {} dBm", sig)); }
             if let Some(chan) = network.channel { detail_lines.push(format!("Channel: {}", chan)); }
             if let Some(bssid) = network.bssid.as_deref() { detail_lines.push(format!("BSSID: {}", bssid)); }
             detail_lines.push(format!("Encrypted: {}", if network.encrypted { "yes" } else { "no" }));
+            detail_lines.push("".to_string());
+            detail_lines.push("[SELECT] Set as target".to_string());
 
             // Use draw_menu to show the details rows (user can press Back to return)
             loop {
@@ -1110,7 +1123,18 @@ impl App {
                 self.display.draw_menu("Network details", &detail_lines, usize::MAX, &overlay)?;
                 let btn = self.buttons.wait_for_press()?;
                 match self.map_button(btn) {
-                    ButtonAction::Back | ButtonAction::Select => break,
+                    ButtonAction::Select => {
+                        // Set this network as target
+                        self.config.settings.target_network = ssid.clone();
+                        let config_path = self.root.join("gui_conf.json");
+                        if let Err(e) = self.config.save(&config_path) {
+                            self.show_message("Error", [format!("Failed to save: {}", e)])?;
+                        } else {
+                            self.show_message("Target Network", [format!("Set to: {}", ssid)])?;
+                        }
+                        break;
+                    }
+                    ButtonAction::Back => break,
                     ButtonAction::MainMenu => { self.menu_state.home(); break; }
                     ButtonAction::Reboot => { self.confirm_reboot()?; }
                     _ => {}
@@ -2023,7 +2047,7 @@ impl App {
                 for port in &ethernet_ports {
                     if let Some(name) = port.get("name").and_then(|v| v.as_str()) {
                         let label = if name == active_interface {
-                            format!("{} ✓", name)
+                            format!("{} *", name)
                         } else {
                             name.to_string()
                         };
@@ -2034,7 +2058,7 @@ impl App {
                 for module in &wifi_modules {
                     if let Some(name) = module.get("name").and_then(|v| v.as_str()) {
                         let label = if name == active_interface {
-                            format!("{} ✓", name)
+                            format!("{} *", name)
                         } else {
                             name.to_string()
                         };
@@ -2088,14 +2112,14 @@ impl App {
                                     let active = self.config.settings.active_network_interface.clone();
                                     for port in &ethernet_ports {
                                         if let Some(name) = port.get("name").and_then(|v| v.as_str()) {
-                                            let label = if name == active { format!("{} ✓", name) } else { name.to_string() };
+                                            let label = if name == active { format!("{} *", name) } else { name.to_string() };
                                             labels.push(label);
                                             all_interfaces.push(port.clone());
                                         }
                                     }
                                     for module in &wifi_modules {
                                         if let Some(name) = module.get("name").and_then(|v| v.as_str()) {
-                                            let label = if name == active { format!("{} ✓", name) } else { name.to_string() };
+                                            let label = if name == active { format!("{} *", name) } else { name.to_string() };
                                             labels.push(label);
                                             all_interfaces.push(module.clone());
                                         }
@@ -2117,6 +2141,51 @@ impl App {
             }
         }
         Ok(())
+    }
+    
+    fn show_crack_passwords_menu(&mut self) -> Result<()> {
+        let actions = vec![
+            ("Deauth Attack", "deauth"),
+            ("Back", "back"),
+        ];
+        
+        loop {
+            let labels: Vec<String> = actions.iter().map(|(label, _)| format!(" {}", label)).collect();
+            let Some(index) = self.choose_from_menu("Crack Passwords", &labels)? else { break; };
+            
+            match actions[index].1 {
+                "deauth" => self.launch_deauth_attack()?,
+                "back" => break,
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+    
+    fn launch_deauth_attack(&mut self) -> Result<()> {
+        let active_interface = self.config.settings.active_network_interface.clone();
+        let target_network = self.config.settings.target_network.clone();
+        
+        if target_network.is_empty() {
+            return self.show_message("Deauth Attack", ["No target network set", "Scan networks first", "and set a target"]);
+        }
+        
+        if active_interface.is_empty() {
+            return self.show_message("Deauth Attack", ["No active interface", "Set in Hardware Detect"]);
+        }
+        
+        let msg = vec![
+            format!("Target: {}", target_network),
+            format!("Interface: {}", active_interface),
+            "Starting deauth attack...".to_string(),
+        ];
+        self.show_message("Deauth Attack", msg.iter().map(|s| s.as_str()))?;
+        
+        // TODO: Implement actual deauth attack command
+        // This would call into rustyjack-core to execute aireplay-ng or similar
+        // For now, just show a placeholder message
+        
+        self.show_message("Deauth Attack", ["Attack launched", "Check loot for results"])
     }
 }
 

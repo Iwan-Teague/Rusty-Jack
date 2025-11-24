@@ -3,11 +3,11 @@
 ## Issue: Backlight on, but blank white screen
 
 ### Current Configuration (from display.rs):
-- **Display Type**: ST7735 128x128 LCD (NOT e-ink)
+- **Display Type**: ST7735S 128x128 LCD (Waveshare 1.44" HAT)
 - **SPI Device**: /dev/spidev0.0
 - **DC Pin**: GPIO 25
-- **RST Pin**: GPIO 24
-- **Backlight Pin**: GPIO 18
+- **RST Pin**: GPIO 27 (CORRECTED for Waveshare HAT)
+- **Backlight Pin**: GPIO 24 (CORRECTED for Waveshare HAT)
 - **Offset**: X=2, Y=1
 
 ### Common Causes & Fixes:
@@ -34,15 +34,15 @@ The ST7735 has multiple variants (ST7735R, ST7735S, ST7735B). The current code u
 **Try this fix** - the display might need inverted colors or BGR mode.
 
 ## 3. Pin Connection Issues
-Verify your display connections:
+Verify your Waveshare 1.44" LCD HAT connections (per official spec):
 - **VCC** → 3.3V (Pin 1 or 17)
 - **GND** → Ground (Pin 6, 9, 14, 20, 25, 30, 34, or 39)
 - **SCL/SCLK** → GPIO 11 (Pin 23) - SPI0 SCLK
 - **SDA/MOSI** → GPIO 10 (Pin 19) - SPI0 MOSI
-- **RES/RST** → GPIO 24 (Pin 18)
+- **RES/RST** → GPIO 27 (Pin 13) - CORRECTED FOR WAVESHARE
 - **DC/RS** → GPIO 25 (Pin 22)
 - **CS** → GPIO 8 (Pin 24) - SPI0 CE0
-- **BL/BLK** → GPIO 18 (Pin 12)
+- **BL/BLK** → GPIO 24 (Pin 18) - CORRECTED FOR WAVESHARE
 
 ## 4. Permissions
 Ensure the rustyjack-ui binary has GPIO access:

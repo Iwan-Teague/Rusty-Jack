@@ -100,6 +100,10 @@ impl Display {
         }
 
         // Use CdevPin for GPIO (embedded-hal 1.0 compatible)
+        // Pin configuration for Waveshare 1.44" LCD HAT:
+        // DC (Data/Command): GPIO 25
+        // RST (Reset): GPIO 27
+        // BL (Backlight): GPIO 24
         let mut chip = Chip::new("/dev/gpiochip0").context("opening GPIO chip")?;
         
         let dc_line = chip.get_line(25).context("getting DC line")?;
@@ -107,12 +111,12 @@ impl Display {
             .context("requesting DC line")?;
         let dc = CdevPin::new(dc_handle).context("creating DC pin")?;
         
-        let rst_line = chip.get_line(24).context("getting RST line")?;
+        let rst_line = chip.get_line(27).context("getting RST line")?;
         let rst_handle = rst_line.request(LineRequestFlags::OUTPUT, 0, "rustyjack-rst")
             .context("requesting RST line")?;
         let rst = CdevPin::new(rst_handle).context("creating RST pin")?;
         
-        let bl_line = chip.get_line(18).context("getting backlight line")?;
+        let bl_line = chip.get_line(24).context("getting backlight line")?;
         let bl_handle = bl_line.request(LineRequestFlags::OUTPUT, 1, "rustyjack-bl")
             .context("requesting backlight line")?;
         let backlight = CdevPin::new(bl_handle).context("creating backlight pin")?;
@@ -295,13 +299,13 @@ impl Display {
                             Err(e) => { eprintln!("diag: {}", e); continue; }
                         };
 
-                        let rst = match request_line_with_retry(&mut chip, 24, "rustyjack-rst", 0u8) {
+                        let rst = match request_line_with_retry(&mut chip, 27, "rustyjack-rst", 0u8) {
                             Ok(p) => p,
                             Err(e) => { eprintln!("diag: {}", e); continue; }
                         };
                         
 
-                        let _backlight = match request_line_with_retry(&mut chip, 18, "rustyjack-bl", 1) {
+                        let _backlight = match request_line_with_retry(&mut chip, 24, "rustyjack-bl", 1) {
                             Ok(p) => p,
                             Err(e) => { eprintln!("diag: {}", e); continue; }
                         };

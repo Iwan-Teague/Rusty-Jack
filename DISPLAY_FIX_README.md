@@ -111,15 +111,15 @@ If your HAT uses different pins, edit `display.rs` lines 72-86.
 
 ## Pin Configuration Reference
 
-Current configuration (works with most Adafruit ST7735 displays):
+Current configuration (Waveshare 1.44" LCD HAT):
 ```rust
 DC Pin:  GPIO 25
-RST Pin: GPIO 24
-BL Pin:  GPIO 18
+RST Pin: GPIO 27
+BL Pin:  GPIO 24
 ```
 
 Alternative configurations:
-- **Waveshare 1.44" LCD HAT**: DC=25, RST=27, BL=24
+- **Adafruit ST7735 displays**: DC=25, RST=24, BL=18
 - **Pimoroni Display HAT Mini**: DC=9, RST=25, BL=13
 
 ## Quick Test Without Service

@@ -1683,11 +1683,19 @@ pub fn disconnect_wifi_interface(interface: Option<String>) -> Result<String> {
 
 fn check_network_permissions() -> Result<()> {
     // Check if running as root or with necessary capabilities
-    let euid = unsafe { libc::geteuid() };
-    if euid != 0 {
-        log::error!("Network operations require root privileges (current euid: {euid})");
-        bail!("Network operations require root privileges. Please run as root or with sudo.");
+    // libc::geteuid is available on Unix only; guard with conditional compilation so
+    // this crate can still build on non-Unix hosts (CI, dev machines, editor tooling).
+    #[cfg(unix)]
+    {
+        let euid = unsafe { libc::geteuid() };
+        if euid != 0 {
+            log::error!("Network operations require root privileges (current euid: {euid})");
+            bail!("Network operations require root privileges. Please run as root or with sudo.");
+        }
     }
+
+    // On non-Unix platforms the permission check is a no-op — the runtime environment
+    // (or platform-specific APIs) should enforce required permissions instead.
     Ok(())
 }
 

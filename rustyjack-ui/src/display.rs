@@ -28,6 +28,7 @@ use linux_embedded_hal::{
 
 #[cfg(target_os = "linux")]
 use st7735_lcd::{Orientation, ST7735};
+use std::{thread::sleep, time::Duration as StdDuration};
 
 #[cfg(target_os = "linux")]
 const LCD_WIDTH: u16 = 128;
@@ -104,6 +105,18 @@ impl Display {
             .context("requesting backlight line")?;
         let backlight = CdevPin::new(bl_handle).context("creating backlight pin")?;
 
+        // If diagnostic mode is enabled via env var we run a set of init
+        // permutations to help identify a working configuration on a
+        // problematic module. This routine doesn't replace the normal UI
+        // flow, it just allows you to run diagnostics when invoked.
+        if std::env::var("RUSTYJACK_DISPLAY_DIAG").is_ok() {
+            // run diagnostics by taking ownership of the SPI and pins.
+            if let Err(e) = Self::run_diagnostics(colors) {
+                eprintln!("Display diagnostics failed: {:#}", e);
+            }
+            std::process::exit(0);
+        }
+
         let mut delay = Delay {};
         // Try RGB mode with inverted colors (common fix for white screen)
         let mut lcd = ST7735::new(spi, dc, rst, true, true, LCD_WIDTH as u32, LCD_HEIGHT as u32);
@@ -120,6 +133,7 @@ impl Display {
             .into_styled(PrimitiveStyle::with_stroke(Rgb565::GREEN, 2))
             .draw(&mut lcd)
             .map_err(|_| anyhow::anyhow!("LCD test pattern failed"))?;
+
 
         let palette = Palette::from_scheme(colors);
         let text_style_regular = MonoTextStyleBuilder::new()
@@ -143,6 +157,101 @@ impl Display {
             text_style_small,
             backlight,
         })
+    }
+
+    /// Run a diagnostic sequence on the LCD — cycles a few common SPI speeds
+    /// and ST7735 init parameter combinations so you can visually identify
+    /// a configuration that makes the module render correctly.
+    pub fn run_diagnostics(colors: &ColorScheme) -> Result<()> {
+        // Common speeds to try (some modules are sensitive to speed)
+        let speeds = [1_000_000u32, 2_000_000u32, 4_000_000u32, 8_000_000u32, 12_000_000u32];
+        let bgr_choices = [true, false];
+        let invert_choices = [true, false];
+        let orientations = [Orientation::Portrait, Orientation::Landscape];
+
+        // Small palette for borders so it's obvious on-screen which mode is active
+        let diag_colors = [
+            Rgb565::RED,
+            Rgb565::GREEN,
+            Rgb565::BLUE,
+            Rgb565::YELLOW,
+            Rgb565::MAGENTA,
+            Rgb565::CYAN,
+            Rgb565::WHITE,
+        ];
+
+        println!("Starting display diagnostics — cycling init options.\nSet RUSTYJACK_DISPLAY_DIAG=1 to run this from the device.");
+
+        let mut attempt = 0usize;
+        for &speed in &speeds {
+            for &bgr in &bgr_choices {
+                for &inv in &invert_choices {
+                    for &orient in &orientations {
+                        attempt += 1;
+                        eprintln!("Diag #{}: speed={} bgr={} invert={} orient={:?}", attempt, speed, bgr, inv, orient);
+
+                        // Open fresh SPI and GPIO lines for each attempt so ownership
+                        // is clean between iterations.
+                        let mut spi = SpidevDevice::open("/dev/spidev0.0")
+                            .context("opening SPI device for diag")?;
+
+                        let options = SpidevOptions::new()
+                            .bits_per_word(8)
+                            .max_speed_hz(speed)
+                            .mode(SpiModeFlags::SPI_MODE_0)
+                            .build();
+                        spi.configure(&options).context("configuring spi for diag")?;
+
+                        let mut chip = Chip::new("/dev/gpiochip0").context("opening gpio chip for diag")?;
+
+                        let dc_line = chip.get_line(25).context("getting DC line for diag")?;
+                        let dc_handle = dc_line.request(LineRequestFlags::OUTPUT, 0, "rustyjack-dc")
+                            .context("requesting DC line for diag")?;
+                        let dc = CdevPin::new(dc_handle).context("creating DC pin for diag")?;
+
+                        let rst_line = chip.get_line(24).context("getting RST line for diag")?;
+                        let rst_handle = rst_line.request(LineRequestFlags::OUTPUT, 0, "rustyjack-rst")
+                            .context("requesting RST line for diag")?;
+                        let rst = CdevPin::new(rst_handle).context("creating RST pin for diag")?;
+
+                        let bl_line = chip.get_line(18).context("getting BL line for diag")?;
+                        let bl_handle = bl_line.request(LineRequestFlags::OUTPUT, 1, "rustyjack-bl")
+                            .context("requesting BL line for diag")?;
+                        let _backlight = CdevPin::new(bl_handle).context("creating BL pin for diag")?;
+
+                        let mut delay = Delay {};
+                        // Create the LCD with this combination
+                        let mut lcd = ST7735::new(spi, dc, rst, inv, bgr, LCD_WIDTH as u32, LCD_HEIGHT as u32);
+                        let _ = lcd.init(&mut delay);
+                        let _ = lcd.set_orientation(&orient);
+                        lcd.set_offset(LCD_OFFSET_X, LCD_OFFSET_Y);
+
+                        // Clear and draw a border in a diagnostic colour so it's easy
+                        // to see which configuration is currently being displayed.
+                        lcd.clear(Rgb565::BLACK).ok();
+                        let color = diag_colors[attempt % diag_colors.len()];
+                        Rectangle::new(Point::new(0, 0), Size::new(LCD_WIDTH as u32, LCD_HEIGHT as u32))
+                            .into_styled(PrimitiveStyle::with_stroke(color, 3))
+                            .draw(&mut lcd)
+                            .ok();
+
+                        // Draw a textual line showing the parameters (clamping length)
+                        let info = format!("s={} bgr={} inv={} o={:?}", speed, bgr, inv, orient);
+                        let style = MonoTextStyleBuilder::new().font(&FONT_6X10).text_color(color).build();
+                        let _ = Text::with_baseline(&info, Point::new(2, 60), style, Baseline::Top).draw(&mut lcd);
+
+                        // Wait so user can see the result
+                        sleep(StdDuration::from_millis(900));
+
+                        // Drop lcd, backlight and line handles on loop iteration end so
+                        // they are released and can be requested again next iteration
+                    }
+                }
+            }
+        }
+
+        println!("Display diagnostics completed ({} attempts). If nothing changed try a hardware loopback test or different wiring.", attempt);
+        Ok(())
     }
 
     pub fn update_palette(&mut self, colors: &ColorScheme) {

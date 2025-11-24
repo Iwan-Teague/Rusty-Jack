@@ -46,7 +46,8 @@ exec bash -l
 try {
     # Save script to a temp file and run it over one SSH connection so the commands run sequentially
     $tmp = [System.IO.Path]::GetTempFileName()
-    $remoteScript | Out-File -FilePath $tmp -Encoding ASCII
+    # Ensure the remote script uses LF line endings (Linux expects LF, not Windows CRLF)
+    [System.IO.File]::WriteAllText($tmp, ($remoteScript -replace "`r`n", "`n"), [System.Text.Encoding]::UTF8)
 
     Write-Host "Connecting to Pi..." -ForegroundColor Green
     Write-Host "Please enter password when prompted: Beakyblue123" -ForegroundColor Yellow
@@ -71,7 +72,8 @@ try {
     # Stream local script into ssh stdin in a PowerShell-friendly way
     if (Get-Command ssh -ErrorAction SilentlyContinue) {
         Write-Host "Detected SSH client: $((Get-Command ssh).Path)" -ForegroundColor Gray
-        Get-Content -Raw $tmp | ssh -t ${piUser}@${piHost} "bash -s"
+        # Force a pseudo-tty (-tt) so the remote session has a terminal if the remote script needs one
+        Get-Content -Raw $tmp | ssh -tt ${piUser}@${piHost} "bash -s"
         $sshExit = $LASTEXITCODE
     } else {
         Write-Host "ERROR: 'ssh' command not found on this machine. Please install OpenSSH client or use plink." -ForegroundColor Red

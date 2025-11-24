@@ -31,7 +31,8 @@ exec bash -l
 
 # Save commands to temporary file
 $tempFile = [System.IO.Path]::GetTempFileName()
-$sshCommands | Out-File -FilePath $tempFile -Encoding ASCII
+$sshCommandsLF = $sshCommands -replace "`r`n", "`n"
+[System.IO.File]::WriteAllText($tempFile, $sshCommandsLF, [System.Text.Encoding]::UTF8)
 
 Write-Host "Commands to execute:" -ForegroundColor Yellow
 Write-Host $sshCommands
@@ -69,7 +70,10 @@ try {
         if (Get-Command sshpass -ErrorAction SilentlyContinue) {
                 Write-Host "Using OpenSSH + sshpass to run remote script..." -ForegroundColor Gray
                 # use Get-Content + pipeline instead of shell redirection so this is valid in PowerShell
-                Get-Content -Raw $tempFile | sshpass -p $piPassword ssh -o StrictHostKeyChecking=no -t ${piUser}@${piHost} "bash -s"
+                # read the temp file content (already written with LF-only newlines)
+                $scriptText = Get-Content -Raw $tempFile
+                $lfScript = $scriptText -replace "`r`n", "`n"
+                $lfScript | sshpass -p $piPassword ssh -o StrictHostKeyChecking=no -tt ${piUser}@${piHost} "bash -s"
                 $sshExit = $LASTEXITCODE
         }
         else {
@@ -81,7 +85,9 @@ try {
             else {
                 Write-Host "No sshpass found, falling back to interactive OpenSSH. You will be prompted for the password." -ForegroundColor Yellow
                 # Feed script to single SSH session so commands run sequentially and then exec into interactive shell
-                Get-Content -Raw $tempFile | ssh -t ${piUser}@${piHost} "bash -s"
+                # ensure LF-only script data and force pseudo-tty with -tt
+                $scriptText = Get-Content -Raw $tempFile
+                $scriptText | ssh -tt ${piUser}@${piHost} "bash -s"
                 $sshExit = $LASTEXITCODE
             }
         }

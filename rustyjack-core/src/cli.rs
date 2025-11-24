@@ -188,6 +188,8 @@ pub enum WifiCommand {
     /// Manage routing/default interface
     #[command(subcommand)]
     Route(WifiRouteCommand),
+    /// Launch deauthentication attack on target network
+    Deauth(WifiDeauthArgs),
 }
 
 #[derive(Args, Debug)]
@@ -212,6 +214,22 @@ pub struct WifiSwitchArgs {
 pub struct WifiScanArgs {
     #[arg(long)]
     pub interface: Option<String>,
+}
+
+#[derive(Args, Debug)]
+pub struct WifiDeauthArgs {
+    /// Target network SSID
+    #[arg(long)]
+    pub ssid: String,
+    /// Interface to use for attack (must support monitor mode)
+    #[arg(long)]
+    pub interface: String,
+    /// Duration in seconds (default: 60)
+    #[arg(long, default_value_t = 60)]
+    pub duration: u32,
+    /// Number of deauth packets per burst (default: 10)
+    #[arg(long, default_value_t = 10)]
+    pub packets: u32,
 }
 
 #[derive(Subcommand, Debug)]
@@ -333,6 +351,7 @@ pub enum LootKind {
     Nmap,
     Responder,
     Dnsspoof,
+    Aircrack,
 }
 
 #[derive(Args, Debug)]

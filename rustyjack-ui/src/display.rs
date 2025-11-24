@@ -187,7 +187,7 @@ impl Display {
     /// Run a diagnostic sequence on the LCD — cycles a few common SPI speeds
     /// and ST7735 init parameter combinations so you can visually identify
     /// a configuration that makes the module render correctly.
-    pub fn run_diagnostics(colors: &ColorScheme) -> Result<()> {
+    pub fn run_diagnostics(_colors: &ColorScheme) -> Result<()> {
         // Common speeds to try (some modules are sensitive to speed)
         let speeds = [1_000_000u32, 2_000_000u32, 4_000_000u32, 8_000_000u32, 12_000_000u32];
         let bgr_choices = [true, false];

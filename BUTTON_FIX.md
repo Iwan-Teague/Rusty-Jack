@@ -24,31 +24,35 @@ Buttons and joystick on the Waveshare 1.44" LCD HAT were not responding to input
 
 ### The Fix
 
-**BEFORE** (broken):
-```rust
-let handle = line.request(
-    LineRequestFlags::INPUT,  // Missing BIAS_PULL_UP!
-    1,
-    "rustyjack-ui",
-)
+**Root Cause**: The `linux-embedded-hal 0.4` crate doesn't expose the `BIAS_PULL_UP` flag from the underlying `gpio_cdev` library.
+
+**Solution**: Use the kernel-level pull-up configuration via `/boot/config.txt`:
+
+```bash
+gpio=6,19,5,26,13,21,20,16=pu
 ```
 
-**AFTER** (fixed):
-```rust
-let handle = line.request(
-    LineRequestFlags::INPUT | LineRequestFlags::BIAS_PULL_UP,  // Pull-up enabled!
-    1,
-    "rustyjack-ui",
-)
-```
+This line is automatically added by `install_rustyjack.sh` and takes effect on reboot.
+
+**Code Update**:
+- Removed attempt to use unavailable `BIAS_PULL_UP` flag
+- Added documentation comments explaining pull-ups are configured via config.txt
+- The installer already handles this configuration automatically
 
 ## Why This Matters
 
-According to Waveshare's official documentation and the Linux GPIO subsystem:
+According to Waveshare's official documentation:
 
 1. **Waveshare HAT Design**: Buttons are active-low with NO external pull-ups on the PCB
-2. **Requires Internal Pull-Ups**: Without pull-ups, GPIO pins float and read random values
-3. **Correct Driver Usage**: `gpio_cdev` with `BIAS_PULL_UP` flag is the proper way to enable internal pull-resistors
+2. **Requires Pull-Ups**: Without pull-ups, GPIO pins float and read random values
+3. **Kernel Configuration**: The `/boot/config.txt` method is the standard approach for Raspberry Pi GPIO pull-up configuration
+4. **Automatic Setup**: The `install_rustyjack.sh` script adds the required line automatically
+
+### Why Not Code-Level Pull-Ups?
+
+The `linux-embedded-hal 0.4` crate uses an older version of `gpio_cdev` that doesn't expose the `BIAS_PULL_UP` flag. While newer versions of the GPIO character device API support programmatic pull-up configuration, the crate version needed for `embedded-hal 1.0` compatibility doesn't provide this feature.
+
+**The kernel-level config.txt approach is the standard solution** recommended by Raspberry Pi Foundation and Waveshare.
 
 ## Verification Against Official Specs
 
@@ -61,37 +65,42 @@ From [Waveshare 1.44" LCD HAT Wiki](https://www.waveshare.com/wiki/1.44inch_LCD_
 This confirms buttons REQUIRE pull-ups (either via config.txt OR programmatically via GPIO flags).
 
 ### Your Implementation
-- ✅ Using modern `gpio_cdev` (character device) API
+- ✅ Using modern `gpio_cdev` (character device) API via `linux-embedded-hal`
 - ✅ Correct pin mapping matching Waveshare spec
 - ✅ Active-low detection logic (`is_pressed() returns true when value == 0`)
-- ✅ **NOW FIXED**: Explicit `BIAS_PULL_UP` flag enables internal pull resistors
+- ✅ **Pull-ups configured via config.txt** - installer handles this automatically
+- ✅ **Reboot activates pull-ups** - kernel applies config on boot
 
 ## Deployment
 
 ### Files Changed
-1. `rustyjack-ui/src/input.rs` - Added `BIAS_PULL_UP` flag to button GPIO configuration
-2. `install_rustyjack.sh` - Already includes `gpio=...=pu` config.txt entry as backup
-3. `WAVESHARE_PINS.md` - Updated with testing commands and troubleshooting
+1. `rustyjack-ui/src/input.rs` - Added documentation explaining pull-up configuration
+2. `rustyjack-ui/src/display.rs` - Fixed unused variable warning
+3. `install_rustyjack.sh` - Already includes `gpio=...=pu` config.txt entry ✅
+4. `WAVESHARE_PINS.md` - Updated with testing commands and troubleshooting
 
 ### Deploy to Pi
+
+**IMPORTANT**: You must reboot after running the installer for GPIO pull-ups to take effect!
 
 ```bash
 # On Windows (push changes):
 cd C:\Users\teagu\Desktop\Rustyjack
 git add .
-git commit -m "Fix button input - enable GPIO pull-ups"
+git commit -m "Fix button input - use config.txt pull-ups and fix warnings"
 git push
 
 # On Pi Zero 2 W:
 cd ~/Rustyjack
 git pull
-sudo systemctl stop rustyjack
-cd rustyjack-ui
-cargo build --release
-sudo cp target/release/rustyjack-ui /usr/local/bin/
-sudo systemctl start rustyjack
 
-# Watch logs to confirm buttons work:
+# Run installer to ensure config.txt has pull-ups
+sudo ./install_rustyjack.sh
+
+# REBOOT to apply GPIO pull-up configuration
+sudo reboot
+
+# After reboot, verify buttons work:
 sudo journalctl -u rustyjack -f
 ```
 
@@ -123,8 +132,19 @@ sudo systemctl start rustyjack
 ### GPIO Character Device API
 Your code correctly uses the modern Linux GPIO interface:
 - **Device**: `/dev/gpiochip0` (BCM2835 GPIO controller)
-- **Method**: `gpio_cdev` crate (Rust bindings for `<linux/gpio.h>`)
-- **Flags**: `LineRequestFlags::INPUT | LineRequestFlags::BIAS_PULL_UP`
+- **Method**: `gpio_cdev` crate via `linux-embedded-hal`
+- **Pull-ups**: Configured at kernel level via `/boot/config.txt`
+
+### Pull-Up Configuration Methods
+1. **Kernel-level (USED)**: `gpio=6,19,5,26,13,21,20,16=pu` in config.txt
+   - Applied during boot by kernel
+   - Persistent across all applications
+   - Standard Raspberry Pi approach
+   
+2. **Programmatic (NOT AVAILABLE)**: `BIAS_PULL_UP` flag
+   - Requires newer `gpio_cdev` library version
+   - Not exposed in `linux-embedded-hal 0.4`
+   - Would conflict with embedded-hal 1.0 compatibility
 
 ### Pull-Up Resistor Values
 Raspberry Pi internal pull-ups are typically:
@@ -132,16 +152,16 @@ Raspberry Pi internal pull-ups are typically:
 - **Drive**: Sufficient for Waveshare button matrix
 - **Alternative**: config.txt `gpio=6,19,5,26,13,21,20,16=pu` sets kernel-level pull-ups
 
-### Why BIAS_PULL_UP is Needed
+### Why Pull-Ups Are Needed
 Without pull-ups:
 - GPIO pin floats between 0V and 3.3V
 - Reads unstable/random values (0 or 1 unpredictably)
 - Button presses may not register or trigger incorrectly
 
-With pull-ups:
+With pull-ups (via config.txt):
 - Pin pulled to 3.3V (reads as 1) when button open
 - Button press grounds pin to 0V (reads as 0)
-- Stable, reliable detection
+- Stable, reliable detection after reboot
 
 ## Compatibility Matrix
 
@@ -208,17 +228,18 @@ ls -l /dev/gpiochip0
 
 ## Summary
 
-✅ **Root Cause**: Missing `BIAS_PULL_UP` flag in GPIO line request  
-✅ **Fix Applied**: Added `| LineRequestFlags::BIAS_PULL_UP` to input.rs  
-✅ **Driver Compatibility**: Confirmed `linux-embedded-hal 0.4` + `gpio_cdev` is correct for Pi Zero 2 W  
+✅ **Root Cause**: Buttons need pull-ups; config.txt is the standard method for RPi  
+✅ **Fix Applied**: Installer adds `gpio=6,19,5,26,13,21,20,16=pu` to config.txt  
+✅ **Requires Reboot**: GPIO configuration takes effect on next boot  
+✅ **Driver Compatibility**: `linux-embedded-hal 0.4` is correct for Pi Zero 2 W  
 ✅ **Hardware Verified**: Waveshare 1.44" HAT button pinout matches your code  
-✅ **Backup Method**: install_rustyjack.sh adds config.txt pull-up entry  
 
-Your Rust drivers are correct and properly integrated. The single missing flag has been added.
+Your Rust drivers are correct and properly integrated. The installer handles the GPIO configuration automatically, but **you must reboot** for it to take effect.
 
 ---
 
 **Last Updated**: November 24, 2024  
 **Tested Hardware**: Raspberry Pi Zero 2 W + Waveshare 1.44" LCD HAT  
 **Issue**: Button input not working  
-**Status**: FIXED ✅
+**Solution**: Reboot after running installer to apply GPIO pull-up config  
+**Status**: DOCUMENTED ✅

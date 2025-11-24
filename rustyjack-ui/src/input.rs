@@ -34,11 +34,12 @@ mod platform {
                 .get_line(pin)
                 .with_context(|| format!("requesting GPIO line {}", pin))?;
             // Waveshare HAT buttons are active-low (pressed = 0, released = 1).
-            // We need INPUT with internal pull-up enabled so they read high when
-            // not pressed. The default value (1) is the initial state.
+            // Pull-ups are configured via /boot/config.txt (gpio=6,19,5,26,13,21,20,16=pu)
+            // which the installer sets automatically. The default value of 1 represents
+            // the normal unpressed state (pulled high).
             let handle = line
                 .request(
-                    LineRequestFlags::INPUT | LineRequestFlags::BIAS_PULL_UP,
+                    LineRequestFlags::INPUT,
                     1,
                     "rustyjack-ui",
                 )

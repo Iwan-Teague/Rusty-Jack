@@ -137,7 +137,16 @@ impl Display {
         // Try RGB mode with inverted colors (common fix for white screen)
         let mut lcd = ST7735::new(spi, dc, rst, true, true, LCD_WIDTH as u32, LCD_HEIGHT as u32);
         lcd.init(&mut delay).map_err(|_| anyhow::anyhow!("LCD init failed"))?;
-        lcd.set_orientation(&Orientation::Portrait).map_err(|_| anyhow::anyhow!("LCD orientation failed"))?;
+        // Rotate the display 90° clockwise by default (Landscape). Many Waveshare
+        // HATs look better in landscape mode on the Pi Zero form factor.
+        // Allow override with RUSTYJACK_DISPLAY_ROTATION={portrait|landscape}
+        let orientation = match std::env::var("RUSTYJACK_DISPLAY_ROTATION").as_deref() {
+            Ok("portrait") => Orientation::Portrait,
+            Ok("landscape") => Orientation::Landscape,
+            // fallback default: rotate 90° clockwise
+            _ => Orientation::Landscape,
+        };
+        lcd.set_orientation(&orientation).map_err(|_| anyhow::anyhow!("LCD orientation failed"))?;
         lcd.set_offset(LCD_OFFSET_X, LCD_OFFSET_Y);
         
         // Clear screen to black on startup to test display is working

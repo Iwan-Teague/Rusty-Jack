@@ -97,15 +97,15 @@ Most common alternatives:
 3. **Lower SPI speed**: Change `12_000_000` to `4_000_000` Hz
 
 ### Step 4: Verify Hardware Connections
-Ensure your ST7735 display is connected to:
+Ensure your ST7735 display is connected to (Waveshare 1.44" HAT wiring):
 - **VCC** → 3.3V (Pin 1 or 17)
 - **GND** → Ground (Pin 6)
 - **SCL** → GPIO 11 (Pin 23)
 - **SDA** → GPIO 10 (Pin 19)
-- **RES** → GPIO 24 (Pin 18)
+- **RES** → GPIO 27 (Pin 13)  # corrected for Waveshare HAT
 - **DC** → GPIO 25 (Pin 22)
 - **CS** → GPIO 8 (Pin 24)
-- **BL** → GPIO 18 (Pin 12)
+- **BL** → GPIO 24 (Pin 18)   # corrected for Waveshare HAT
 
 If your HAT uses different pins, edit `display.rs` lines 72-86.
 
@@ -165,5 +165,9 @@ If issues persist:
 **SPI Speed**: 12 MHz
 **Color Mode**: RGB565
 **Inverted**: Yes (changed from No)
-**Orientation**: Portrait
+**Orientation**: Landscape (90° clockwise by default)
+
+You can override the default rotation by setting the environment variable
+`RUSTYJACK_DISPLAY_ROTATION` to either `portrait` or `landscape`. The systemd
+unit created by `install_rustyjack.sh` sets the service default to `landscape`.
 **Offset**: X=2, Y=1

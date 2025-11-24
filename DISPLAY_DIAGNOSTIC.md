@@ -9,6 +9,7 @@
 - **RST Pin**: GPIO 27 (CORRECTED for Waveshare HAT)
 - **Backlight Pin**: GPIO 24 (CORRECTED for Waveshare HAT)
 - **Offset**: X=2, Y=1
+- **Orientation**: Landscape (90° clockwise) — default. Can be overridden with RUSTYJACK_DISPLAY_ROTATION=portrait
 
 ### Common Causes & Fixes:
 

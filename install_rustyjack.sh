@@ -200,6 +200,7 @@ Wants=network-online.target
 Type=simple
 WorkingDirectory=$PROJECT_ROOT
 ExecStart=/usr/local/bin/rustyjack-ui
+Environment=RUSTYJACK_DISPLAY_ROTATION=landscape
 Restart=on-failure
 RestartSec=5
 User=root

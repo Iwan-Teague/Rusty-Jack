@@ -159,23 +159,24 @@ BUILD_CHOICE="${BUILD_CHOICE:-1}"
 if [ "$BUILD_CHOICE" = "2" ]; then
   warn "Performing CLEAN build (cargo clean)..."
   info "This will take longer but ensures a fresh build."
-  (cd "$PROJECT_ROOT/rustyjack-ui" && cargo clean) || warn "cargo clean failed"
+  (cd "$PROJECT_ROOT" && cargo clean) || warn "cargo clean failed"
   info "Cache cleared. Starting fresh compilation..."
 else
   info "Performing INCREMENTAL build (faster)..."
 fi
 
 # Build rustyjack-ui (this also compiles rustyjack-core library as a dependency)
+# Build from workspace root so all crates share the same target directory
 info "Building rustyjack-ui (debug)..."
-(cd "$PROJECT_ROOT/rustyjack-ui" && cargo build) || fail "Failed to build rustyjack-ui"
+(cd "$PROJECT_ROOT" && cargo build -p rustyjack-ui) || fail "Failed to build rustyjack-ui"
 
-# Verify the binary exists (debug builds are in target/debug/)
-if [ ! -f "$PROJECT_ROOT/rustyjack-ui/target/debug/rustyjack-ui" ]; then
+# Verify the binary exists (workspace builds go to root target/debug/)
+if [ ! -f "$PROJECT_ROOT/target/debug/rustyjack-ui" ]; then
   fail "rustyjack-ui binary not found after build!"
 fi
 
 # Install DEBUG binary
-sudo install -Dm755 "$PROJECT_ROOT/rustyjack-ui/target/debug/rustyjack-ui" /usr/local/bin/rustyjack-ui
+sudo install -Dm755 "$PROJECT_ROOT/target/debug/rustyjack-ui" /usr/local/bin/rustyjack-ui
 
 # Verify installation
 if [ -x /usr/local/bin/rustyjack-ui ]; then

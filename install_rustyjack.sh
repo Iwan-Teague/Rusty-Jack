@@ -136,16 +136,46 @@ if [ ! -d "$PROJECT_ROOT" ]; then
 fi
 info "Using project root: $PROJECT_ROOT"
 
-# Build Rust binaries
-info "Building rustyjack-core..."
+# Stop the service before rebuilding to release the binary
+info "Stopping rustyjack service for rebuild..."
+sudo systemctl stop rustyjack.service 2>/dev/null || true
+
+# Remove old binaries to ensure fresh install
+info "Removing old binaries..."
+sudo rm -f /usr/local/bin/rustyjack-ui /usr/local/bin/rustyjack-core
+
+# Clean old build artifacts to force full rebuild
+info "Cleaning build cache for fresh compilation..."
+(cd "$PROJECT_ROOT/rustyjack-core" && cargo clean) 2>/dev/null || true
+(cd "$PROJECT_ROOT/rustyjack-ui" && cargo clean) 2>/dev/null || true
+
+# Build Rust binaries with fresh compilation
+info "Building rustyjack-core (fresh build)..."
 (cd "$PROJECT_ROOT/rustyjack-core" && cargo build --release) || fail "Failed to build rustyjack-core"
-info "Building rustyjack-ui..."
+info "Building rustyjack-ui (fresh build)..."
 (cd "$PROJECT_ROOT/rustyjack-ui" && cargo build --release) || fail "Failed to build rustyjack-ui"
+
+# Verify the binaries exist before installing
+if [ ! -f "$PROJECT_ROOT/rustyjack-core/target/release/rustyjack-core" ]; then
+  fail "rustyjack-core binary not found after build!"
+fi
+if [ ! -f "$PROJECT_ROOT/rustyjack-ui/target/release/rustyjack-ui" ]; then
+  fail "rustyjack-ui binary not found after build!"
+fi
 
 # Install binaries (only core and ui - wireless is a library)
 sudo install -Dm755 "$PROJECT_ROOT/rustyjack-core/target/release/rustyjack-core" /usr/local/bin/rustyjack-core
 sudo install -Dm755 "$PROJECT_ROOT/rustyjack-ui/target/release/rustyjack-ui" /usr/local/bin/rustyjack-ui
-info "Installed rustyjack-core and rustyjack-ui to /usr/local/bin/"
+
+# Verify installation
+if [ -x /usr/local/bin/rustyjack-ui ] && [ -x /usr/local/bin/rustyjack-core ]; then
+  info "Installed rustyjack-core and rustyjack-ui to /usr/local/bin/"
+  # Show binary timestamps to confirm they're new
+  info "Binary timestamps:"
+  ls -la /usr/local/bin/rustyjack-ui /usr/local/bin/rustyjack-core
+else
+  fail "Failed to install binaries to /usr/local/bin/"
+fi
 
 # ---- 4: WiFi attack setup -----------------------------------
 step "Setting up WiFi attack environment..."

@@ -13,7 +13,7 @@ use crate::frames::{DeauthFrame, DeauthReason, MacAddress};
 use crate::interface::WirelessInterface;
 use crate::inject::{Injector, InjectionStats};
 use crate::capture::{PacketCapture, CaptureFilter, CapturedPacket};
-use crate::handshake::{HandshakeCapture, HandshakeState};
+use crate::handshake::HandshakeCapture;
 
 /// Deauthentication attack configuration
 #[derive(Debug, Clone)]

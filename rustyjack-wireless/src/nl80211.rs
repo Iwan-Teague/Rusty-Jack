@@ -3,16 +3,8 @@
 //! This module provides low-level access to the Linux wireless subsystem
 //! via the nl80211 netlink interface.
 
-use std::ffi::CString;
 use std::fs;
-use std::io::{Read, Write};
-use std::os::unix::io::RawFd;
-
-use nix::sys::socket::{
-    socket, bind, sendto, recvfrom,
-    AddressFamily, SockType, SockFlag, SockaddrLike,
-};
-use nix::libc;
+use std::process::Command;
 
 use crate::error::{WirelessError, Result};
 
@@ -406,9 +398,9 @@ pub fn set_mac_address(name: &str, mac: &[u8; 6]) -> Result<()> {
 }
 
 /// Check if interface supports monitor mode
-pub fn supports_monitor_mode(name: &str) -> Result<bool> {
-    use std::process::Command;
-    
+pub fn supports_monitor_mode(_name: &str) -> Result<bool> {
+    // Query iw for phy capabilities
+    // Note: _name is reserved for future per-interface checks
     let output = Command::new("iw")
         .args(["phy"])
         .output()

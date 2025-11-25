@@ -3,13 +3,11 @@
 //! This module provides the ability to inject raw 802.11 frames
 //! using Linux raw sockets.
 
-use std::ffi::CString;
 use std::io;
 use std::mem;
 use std::os::unix::io::{AsRawFd, RawFd};
 
-use nix::libc::{self, c_int, c_void, sockaddr_ll, AF_PACKET, SOCK_RAW, ETH_P_ALL};
-use nix::sys::socket::{socket, AddressFamily, SockType, SockFlag, SockProtocol};
+use nix::libc::{self, c_int, c_void, sockaddr_ll, AF_PACKET, SOCK_RAW};
 
 use crate::error::{WirelessError, Result};
 use crate::frames::{DeauthFrame, MacAddress};

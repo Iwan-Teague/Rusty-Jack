@@ -5,7 +5,6 @@
 
 use std::time::{Duration, Instant};
 
-use crate::error::{WirelessError, Result};
 use crate::frames::MacAddress;
 use crate::capture::CapturedPacket;
 use byteorder::{BigEndian, ByteOrder};

@@ -123,11 +123,12 @@ impl FrameType {
     }
 }
 
-/// 802.11 Frame Subtype (4 bits) - Management frames
+/// 802.11 Frame Subtype (4 bits) - Management frames only
+/// Note: Subtypes are only meaningful within a frame type context
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum FrameSubtype {
-    // Management subtypes
+    // Management subtypes (0-15)
     AssociationRequest = 0,
     AssociationResponse = 1,
     ReassociationRequest = 2,
@@ -142,15 +143,6 @@ pub enum FrameSubtype {
     Deauthentication = 12,
     Action = 13,
     ActionNoAck = 14,
-    
-    // Data subtypes (when type is Data)
-    DataOnly = 0,
-    DataCfAck = 1,
-    DataCfPoll = 2,
-    DataCfAckPoll = 3,
-    Null = 4,
-    QosData = 8,
-    QosNull = 12,
     
     /// Unknown subtype
     Unknown = 255,
@@ -416,7 +408,7 @@ impl DeauthFrame {
 pub type DisassocFrame = DeauthFrame;
 
 /// Generic 802.11 frame wrapper for parsing captured packets
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Ieee80211Frame {
     /// Raw frame data
     data: Vec<u8>,

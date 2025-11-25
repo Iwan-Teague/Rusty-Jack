@@ -5,8 +5,7 @@
 use std::time::Duration;
 use std::thread;
 
-use crate::error::{WirelessError, Result};
-use crate::interface::WirelessInterface;
+use crate::error::Result;
 use crate::radiotap::channel_to_frequency;
 
 /// WiFi channel information

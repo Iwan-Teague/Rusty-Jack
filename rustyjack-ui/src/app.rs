@@ -830,7 +830,7 @@ impl App {
         });
         self.show_message("Network", details.iter().map(|s| s.as_str()))?;
 
-        let actions = vec!["Connect".to_string(), "Set as Target".to_string(), "Back".to_string()];
+        let actions = vec!["Connect".to_string(), "Set Target".to_string(), "Back".to_string()];
         if let Some(choice) = self.choose_from_list("Network action", &actions)? {
             match choice {
                 0 => {
@@ -843,23 +843,27 @@ impl App {
                     }
                 }
                 1 => {
-                    // Set as Target for deauth attack
-                    self.config.settings.target_network = ssid.clone();
-                    self.config.settings.target_bssid = network.bssid.clone().unwrap_or_default();
-                    self.config.settings.target_channel = network.channel.unwrap_or(0) as u8;
-                    
-                    // Save config
-                    let config_path = self.root.join("gui_conf.json");
-                    if let Err(e) = self.config.save(&config_path) {
-                        self.show_message("Error", [format!("Failed to save: {}", e)])?;
+                    // Set as Target for deauth attack — require a BSSID to be present
+                    if network.bssid.is_none() {
+                        self.show_message("Target Error", ["No BSSID available", "Cannot set as target"])?;
                     } else {
-                        self.show_message("Target Set", [
-                            &format!("SSID: {}", ssid),
-                            &format!("BSSID: {}", self.config.settings.target_bssid),
-                            &format!("Channel: {}", self.config.settings.target_channel),
-                            "",
-                            "Ready for Deauth Attack"
-                        ])?;
+                        self.config.settings.target_network = ssid.clone();
+                        self.config.settings.target_bssid = network.bssid.clone().unwrap_or_default();
+                        self.config.settings.target_channel = network.channel.unwrap_or(0) as u8;
+
+                        // Save config
+                        let config_path = self.root.join("gui_conf.json");
+                        if let Err(e) = self.config.save(&config_path) {
+                            self.show_message("Error", [format!("Failed to save: {}", e)])?;
+                        } else {
+                            self.show_message("Target Set", [
+                                &format!("SSID: {}", ssid),
+                                &format!("BSSID: {}", self.config.settings.target_bssid),
+                                &format!("Channel: {}", self.config.settings.target_channel),
+                                "",
+                                "Ready for Deauth Attack",
+                            ])?;
+                        }
                     }
                 }
                 _ => {}
@@ -1517,8 +1521,15 @@ impl App {
                     };
                     let signal = net.signal_dbm.map(|s| format!("{}dB", s)).unwrap_or_default();
                     let ch = net.channel.map(|c| format!("c{}", c)).unwrap_or_default();
-                    let lock = if net.encrypted { "*" } else { "" };
-                    labels.push(format!("{}{} {} {}", lock, ssid_display, signal, ch));
+                    // Mark target networks with '*' if the ssid or bssid matches
+                    // the currently configured target; show a lock indicator 'L'
+                    // for encrypted networks so '*' is reserved for the selected target.
+                    let bssid = net.bssid.as_deref().unwrap_or("");
+                    let is_target = (!self.config.settings.target_bssid.is_empty() && self.config.settings.target_bssid == bssid)
+                        || (!self.config.settings.target_network.is_empty() && self.config.settings.target_network == ssid);
+                    let target_marker = if is_target { "*" } else { " " };
+                    let lock = if net.encrypted { "L" } else { " " };
+                    labels.push(format!("{}{} {} {} {}", target_marker, lock, ssid_display, signal, ch));
                 }
                 
                 // Interactive network list - loop until user backs out

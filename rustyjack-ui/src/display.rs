@@ -217,8 +217,14 @@ impl Display {
         lcd.set_orientation(&orientation).map_err(|_| anyhow::anyhow!("LCD orientation failed"))?;
         lcd.set_offset(LCD_OFFSET_X, LCD_OFFSET_Y);
         
-        // Clear screen to black on startup
-        lcd.clear(Rgb565::BLACK).map_err(|_| anyhow::anyhow!("LCD clear failed"))?;
+        // Clear screen to black on startup — make sure we clear to the full
+        // logical buffer to avoid stray pixels along edges on some modules.
+        // Use an explicit rectangle slightly larger than the reported visible
+        // LCD size so the driver buffer area is covered.
+        Rectangle::new(Point::new(0, 0), Size::new((LCD_WIDTH as u32) + 1, (LCD_HEIGHT as u32) + 1))
+            .into_styled(PrimitiveStyle::with_fill(Rgb565::BLACK))
+            .draw(&mut lcd)
+            .map_err(|_| anyhow::anyhow!("LCD clear failed"))?;
 
         let palette = Palette::from_scheme(colors);
         let text_style_regular = MonoTextStyleBuilder::new()
@@ -390,7 +396,8 @@ impl Display {
                         // to see which configuration is currently being displayed.
                         lcd.clear(Rgb565::BLACK).ok();
                         let color = diag_colors[attempt % diag_colors.len()];
-                        Rectangle::new(Point::new(0, 0), Size::new(LCD_WIDTH as u32, LCD_HEIGHT as u32))
+                                        // Request display area to include the final hardware column
+                                        Rectangle::new(Point::new(0, 0), Size::new((LCD_WIDTH as u32) + 1, (LCD_HEIGHT as u32) + 1))
                             .into_styled(PrimitiveStyle::with_stroke(color, 3))
                             .draw(&mut lcd)
                             .ok();
@@ -434,7 +441,7 @@ impl Display {
         let style = PrimitiveStyle::with_fill(self.palette.background);
         Rectangle::new(
             Point::new(0, 0),
-            Size::new(LCD_WIDTH as u32, LCD_HEIGHT as u32),
+            Size::new((LCD_WIDTH as u32) + 1, (LCD_HEIGHT as u32) + 1),
         )
         .into_styled(style)
         .draw(&mut self.lcd)
@@ -445,7 +452,9 @@ impl Display {
     pub fn show_splash_screen(&mut self, image_path: &Path) -> Result<()> {
         // Clear screen to black
         let style = PrimitiveStyle::with_fill(Rgb565::BLACK);
-        Rectangle::new(Point::new(0, 0), Size::new(LCD_WIDTH.into(), LCD_HEIGHT.into()))
+        // If clearing the simulated display in non-linux builds, cover the
+        // full buffer area including the last column/row used by hardware
+        Rectangle::new(Point::new(0, 0), Size::new((LCD_WIDTH.into()) + 1, (LCD_HEIGHT.into()) + 1))
             .into_styled(style)
             .draw(&mut self.lcd)
             .map_err(|_| anyhow::anyhow!("Failed to clear screen"))?;
@@ -526,12 +535,14 @@ impl Display {
         let style = PrimitiveStyle::with_fill(Rgb565::new(20, 20, 20));
         Rectangle::new(
             Point::new(0, 0),
-            Size::new(LCD_WIDTH as u32, 14)
+            Size::new((LCD_WIDTH as u32) + 1, 14)
         )
         .into_styled(style)
         .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
 
-        let temp_text = format!("{:.0}°C", status.temp_c);
+        // Use plain 'C' rather than degree symbol — some Pi terminals/GUIs
+        // render the Unicode degree symbol as '?', so keep ASCII for reliability.
+        let temp_text = format!("{:.0}C", status.temp_c);
         Text::with_baseline(&temp_text, Point::new(4, 2), self.text_style_regular, Baseline::Top)
             .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
         
@@ -584,7 +595,7 @@ impl Display {
             if idx == selected {
                 Rectangle::new(
                     Point::new(0, y - 2),
-                    Size::new((LCD_WIDTH) as u32, 12)
+                    Size::new((LCD_WIDTH as u32) + 1, 12)
                 )
                 .into_styled(PrimitiveStyle::with_fill(self.palette.selected_background))
                 .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;

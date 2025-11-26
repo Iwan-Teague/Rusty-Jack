@@ -22,6 +22,9 @@ path = "src/lib.rs"
 thiserror = "1.0"
 anyhow = "1.0"
 
+# System calls (for root check, etc.)
+libc = "0.2"
+
 # Logging
 log = "0.4"
 tracing = { version = "0.1", optional = true }

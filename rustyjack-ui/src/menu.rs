@@ -30,14 +30,18 @@ pub enum MenuAction {
     KarmaAttack,
     /// Attack pipelines - automated sequences
     AttackPipeline(PipelineType),
-    /// Stealth settings submenu
-    StealthSettings,
-    /// Randomize MAC address
-    RandomizeMac,
+    /// Toggle MAC randomization on/off
+    ToggleMacRandomization,
+    /// Randomize MAC address now
+    RandomizeMacNow,
     /// Restore original MAC
     RestoreMac,
     /// Set TX power
     SetTxPower(TxPowerSetting),
+    /// Toggle passive mode
+    TogglePassiveMode,
+    /// Enter passive recon mode
+    PassiveRecon,
     /// Placeholder for informational entries (no action)
     ShowInfo,
 }
@@ -101,7 +105,7 @@ impl MenuTree {
         nodes.insert("aw", MenuNode::Static(wifi_menu));
         nodes.insert("as", MenuNode::Static(settings_menu));
         nodes.insert("ap", MenuNode::Static(pipeline_menu));
-        nodes.insert("ast", MenuNode::Static(stealth_menu));
+        nodes.insert("ao", MenuNode::Static(obfuscation_menu));  // Obfuscation & Evasion
         nodes.insert("atx", MenuNode::Static(tx_power_menu));
         Self { nodes }
     }
@@ -136,6 +140,7 @@ fn main_menu() -> Vec<MenuEntry> {
         MenuEntry::new(" Hardware Detect", MenuAction::HardwareDetect),
         MenuEntry::new(" Install WiFi Drivers", MenuAction::InstallWifiDrivers),
         MenuEntry::new(" WiFi Attacks", MenuAction::Submenu("aw")),
+        MenuEntry::new(" Obfuscation", MenuAction::Submenu("ao")),
         MenuEntry::new(" View Dashboards", MenuAction::ViewDashboards),
         MenuEntry::new(" Settings", MenuAction::Submenu("as")),
         MenuEntry::new(" Loot", MenuAction::Submenu("ah")),
@@ -152,7 +157,6 @@ fn wifi_menu() -> Vec<MenuEntry> {
         MenuEntry::new(" PMKID Capture", MenuAction::PmkidCapture),
         MenuEntry::new(" Probe Sniff", MenuAction::ProbeSniff),
         MenuEntry::new(" Crack Handshake", MenuAction::CrackHandshake),
-        MenuEntry::new(" Stealth Options", MenuAction::Submenu("ast")),
         MenuEntry::new(" Connect Network", MenuAction::ConnectKnownNetwork),
     ]
 }
@@ -169,8 +173,23 @@ fn pipeline_menu() -> Vec<MenuEntry> {
 
 fn stealth_menu() -> Vec<MenuEntry> {
     vec![
-        MenuEntry::new(" Randomize MAC", MenuAction::RandomizeMac),
+        MenuEntry::new(" Randomize MAC", MenuAction::RandomizeMacNow),
         MenuEntry::new(" Restore MAC", MenuAction::RestoreMac),
+        MenuEntry::new(" TX Power", MenuAction::Submenu("atx")),
+    ]
+}
+
+/// Obfuscation & Evasion menu - toggles and stealth options
+fn obfuscation_menu() -> Vec<MenuEntry> {
+    vec![
+        // Toggle shows current state - actual label built dynamically in app.rs
+        MenuEntry::new(" MAC Randomize: ???", MenuAction::ToggleMacRandomization),
+        MenuEntry::new(" Randomize Now", MenuAction::RandomizeMacNow),
+        MenuEntry::new(" Restore Original", MenuAction::RestoreMac),
+        MenuEntry::new("", MenuAction::ShowInfo), // Separator
+        MenuEntry::new(" Passive Mode: ???", MenuAction::TogglePassiveMode),
+        MenuEntry::new(" Passive Recon", MenuAction::PassiveRecon),
+        MenuEntry::new("", MenuAction::ShowInfo), // Separator
         MenuEntry::new(" TX Power", MenuAction::Submenu("atx")),
     ]
 }
@@ -242,7 +261,7 @@ pub fn menu_title(id: &str) -> &'static str {
         "aw" => "WiFi Attacks",
         "as" => "Settings",
         "ap" => "Attack Pipelines",
-        "ast" => "Stealth Options",
+        "ao" => "Obfuscation & Evasion",
         "atx" => "TX Power",
         _ => "Menu",
     }

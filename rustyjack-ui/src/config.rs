@@ -211,6 +211,21 @@ pub struct SettingsConfig {
     pub target_bssid: String,
     #[serde(default)]
     pub target_channel: u8,
+    /// Auto-randomize MAC before attacks
+    #[serde(default)]
+    pub mac_randomization_enabled: bool,
+    /// Original MAC address (saved when randomized)
+    #[serde(default)]
+    pub original_mac: String,
+    /// Current (possibly randomized) MAC
+    #[serde(default)]
+    pub current_mac: String,
+    /// TX power level setting (stealth/low/medium/high/max)
+    #[serde(default = "SettingsConfig::default_tx_power")]
+    pub tx_power_level: String,
+    /// Passive mode - no transmissions during recon
+    #[serde(default)]
+    pub passive_mode_enabled: bool,
 }
 
 impl Default for SettingsConfig {
@@ -221,6 +236,11 @@ impl Default for SettingsConfig {
             target_network: Self::default_target_network(),
             target_bssid: String::new(),
             target_channel: 0,
+            mac_randomization_enabled: false,
+            original_mac: String::new(),
+            current_mac: String::new(),
+            tx_power_level: Self::default_tx_power(),
+            passive_mode_enabled: false,
         }
     }
 }
@@ -236,5 +256,9 @@ impl SettingsConfig {
     
     fn default_target_network() -> String {
         String::new()
+    }
+    
+    fn default_tx_power() -> String {
+        "high".to_string()
     }
 }

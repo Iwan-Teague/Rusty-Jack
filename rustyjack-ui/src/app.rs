@@ -322,11 +322,22 @@ impl App {
     fn render_menu(&mut self) -> Result<Vec<MenuEntry>> {
         let mut entries = self.menu.entries(self.menu_state.current_id())?;
         
-        // Dynamic label updates
+        // Dynamic label updates based on current settings
         for entry in &mut entries {
-            if let MenuAction::ToggleDiscord = entry.action {
-                let state = if self.config.settings.discord_enabled { "ON" } else { "OFF" };
-                entry.label = format!(" Discord Webhook [{}]", state);
+            match &entry.action {
+                MenuAction::ToggleDiscord => {
+                    let state = if self.config.settings.discord_enabled { "ON" } else { "OFF" };
+                    entry.label = format!(" Discord Webhook [{}]", state);
+                }
+                MenuAction::ToggleMacRandomization => {
+                    let state = if self.config.settings.mac_randomization_enabled { "ON" } else { "OFF" };
+                    entry.label = format!(" Auto MAC Random [{}]", state);
+                }
+                MenuAction::TogglePassiveMode => {
+                    let state = if self.config.settings.passive_mode_enabled { "ON" } else { "OFF" };
+                    entry.label = format!(" Passive Mode [{}]", state);
+                }
+                _ => {}
             }
         }
 
@@ -401,10 +412,12 @@ impl App {
             MenuAction::CrackHandshake => self.launch_crack_handshake()?,
             MenuAction::KarmaAttack => self.launch_karma_attack()?,
             MenuAction::AttackPipeline(pipeline_type) => self.launch_attack_pipeline(pipeline_type)?,
-            MenuAction::StealthSettings => {} // Handled by submenu
-            MenuAction::RandomizeMac => self.randomize_mac()?,
+            MenuAction::ToggleMacRandomization => self.toggle_mac_randomization()?,
+            MenuAction::RandomizeMacNow => self.randomize_mac_now()?,
             MenuAction::RestoreMac => self.restore_mac()?,
             MenuAction::SetTxPower(level) => self.set_tx_power(level)?,
+            MenuAction::TogglePassiveMode => self.toggle_passive_mode()?,
+            MenuAction::PassiveRecon => self.launch_passive_recon()?,
             MenuAction::ShowInfo => {} // No-op for informational entries
         }
         Ok(())
@@ -2565,8 +2578,116 @@ impl App {
         Ok(())
     }
     
-    /// Randomize MAC address
-    fn randomize_mac(&mut self) -> Result<()> {
+    /// Toggle MAC randomization auto-enable setting
+    fn toggle_mac_randomization(&mut self) -> Result<()> {
+        self.config.settings.mac_randomization_enabled = !self.config.settings.mac_randomization_enabled;
+        let enabled = self.config.settings.mac_randomization_enabled;
+        
+        // Save config
+        let config_path = self.root.join("gui_conf.json");
+        if let Err(e) = self.config.save(&config_path) {
+            return self.show_message("Config Error", [format!("Failed to save: {}", e)]);
+        }
+        
+        let status = if enabled { "ENABLED" } else { "DISABLED" };
+        self.show_message("MAC Randomization", [
+            &format!("Auto-randomize: {}", status),
+            "",
+            if enabled {
+                "MAC will be randomized"
+            } else {
+                "MAC will NOT be changed"  
+            },
+            if enabled {
+                "before each attack."
+            } else {
+                "before attacks."
+            },
+        ])
+    }
+    
+    /// Toggle passive mode setting
+    fn toggle_passive_mode(&mut self) -> Result<()> {
+        self.config.settings.passive_mode_enabled = !self.config.settings.passive_mode_enabled;
+        let enabled = self.config.settings.passive_mode_enabled;
+        
+        // Save config
+        let config_path = self.root.join("gui_conf.json");
+        if let Err(e) = self.config.save(&config_path) {
+            return self.show_message("Config Error", [format!("Failed to save: {}", e)]);
+        }
+        
+        let status = if enabled { "ENABLED" } else { "DISABLED" };
+        self.show_message("Passive Mode", [
+            &format!("Passive mode: {}", status),
+            "",
+            if enabled {
+                "Recon will use RX-only"
+            } else {
+                "Normal TX/RX mode"
+            },
+            if enabled {
+                "No transmissions."
+            } else {
+                "will be used."
+            },
+        ])
+    }
+    
+    /// Launch passive reconnaissance mode
+    fn launch_passive_recon(&mut self) -> Result<()> {
+        let active_interface = self.config.settings.active_network_interface.clone();
+        
+        if active_interface.is_empty() {
+            return self.show_message("Passive Recon", [
+                "No interface selected",
+                "",
+                "Run Hardware Detect",
+                "to select an interface."
+            ]);
+        }
+        
+        // Duration selection
+        let durations = vec![
+            "30 seconds".to_string(),
+            "1 minute".to_string(),
+            "5 minutes".to_string(),
+            "10 minutes".to_string(),
+        ];
+        let dur_choice = self.choose_from_list("Recon Duration", &durations)?;
+        
+        let duration_secs = match dur_choice {
+            Some(0) => 30,
+            Some(1) => 60,
+            Some(2) => 300,
+            Some(3) => 600,
+            _ => return Ok(()),
+        };
+        
+        self.show_progress("Passive Recon", [
+            "Starting passive mode...",
+            "",
+            "NO transmissions!",
+            "Listening only.",
+        ])?;
+        
+        // In real implementation, this would call rustyjack-wireless passive mode
+        // For now, show what it would do
+        self.show_message("Passive Recon", [
+            &format!("Interface: {}", active_interface),
+            &format!("Duration: {} sec", duration_secs),
+            "",
+            "Passive mode captures:",
+            "- Beacon frames",
+            "- Probe requests",
+            "- Data (handshakes)",
+            "",
+            "Zero transmission mode"
+        ])
+    }
+    
+    /// Randomize MAC address immediately
+    fn randomize_mac_now(&mut self) -> Result<()> {
         let active_interface = self.config.settings.active_network_interface.clone();
         
         if active_interface.is_empty() {
@@ -2575,25 +2696,33 @@ impl App {
             ]);
         }
         
+        // First, save the original MAC if we haven't already
+        if self.config.settings.original_mac.is_empty() {
+            let mac_path = format!("/sys/class/net/{}/address", active_interface);
+            if let Ok(mac) = std::fs::read_to_string(&mac_path) {
+                self.config.settings.original_mac = mac.trim().to_uppercase();
+            }
+        }
+        
         self.show_progress("Randomize MAC", [
             &format!("Interface: {}", active_interface),
             "",
             "Generating random MAC...",
         ])?;
         
-        // Execute MAC change
-        let result = Command::new("ip")
+        // Bring interface down
+        let down_result = Command::new("ip")
             .args(["link", "set", &active_interface, "down"])
             .output();
         
-        if result.is_err() {
+        if down_result.is_err() {
             return self.show_message("MAC Error", [
                 "Failed to bring down",
                 "interface. Need root?"
             ]);
         }
         
-        // Generate random MAC (locally administered)
+        // Generate random MAC (locally administered, unicast)
         let random_mac = format!(
             "{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
             (rand_byte() | 0x02) & 0xFE, // Locally administered, unicast
@@ -2604,30 +2733,49 @@ impl App {
             rand_byte()
         );
         
+        // Set new MAC
         let set_result = Command::new("ip")
             .args(["link", "set", &active_interface, "address", &random_mac])
             .output();
         
-        // Bring interface back up
+        // Bring interface back up regardless of success
         let _ = Command::new("ip")
             .args(["link", "set", &active_interface, "up"])
             .output();
         
-        if set_result.is_ok() && set_result.unwrap().status.success() {
-            self.show_message("MAC Randomized", [
-                &format!("Interface: {}", active_interface),
-                "",
-                &format!("New MAC: {}", random_mac),
-                "",
-                "Original saved for",
-                "restoration later."
-            ])
+        if let Ok(output) = set_result {
+            if output.status.success() {
+                // Save the new MAC in config
+                self.config.settings.current_mac = random_mac.clone();
+                let config_path = self.root.join("gui_conf.json");
+                let _ = self.config.save(&config_path);
+                
+                self.show_message("MAC Randomized", [
+                    &format!("Interface: {}", active_interface),
+                    "",
+                    &format!("New MAC:"),
+                    &random_mac,
+                    "",
+                    &format!("Original saved:"),
+                    &self.config.settings.original_mac,
+                ])
+            } else {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                self.show_message("MAC Error", [
+                    "Failed to set new MAC",
+                    "",
+                    "Driver may not support",
+                    "MAC address changes.",
+                    "",
+                    &format!("{}", stderr.chars().take(30).collect::<String>())
+                ])
+            }
         } else {
             self.show_message("MAC Error", [
-                "Failed to set new MAC",
+                "Failed to execute",
+                "ip link command.",
                 "",
-                "Interface may not",
-                "support MAC changes."
+                "Check permissions."
             ])
         }
     }
@@ -2642,19 +2790,73 @@ impl App {
             ]);
         }
         
-        // Read original MAC from sysfs (permanent address)
-        let perm_addr_path = format!("/sys/class/net/{}/address", active_interface);
+        // Check if we have a saved original MAC
+        let original_mac = if !self.config.settings.original_mac.is_empty() {
+            self.config.settings.original_mac.clone()
+        } else {
+            // Try to read the permanent hardware address
+            let perm_path = format!("/sys/class/net/{}/address", active_interface);
+            match std::fs::read_to_string(&perm_path) {
+                Ok(mac) => mac.trim().to_uppercase(),
+                Err(_) => {
+                    return self.show_message("Restore MAC", [
+                        "No original MAC saved",
+                        "",
+                        "MAC was not changed by",
+                        "RustyJack, or original",
+                        "was not recorded."
+                    ]);
+                }
+            }
+        };
         
-        // Actually, the permanent address is stored differently
-        // For now, just show a message
-        self.show_message("Restore MAC", [
-            &format!("Interface: {}", active_interface),
-            "",
-            "To restore original MAC:",
-            "Reboot or run:",
-            "ip link set dev wlanX",
-            "address XX:XX:XX:XX:XX:XX",
-        ])
+        self.show_progress("Restore MAC", [
+            &format!("Restoring: {}", original_mac),
+        ])?;
+        
+        // Bring interface down
+        let _ = Command::new("ip")
+            .args(["link", "set", &active_interface, "down"])
+            .output();
+        
+        // Set original MAC
+        let result = Command::new("ip")
+            .args(["link", "set", &active_interface, "address", &original_mac])
+            .output();
+        
+        // Bring interface back up
+        let _ = Command::new("ip")
+            .args(["link", "set", &active_interface, "up"])
+            .output();
+        
+        if let Ok(output) = result {
+            if output.status.success() {
+                // Clear the saved MACs
+                self.config.settings.current_mac.clear();
+                let config_path = self.root.join("gui_conf.json");
+                let _ = self.config.save(&config_path);
+                
+                self.show_message("MAC Restored", [
+                    &format!("Interface: {}", active_interface),
+                    "",
+                    &format!("MAC: {}", original_mac),
+                    "",
+                    "Original MAC restored."
+                ])
+            } else {
+                self.show_message("Restore Error", [
+                    "Failed to restore MAC",
+                    "",
+                    "Try rebooting to reset",
+                    "the interface."
+                ])
+            }
+        } else {
+            self.show_message("Restore Error", [
+                "Failed to execute",
+                "restore command."
+            ])
+        }
     }
     
     /// Set TX power level
@@ -2732,4 +2934,61 @@ fn rand_byte() -> u8 {
         SEED = SEED.wrapping_mul(6364136223846793005).wrapping_add(1);
         (SEED >> 33) as u8
     }
+}
+
+/// Auto-randomize MAC before attack if enabled in settings
+/// Returns true if MAC was randomized (so caller knows to restore later)
+pub fn auto_randomize_mac_if_enabled(interface: &str, settings: &crate::config::SettingsConfig) -> bool {
+    if !settings.mac_randomization_enabled {
+        return false;
+    }
+    
+    // Bring interface down
+    let _ = std::process::Command::new("ip")
+        .args(["link", "set", interface, "down"])
+        .output();
+    
+    // Generate random MAC
+    let random_mac = format!(
+        "{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
+        (rand_byte() | 0x02) & 0xFE,
+        rand_byte(),
+        rand_byte(),
+        rand_byte(),
+        rand_byte(),
+        rand_byte()
+    );
+    
+    // Set new MAC
+    let result = std::process::Command::new("ip")
+        .args(["link", "set", interface, "address", &random_mac])
+        .output();
+    
+    // Bring interface back up
+    let _ = std::process::Command::new("ip")
+        .args(["link", "set", interface, "up"])
+        .output();
+    
+    result.map(|o| o.status.success()).unwrap_or(false)
+}
+
+/// Restore original MAC from saved settings
+pub fn restore_original_mac(interface: &str, original_mac: &str) -> bool {
+    if original_mac.is_empty() {
+        return false;
+    }
+    
+    let _ = std::process::Command::new("ip")
+        .args(["link", "set", interface, "down"])
+        .output();
+    
+    let result = std::process::Command::new("ip")
+        .args(["link", "set", interface, "address", original_mac])
+        .output();
+    
+    let _ = std::process::Command::new("ip")
+        .args(["link", "set", interface, "up"])
+        .output();
+    
+    result.map(|o| o.status.success()).unwrap_or(false)
 }

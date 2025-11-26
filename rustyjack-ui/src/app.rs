@@ -327,15 +327,15 @@ impl App {
             match &entry.action {
                 MenuAction::ToggleDiscord => {
                     let state = if self.config.settings.discord_enabled { "ON" } else { "OFF" };
-                    entry.label = format!(" Discord Webhook [{}]", state);
+                    entry.label = format!("Discord [{}]", state);
                 }
                 MenuAction::ToggleMacRandomization => {
                     let state = if self.config.settings.mac_randomization_enabled { "ON" } else { "OFF" };
-                    entry.label = format!(" Auto MAC Random [{}]", state);
+                    entry.label = format!("Auto MAC [{}]", state);
                 }
                 MenuAction::TogglePassiveMode => {
                     let state = if self.config.settings.passive_mode_enabled { "ON" } else { "OFF" };
-                    entry.label = format!(" Passive Mode [{}]", state);
+                    entry.label = format!("Passive [{}]", state);
                 }
                 _ => {}
             }
@@ -1438,9 +1438,9 @@ impl App {
                         if let Some(state) = info.get("oper_state").and_then(|v| v.as_str()) { details.push(format!("State: {}", state)); }
                         if let Some(ip) = info.get("ip").and_then(|v| v.as_str()) { details.push(format!("IP: {}", ip)); }
                         details.push("".to_string());
-                        details.push("[SELECT] Set as active".to_string());
+                        details.push("[OK] Set Active".to_string());
                         
-                        self.display.draw_menu("Interface details", &details, usize::MAX, &self.stats.snapshot())?;
+                        self.display.draw_menu("Interface details", &details, usize::MAX, &self.stats.snapshot())?;;
                         // Wait for action
                         loop {
                             let btn = self.buttons.wait_for_press()?;

@@ -139,12 +139,12 @@ impl Default for ColorScheme {
     fn default() -> Self {
         Self {
             background: "#000000".into(),
-            border: "#00AA00".into(),
-            text: "#00CC00".into(),
-            selected_text: "#00DD33".into(),
-            selected_background: "#1A0AAA".into(),
-            gamepad: "#0A0A66".into(),
-            gamepad_fill: "#AAAAAA".into(),
+            border: "#8800AA".into(),
+            text: "#AA00FF".into(),
+            selected_text: "#CC44FF".into(),
+            selected_background: "#330055".into(),
+            gamepad: "#440066".into(),
+            gamepad_fill: "#AA00FF".into(),
         }
     }
 }
@@ -154,22 +154,22 @@ impl ColorScheme {
         "#000000".to_string()
     }
     fn default_border() -> String {
-        "#00AA00".to_string()
+        "#8800AA".to_string()
     }
     fn default_text() -> String {
-        "#00CC00".to_string()
+        "#AA00FF".to_string()
     }
     fn default_selected_text() -> String {
-        "#00DD33".to_string()
+        "#CC44FF".to_string()
     }
     fn default_selected_background() -> String {
-        "#1A0AAA".to_string()
+        "#330055".to_string()
     }
     fn default_gamepad() -> String {
-        "#0A0A66".to_string()
+        "#440066".to_string()
     }
     fn default_gamepad_fill() -> String {
-        "#AAAAAA".to_string()
+        "#AA00FF".to_string()
     }
 }
 

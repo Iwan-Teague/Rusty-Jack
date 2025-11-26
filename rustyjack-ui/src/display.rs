@@ -207,16 +207,8 @@ impl Display {
         lcd.set_orientation(&orientation).map_err(|_| anyhow::anyhow!("LCD orientation failed"))?;
         lcd.set_offset(LCD_OFFSET_X, LCD_OFFSET_Y);
         
-        // Clear screen to black on startup to test display is working
+        // Clear screen to black on startup
         lcd.clear(Rgb565::BLACK).map_err(|_| anyhow::anyhow!("LCD clear failed"))?;
-        
-        // Draw test pattern to verify display is responsive
-        // Draw a green border to confirm display is working
-        Rectangle::new(Point::new(0, 0), Size::new(LCD_WIDTH as u32, LCD_HEIGHT as u32))
-            .into_styled(PrimitiveStyle::with_stroke(Rgb565::GREEN, 2))
-            .draw(&mut lcd)
-            .map_err(|_| anyhow::anyhow!("LCD test pattern failed"))?;
-
 
         let palette = Palette::from_scheme(colors);
         let text_style_regular = MonoTextStyleBuilder::new()
@@ -509,7 +501,7 @@ impl Display {
         // Image not found or load failed, show text fallback
         let text_style = MonoTextStyleBuilder::new()
             .font(&FONT_6X10)
-            .text_color(Rgb565::GREEN)
+            .text_color(Rgb565::new(21, 0, 31))  // Purple #AA00FF in Rgb565
             .build();
         Text::with_baseline("RUSTYJACK", Point::new(30, 60), text_style, Baseline::Top)
             .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
@@ -572,23 +564,17 @@ impl Display {
     ) -> Result<()> {
         self.clear()?;
         self.draw_toolbar(status)?;
-        let style = PrimitiveStyle::with_stroke(self.palette.border, 2);
-        Rectangle::new(
-            Point::new(0, 12),
-            Size::new(LCD_WIDTH as u32, (LCD_HEIGHT - 12) as u32),
-        )
-        .into_styled(style)
-        .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
+        // Border removed for cleaner display
 
-        Text::with_baseline(title, Point::new(4, 16), self.text_style_small, Baseline::Top)
+        Text::with_baseline(title, Point::new(2, 16), self.text_style_small, Baseline::Top)
             .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
 
         let mut y = 30;
         for (idx, label) in items.iter().enumerate() {
             if idx == selected {
                 Rectangle::new(
-                    Point::new(2, y - 2),
-                    Size::new((LCD_WIDTH - 4) as u32, 12)
+                    Point::new(0, y - 2),
+                    Size::new((LCD_WIDTH) as u32, 12)
                 )
                 .into_styled(PrimitiveStyle::with_fill(self.palette.selected_background))
                 .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
@@ -598,7 +584,7 @@ impl Display {
             } else {
                 self.text_style_regular
             };
-            Text::with_baseline(label, Point::new(6, y), style, Baseline::Top)
+            Text::with_baseline(label, Point::new(2, y), style, Baseline::Top)
                 .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
             y += 12;
         }
@@ -608,24 +594,19 @@ impl Display {
     pub fn draw_dialog(&mut self, lines: &[String], status: &StatusOverlay) -> Result<()> {
         self.clear()?;
         self.draw_toolbar(status)?;
-        Rectangle::new(
-            Point::new(6, 18),
-            Size::new(116, 100)
-        )
-        .into_styled(PrimitiveStyle::with_fill(self.palette.background))
-        .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
+        // No border for cleaner look
         
         let mut y = 22;
-        const MAX_CHARS: usize = 18;
+        const MAX_CHARS: usize = 20;
         
         for line in lines {
-            // Wrap each line if it's longer than 18 characters
+            // Wrap each line if it's longer than MAX_CHARS characters
             let wrapped = wrap_text(line, MAX_CHARS);
             for wrapped_line in wrapped {
                 if y > 90 {
                     break; // Stop if we're running out of space
                 }
-                Text::with_baseline(&wrapped_line, Point::new(10, y), self.text_style_regular, Baseline::Top)
+                Text::with_baseline(&wrapped_line, Point::new(2, y), self.text_style_regular, Baseline::Top)
                     .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
                 y += 10; // Reduced from 12 to fit more lines
             }
@@ -643,20 +624,14 @@ impl Display {
         self.clear()?;
         self.draw_toolbar(status)?;
         
-        // Draw dialog box
-        Rectangle::new(
-            Point::new(6, 32),
-            Size::new(116, 64)
-        )
-        .into_styled(PrimitiveStyle::with_fill(self.palette.background))
-        .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
+        // No border - cleaner look
 
         // Draw title (wrap if needed)
-        const MAX_CHARS: usize = 18;
+        const MAX_CHARS: usize = 20;
         let wrapped_title = wrap_text(title, MAX_CHARS);
         let y = 38;
         for (idx, line) in wrapped_title.iter().take(1).enumerate() {
-            Text::with_baseline(line, Point::new(10, y + (idx as i32 * 10)), self.text_style_highlight, Baseline::Top)
+            Text::with_baseline(line, Point::new(2, y + (idx as i32 * 10)), self.text_style_highlight, Baseline::Top)
                 .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
         }
 
@@ -664,15 +639,15 @@ impl Display {
         let wrapped_msg = wrap_text(message, MAX_CHARS);
         let mut msg_y = 50;
         for line in wrapped_msg.iter().take(2) {
-            Text::with_baseline(line, Point::new(10, msg_y), self.text_style_regular, Baseline::Top)
+            Text::with_baseline(line, Point::new(2, msg_y), self.text_style_regular, Baseline::Top)
                 .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
             msg_y += 10;
         }
 
         // Draw progress bar
-        let bar_width = 100u32;
+        let bar_width = 120u32;
         let bar_height = 8u32;
-        let x = 14;
+        let x = 4;
         let y = 70;
         
         Rectangle::new(
@@ -694,7 +669,7 @@ impl Display {
 
         // Draw percentage text
         let pct_text = format!("{:.1}%", percentage);
-        Text::with_baseline(&pct_text, Point::new(10, 82), self.text_style_small, Baseline::Top)
+        Text::with_baseline(&pct_text, Point::new(2, 82), self.text_style_small, Baseline::Top)
             .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
 
         Ok(())
@@ -712,15 +687,10 @@ impl Display {
     }
 
     fn draw_system_health(&mut self, status: &StatusOverlay) -> Result<()> {
-        Text::with_baseline("SYSTEM HEALTH", Point::new(20, 2), self.text_style_highlight, Baseline::Top)
+        Text::with_baseline("SYSTEM HEALTH", Point::new(18, 2), self.text_style_highlight, Baseline::Top)
             .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
         
-        Rectangle::new(
-            Point::new(0, 14),
-            Size::new(LCD_WIDTH as u32, 1)
-        )
-        .into_styled(PrimitiveStyle::with_stroke(self.palette.border, 1))
-        .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
+        // No border line - just a gap
 
         let cpu_bar_len = ((status.cpu_percent / 100.0) * 100.0).min(100.0) as u32;
         let mem_percent = (status.mem_used_mb as f32 / status.mem_total_mb.max(1) as f32) * 100.0;
@@ -728,32 +698,32 @@ impl Display {
         let disk_percent = (status.disk_used_gb / status.disk_total_gb.max(0.1)) * 100.0;
         let disk_bar_len = ((disk_percent / 100.0) * 100.0).min(100.0) as u32;
 
-        let mut y = 28;
+        let mut y = 22;
         
         let cpu_text = format!("CPU:{:.0}C {:.0}%", status.temp_c, status.cpu_percent);
         if y <= 118 {
-            Text::with_baseline(&cpu_text, Point::new(4, y), self.text_style_small, Baseline::Top)
+            Text::with_baseline(&cpu_text, Point::new(2, y), self.text_style_small, Baseline::Top)
                 .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
             y += 10;
-            self.draw_progress_bar(Point::new(4, y), cpu_bar_len)?;
+            self.draw_progress_bar(Point::new(2, y), cpu_bar_len)?;
             y += 12;
         }
 
         let mem_text = format!("MEM:{}M/{:.0}%", status.mem_used_mb, mem_percent);
         if y <= 118 {
-            Text::with_baseline(&mem_text, Point::new(4, y), self.text_style_small, Baseline::Top)
+            Text::with_baseline(&mem_text, Point::new(2, y), self.text_style_small, Baseline::Top)
                 .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
             y += 10;
-            self.draw_progress_bar(Point::new(4, y), mem_bar_len)?;
+            self.draw_progress_bar(Point::new(2, y), mem_bar_len)?;
             y += 12;
         }
 
         let disk_text = format!("DSK:{:.1}G/{:.0}%", status.disk_used_gb, disk_percent);
         if y <= 118 {
-            Text::with_baseline(&disk_text, Point::new(4, y), self.text_style_small, Baseline::Top)
+            Text::with_baseline(&disk_text, Point::new(2, y), self.text_style_small, Baseline::Top)
                 .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
             y += 10;
-            self.draw_progress_bar(Point::new(4, y), disk_bar_len)?;
+            self.draw_progress_bar(Point::new(2, y), disk_bar_len)?;
             y += 14;
         }
 
@@ -761,41 +731,36 @@ impl Display {
         let uptime_mins = (status.uptime_secs % 3600) / 60;
         let uptime_text = format!("Up:{}h{}m", uptime_hrs, uptime_mins);
         if y <= 118 {
-            Text::with_baseline(&uptime_text, Point::new(4, y), self.text_style_small, Baseline::Top)
+            Text::with_baseline(&uptime_text, Point::new(2, y), self.text_style_small, Baseline::Top)
                 .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
         }
 
-        Text::with_baseline("<- Back  Next ->", Point::new(20, 115), self.text_style_small, Baseline::Top)
+        Text::with_baseline("<- Back  Next ->", Point::new(18, 115), self.text_style_small, Baseline::Top)
             .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
         
         Ok(())
     }
 
     fn draw_attack_metrics(&mut self, status: &StatusOverlay) -> Result<()> {
-        Text::with_baseline("ATTACK METRICS", Point::new(18, 2), self.text_style_highlight, Baseline::Top)
+        Text::with_baseline("ATTACK METRICS", Point::new(16, 2), self.text_style_highlight, Baseline::Top)
             .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
         
-        Rectangle::new(
-            Point::new(0, 14),
-            Size::new(LCD_WIDTH as u32, 1)
-        )
-        .into_styled(PrimitiveStyle::with_stroke(self.palette.border, 1))
-        .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
+        // No border line
 
-        let mut y = 28;
+        let mut y = 22;
         
         if y <= 118 {
-            Text::with_baseline("Active Ops:", Point::new(4, y), self.text_style_small, Baseline::Top)
+            Text::with_baseline("Active Ops:", Point::new(2, y), self.text_style_small, Baseline::Top)
                 .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
             y += 12;
         }
 
         for op in status.active_operations.iter().take(3) {
             if y > 110 { break; }
-            // Wrap operation names instead of truncating (max 16 chars to account for "• " prefix)
-            let wrapped = wrap_text(op, 16);
+            // Wrap operation names instead of truncating (max 18 chars to account for "• " prefix)
+            let wrapped = wrap_text(op, 18);
             for line in wrapped.iter().take(1) {
-                Text::with_baseline(&format!("• {}", line), Point::new(8, y), self.text_style_small, Baseline::Top)
+                Text::with_baseline(&format!("• {}", line), Point::new(4, y), self.text_style_small, Baseline::Top)
                     .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
                 y += 10;
                 if y > 110 { break; }
@@ -804,7 +769,7 @@ impl Display {
         y += 6;
 
         if y <= 118 {
-            Text::with_baseline("Net Traffic:", Point::new(4, y), self.text_style_small, Baseline::Top)
+            Text::with_baseline("Net Traffic:", Point::new(2, y), self.text_style_small, Baseline::Top)
                 .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
             y += 12;
         }
@@ -813,56 +778,51 @@ impl Display {
         let tx_kb = status.net_tx_rate / 1024.0;
         
         if y <= 118 {
-            Text::with_baseline(&format!("TX:{:.1}KB/s", tx_kb), Point::new(8, y), self.text_style_small, Baseline::Top)
+            Text::with_baseline(&format!("TX:{:.1}KB/s", tx_kb), Point::new(4, y), self.text_style_small, Baseline::Top)
                 .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
             y += 10;
         }
         
         if y <= 118 {
-            Text::with_baseline(&format!("RX:{:.1}KB/s", rx_kb), Point::new(8, y), self.text_style_small, Baseline::Top)
+            Text::with_baseline(&format!("RX:{:.1}KB/s", rx_kb), Point::new(4, y), self.text_style_small, Baseline::Top)
                 .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
             y += 14;
         }
 
         if status.mitm_victims > 0 && y <= 118 {
-            Text::with_baseline(&format!("MITM Vic:{}", status.mitm_victims), Point::new(4, y), self.text_style_small, Baseline::Top)
+            Text::with_baseline(&format!("MITM Vic:{}", status.mitm_victims), Point::new(2, y), self.text_style_small, Baseline::Top)
                 .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
         }
 
-        Text::with_baseline("<- Back  Next ->", Point::new(20, 115), self.text_style_small, Baseline::Top)
+        Text::with_baseline("<- Back  Next ->", Point::new(18, 115), self.text_style_small, Baseline::Top)
             .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
         
         Ok(())
     }
 
     fn draw_loot_summary(&mut self, status: &StatusOverlay) -> Result<()> {
-        Text::with_baseline("LOOT SUMMARY", Point::new(24, 2), self.text_style_highlight, Baseline::Top)
+        Text::with_baseline("LOOT SUMMARY", Point::new(22, 2), self.text_style_highlight, Baseline::Top)
             .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
         
-        Rectangle::new(
-            Point::new(0, 14),
-            Size::new(LCD_WIDTH as u32, 1)
-        )
-        .into_styled(PrimitiveStyle::with_stroke(self.palette.border, 1))
-        .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
+        // No border line
 
-        let mut y = 32;
+        let mut y = 24;
         
         if y <= 118 {
-            Text::with_baseline("Session Stats:", Point::new(4, y), self.text_style_small, Baseline::Top)
+            Text::with_baseline("Session Stats:", Point::new(2, y), self.text_style_small, Baseline::Top)
                 .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
             y += 14;
         }
 
         if y <= 118 {
-            Text::with_baseline(&format!("Pkts:{}", status.packets_captured), Point::new(8, y), self.text_style_small, Baseline::Top)
+            Text::with_baseline(&format!("Pkts:{}", status.packets_captured), Point::new(4, y), self.text_style_small, Baseline::Top)
                 .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
             y += 10;
         }
 
         let data_mb = status.net_rx_bytes / 1_048_576;
         if y <= 118 {
-            Text::with_baseline(&format!("Data:{}MB", data_mb), Point::new(8, y), self.text_style_small, Baseline::Top)
+            Text::with_baseline(&format!("Data:{}MB", data_mb), Point::new(4, y), self.text_style_small, Baseline::Top)
                 .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
             y += 10;
         }
@@ -870,48 +830,43 @@ impl Display {
         let uptime_hrs = status.uptime_secs / 3600;
         let uptime_mins = (status.uptime_secs % 3600) / 60;
         if y <= 118 {
-            Text::with_baseline(&format!("Time:{}h{}m", uptime_hrs, uptime_mins), Point::new(8, y), self.text_style_small, Baseline::Top)
+            Text::with_baseline(&format!("Time:{}h{}m", uptime_hrs, uptime_mins), Point::new(4, y), self.text_style_small, Baseline::Top)
                 .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
             y += 16;
         }
 
         if y <= 118 {
-            Text::with_baseline("Creds Found:", Point::new(4, y), self.text_style_small, Baseline::Top)
+            Text::with_baseline("Creds Found:", Point::new(2, y), self.text_style_small, Baseline::Top)
                 .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
             y += 14;
         }
 
         if y <= 118 {
             if status.creds_found > 0 {
-                Text::with_baseline(&format!("• NTLM:{}", status.creds_found), Point::new(8, y), self.text_style_small, Baseline::Top)
+                Text::with_baseline(&format!("• NTLM:{}", status.creds_found), Point::new(4, y), self.text_style_small, Baseline::Top)
                     .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
             } else {
-                Text::with_baseline("• None yet", Point::new(8, y), self.text_style_small, Baseline::Top)
+                Text::with_baseline("• None yet", Point::new(4, y), self.text_style_small, Baseline::Top)
                     .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
             }
         }
 
-        Text::with_baseline("<- Back  Next ->", Point::new(20, 115), self.text_style_small, Baseline::Top)
+        Text::with_baseline("<- Back  Next ->", Point::new(18, 115), self.text_style_small, Baseline::Top)
             .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
         
         Ok(())
     }
 
     fn draw_network_traffic(&mut self, status: &StatusOverlay) -> Result<()> {
-        Text::with_baseline("NET TRAFFIC", Point::new(28, 2), self.text_style_highlight, Baseline::Top)
+        Text::with_baseline("NET TRAFFIC", Point::new(26, 2), self.text_style_highlight, Baseline::Top)
             .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
         
-        Rectangle::new(
-            Point::new(0, 14),
-            Size::new(LCD_WIDTH as u32, 1)
-        )
-        .into_styled(PrimitiveStyle::with_stroke(self.palette.border, 1))
-        .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
+        // No border line
 
-        let mut y = 32;
+        let mut y = 24;
         
         if y <= 118 {
-            Text::with_baseline("Total:", Point::new(4, y), self.text_style_small, Baseline::Top)
+            Text::with_baseline("Total:", Point::new(2, y), self.text_style_small, Baseline::Top)
                 .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
             y += 14;
         }
@@ -920,19 +875,19 @@ impl Display {
         let tx_mb = status.net_tx_bytes / 1_048_576;
         
         if y <= 118 {
-            Text::with_baseline(&format!("RX:{}MB", rx_mb), Point::new(8, y), self.text_style_small, Baseline::Top)
+            Text::with_baseline(&format!("RX:{}MB", rx_mb), Point::new(4, y), self.text_style_small, Baseline::Top)
                 .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
             y += 10;
         }
         
         if y <= 118 {
-            Text::with_baseline(&format!("TX:{}MB", tx_mb), Point::new(8, y), self.text_style_small, Baseline::Top)
+            Text::with_baseline(&format!("TX:{}MB", tx_mb), Point::new(4, y), self.text_style_small, Baseline::Top)
                 .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
             y += 16;
         }
 
         if y <= 118 {
-            Text::with_baseline("Rate:", Point::new(4, y), self.text_style_small, Baseline::Top)
+            Text::with_baseline("Rate:", Point::new(2, y), self.text_style_small, Baseline::Top)
                 .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
             y += 14;
         }
@@ -941,13 +896,13 @@ impl Display {
         let tx_kb = status.net_tx_rate / 1024.0;
         
         if y <= 118 {
-            Text::with_baseline(&format!("RX:{:.1}KB/s", rx_kb), Point::new(8, y), self.text_style_small, Baseline::Top)
+            Text::with_baseline(&format!("RX:{:.1}KB/s", rx_kb), Point::new(4, y), self.text_style_small, Baseline::Top)
                 .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
             y += 10;
         }
         
         if y <= 118 {
-            Text::with_baseline(&format!("TX:{:.1}KB/s", tx_kb), Point::new(8, y), self.text_style_small, Baseline::Top)
+            Text::with_baseline(&format!("TX:{:.1}KB/s", tx_kb), Point::new(4, y), self.text_style_small, Baseline::Top)
                 .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
             y += 10;
         }
@@ -957,12 +912,12 @@ impl Display {
         
         if y <= 110 {
             y += 4;
-            self.draw_progress_bar(Point::new(8, y), rate_bars_rx)?;
+            self.draw_progress_bar(Point::new(4, y), rate_bars_rx)?;
             y += 8;
-            self.draw_progress_bar(Point::new(8, y), rate_bars_tx)?;
+            self.draw_progress_bar(Point::new(4, y), rate_bars_tx)?;
         }
 
-        Text::with_baseline("<- Back  Menu", Point::new(24, 115), self.text_style_small, Baseline::Top)
+        Text::with_baseline("<- Back  Menu", Point::new(22, 115), self.text_style_small, Baseline::Top)
             .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
         
         Ok(())

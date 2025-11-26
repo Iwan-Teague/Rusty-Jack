@@ -137,45 +137,45 @@ pub enum LootSection {
 
 fn main_menu() -> Vec<MenuEntry> {
     vec![
-        MenuEntry::new(" Hardware Detect", MenuAction::HardwareDetect),
-        MenuEntry::new(" Install WiFi Drivers", MenuAction::InstallWifiDrivers),
-        MenuEntry::new(" WiFi Attacks", MenuAction::Submenu("aw")),
-        MenuEntry::new(" Obfuscation", MenuAction::Submenu("ao")),
-        MenuEntry::new(" View Dashboards", MenuAction::ViewDashboards),
-        MenuEntry::new(" Settings", MenuAction::Submenu("as")),
-        MenuEntry::new(" Loot", MenuAction::Submenu("ah")),
+        MenuEntry::new("Hardware Detect", MenuAction::HardwareDetect),
+        MenuEntry::new("Install WiFi Drv", MenuAction::InstallWifiDrivers),
+        MenuEntry::new("WiFi Attacks", MenuAction::Submenu("aw")),
+        MenuEntry::new("Obfuscation", MenuAction::Submenu("ao")),
+        MenuEntry::new("View Dashboards", MenuAction::ViewDashboards),
+        MenuEntry::new("Settings", MenuAction::Submenu("as")),
+        MenuEntry::new("Loot", MenuAction::Submenu("ah")),
     ]
 }
 
 fn wifi_menu() -> Vec<MenuEntry> {
     vec![
-        MenuEntry::new(" Scan Networks", MenuAction::ScanNetworks),
-        MenuEntry::new(" Attack Pipelines", MenuAction::Submenu("ap")),
-        MenuEntry::new(" Deauth Attack", MenuAction::DeauthAttack),
-        MenuEntry::new(" Evil Twin AP", MenuAction::EvilTwinAttack),
-        MenuEntry::new(" Karma Attack", MenuAction::KarmaAttack),
-        MenuEntry::new(" PMKID Capture", MenuAction::PmkidCapture),
-        MenuEntry::new(" Probe Sniff", MenuAction::ProbeSniff),
-        MenuEntry::new(" Crack Handshake", MenuAction::CrackHandshake),
-        MenuEntry::new(" Connect Network", MenuAction::ConnectKnownNetwork),
+        MenuEntry::new("Scan Networks", MenuAction::ScanNetworks),
+        MenuEntry::new("Attack Pipelines", MenuAction::Submenu("ap")),
+        MenuEntry::new("Deauth Attack", MenuAction::DeauthAttack),
+        MenuEntry::new("Evil Twin AP", MenuAction::EvilTwinAttack),
+        MenuEntry::new("Karma Attack", MenuAction::KarmaAttack),
+        MenuEntry::new("PMKID Capture", MenuAction::PmkidCapture),
+        MenuEntry::new("Probe Sniff", MenuAction::ProbeSniff),
+        MenuEntry::new("Crack Handshake", MenuAction::CrackHandshake),
+        MenuEntry::new("Connect Network", MenuAction::ConnectKnownNetwork),
     ]
 }
 
 fn pipeline_menu() -> Vec<MenuEntry> {
     vec![
-        MenuEntry::new(" Get WiFi Password", MenuAction::AttackPipeline(PipelineType::GetPassword)),
-        MenuEntry::new(" Mass Capture", MenuAction::AttackPipeline(PipelineType::MassCapture)),
-        MenuEntry::new(" Stealth Recon", MenuAction::AttackPipeline(PipelineType::StealthRecon)),
-        MenuEntry::new(" Harvest Creds", MenuAction::AttackPipeline(PipelineType::CredentialHarvest)),
-        MenuEntry::new(" Full Pentest", MenuAction::AttackPipeline(PipelineType::FullPentest)),
+        MenuEntry::new("Get WiFi Password", MenuAction::AttackPipeline(PipelineType::GetPassword)),
+        MenuEntry::new("Mass Capture", MenuAction::AttackPipeline(PipelineType::MassCapture)),
+        MenuEntry::new("Stealth Recon", MenuAction::AttackPipeline(PipelineType::StealthRecon)),
+        MenuEntry::new("Harvest Creds", MenuAction::AttackPipeline(PipelineType::CredentialHarvest)),
+        MenuEntry::new("Full Pentest", MenuAction::AttackPipeline(PipelineType::FullPentest)),
     ]
 }
 
 fn stealth_menu() -> Vec<MenuEntry> {
     vec![
-        MenuEntry::new(" Randomize MAC", MenuAction::RandomizeMacNow),
-        MenuEntry::new(" Restore MAC", MenuAction::RestoreMac),
-        MenuEntry::new(" TX Power", MenuAction::Submenu("atx")),
+        MenuEntry::new("Randomize MAC", MenuAction::RandomizeMacNow),
+        MenuEntry::new("Restore MAC", MenuAction::RestoreMac),
+        MenuEntry::new("TX Power", MenuAction::Submenu("atx")),
     ]
 }
 
@@ -183,71 +183,71 @@ fn stealth_menu() -> Vec<MenuEntry> {
 fn obfuscation_menu() -> Vec<MenuEntry> {
     vec![
         // Toggle shows current state - actual label built dynamically in app.rs
-        MenuEntry::new(" MAC Randomize: ???", MenuAction::ToggleMacRandomization),
-        MenuEntry::new(" Randomize Now", MenuAction::RandomizeMacNow),
-        MenuEntry::new(" Restore Original", MenuAction::RestoreMac),
+        MenuEntry::new("MAC Random: ???", MenuAction::ToggleMacRandomization),
+        MenuEntry::new("Randomize Now", MenuAction::RandomizeMacNow),
+        MenuEntry::new("Restore MAC", MenuAction::RestoreMac),
         MenuEntry::new("", MenuAction::ShowInfo), // Separator
-        MenuEntry::new(" Passive Mode: ???", MenuAction::TogglePassiveMode),
-        MenuEntry::new(" Passive Recon", MenuAction::PassiveRecon),
+        MenuEntry::new("Passive: ???", MenuAction::TogglePassiveMode),
+        MenuEntry::new("Passive Recon", MenuAction::PassiveRecon),
         MenuEntry::new("", MenuAction::ShowInfo), // Separator
-        MenuEntry::new(" TX Power", MenuAction::Submenu("atx")),
+        MenuEntry::new("TX Power", MenuAction::Submenu("atx")),
     ]
 }
 
 fn tx_power_menu() -> Vec<MenuEntry> {
     vec![
-        MenuEntry::new(" Stealth (1 dBm)", MenuAction::SetTxPower(TxPowerSetting::Stealth)),
-        MenuEntry::new(" Low (5 dBm)", MenuAction::SetTxPower(TxPowerSetting::Low)),
-        MenuEntry::new(" Medium (12 dBm)", MenuAction::SetTxPower(TxPowerSetting::Medium)),
-        MenuEntry::new(" High (18 dBm)", MenuAction::SetTxPower(TxPowerSetting::High)),
-        MenuEntry::new(" Maximum", MenuAction::SetTxPower(TxPowerSetting::Maximum)),
+        MenuEntry::new("Stealth (1dBm)", MenuAction::SetTxPower(TxPowerSetting::Stealth)),
+        MenuEntry::new("Low (5dBm)", MenuAction::SetTxPower(TxPowerSetting::Low)),
+        MenuEntry::new("Medium (12dBm)", MenuAction::SetTxPower(TxPowerSetting::Medium)),
+        MenuEntry::new("High (18dBm)", MenuAction::SetTxPower(TxPowerSetting::High)),
+        MenuEntry::new("Maximum", MenuAction::SetTxPower(TxPowerSetting::Maximum)),
     ]
 }
 
 fn settings_menu() -> Vec<MenuEntry> {
     vec![
-        MenuEntry::new(" Toggle Discord", MenuAction::ToggleDiscord),
-        MenuEntry::new(" Upload loot Discord", MenuAction::DiscordUpload),
-        MenuEntry::new(" Options", MenuAction::Submenu("ae")),
-        MenuEntry::new(" System", MenuAction::Submenu("af")),
+        MenuEntry::new("Toggle Discord", MenuAction::ToggleDiscord),
+        MenuEntry::new("Upload to Discord", MenuAction::DiscordUpload),
+        MenuEntry::new("Options", MenuAction::Submenu("ae")),
+        MenuEntry::new("System", MenuAction::Submenu("af")),
     ]
 }
 
 fn options_menu() -> Vec<MenuEntry> {
     vec![
-        MenuEntry::new(" Colors", MenuAction::Submenu("aea")),
-        MenuEntry::new(" Refresh config", MenuAction::RefreshConfig),
-        MenuEntry::new(" Save config!", MenuAction::SaveConfig),
+        MenuEntry::new("Colors", MenuAction::Submenu("aea")),
+        MenuEntry::new("Refresh Config", MenuAction::RefreshConfig),
+        MenuEntry::new("Save Config", MenuAction::SaveConfig),
     ]
 }
 
 fn colors_menu() -> Vec<MenuEntry> {
     vec![
-        MenuEntry::new(" Background", MenuAction::SetColor(ColorTarget::Background)),
-        MenuEntry::new(" Text", MenuAction::SetColor(ColorTarget::Text)),
+        MenuEntry::new("Background", MenuAction::SetColor(ColorTarget::Background)),
+        MenuEntry::new("Text", MenuAction::SetColor(ColorTarget::Text)),
         MenuEntry::new(
-            " Selected text",
+            "Selected Text",
             MenuAction::SetColor(ColorTarget::SelectedText),
         ),
         MenuEntry::new(
-            " Selected background",
+            "Selected BG",
             MenuAction::SetColor(ColorTarget::SelectedBackground),
         ),
-        MenuEntry::new(" Border", MenuAction::SetColor(ColorTarget::Border)),
+        MenuEntry::new("Border", MenuAction::SetColor(ColorTarget::Border)),
     ]
 }
 
 fn system_menu() -> Vec<MenuEntry> {
     vec![
-        MenuEntry::new(" Restart", MenuAction::RestartSystem),
-        MenuEntry::new(" Update from git", MenuAction::SystemUpdate),
+        MenuEntry::new("Restart", MenuAction::RestartSystem),
+        MenuEntry::new("Update from git", MenuAction::SystemUpdate),
     ]
 }
 
 fn loot_menu() -> Vec<MenuEntry> {
     vec![
-        MenuEntry::new(" Transfer to USB", MenuAction::TransferToUSB),
-        MenuEntry::new(" Wireless Captures", MenuAction::Loot(LootSection::Wireless)),
+        MenuEntry::new("Transfer to USB", MenuAction::TransferToUSB),
+        MenuEntry::new("Wireless Captures", MenuAction::Loot(LootSection::Wireless)),
     ]
 }
 

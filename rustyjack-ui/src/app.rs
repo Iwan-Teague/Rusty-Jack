@@ -843,18 +843,28 @@ impl App {
                     }
                 }
                 1 => {
-                    // Set as Target for deauth attack — require a BSSID to be present
-                    if network.bssid.is_none() {
-                        self.show_message("Target Error", ["No BSSID available", "Cannot set as target"])?;
-                    } else {
-                        self.config.settings.target_network = ssid.clone();
-                        self.config.settings.target_bssid = network.bssid.clone().unwrap_or_default();
-                        self.config.settings.target_channel = network.channel.unwrap_or(0) as u8;
+                    // Set as Target for deauth attack. We will accept a target even
+                    // if the network record omits the BSSID. When BSSID is missing
+                    // we store an empty string — deauth attacks require a BSSID and
+                    // will error later if it's absent, so the UI warns the user.
+                    self.config.settings.target_network = ssid.clone();
+                    self.config.settings.target_bssid = network.bssid.clone().unwrap_or_default();
+                    self.config.settings.target_channel = network.channel.unwrap_or(0) as u8;
 
-                        // Save config
-                        let config_path = self.root.join("gui_conf.json");
-                        if let Err(e) = self.config.save(&config_path) {
-                            self.show_message("Error", [format!("Failed to save: {}", e)])?;
+                    // Save config
+                    let config_path = self.root.join("gui_conf.json");
+                    if let Err(e) = self.config.save(&config_path) {
+                        self.show_message("Error", [format!("Failed to save: {}", e)])?;
+                    } else {
+                        // Informative feedback — highlight missing BSSID if applicable
+                        if self.config.settings.target_bssid.is_empty() {
+                            self.show_message("Target Set", [
+                                &format!("SSID: {}", ssid),
+                                "BSSID: (none)",
+                                &format!("Channel: {}", self.config.settings.target_channel),
+                                "",
+                                "Note: target has no BSSID. Deauth requires a BSSID",
+                            ])?;
                         } else {
                             self.show_message("Target Set", [
                                 &format!("SSID: {}", ssid),
@@ -1525,7 +1535,9 @@ impl App {
                     // the currently configured target; show a lock indicator 'L'
                     // for encrypted networks so '*' is reserved for the selected target.
                     let bssid = net.bssid.as_deref().unwrap_or("");
-                    let is_target = (!self.config.settings.target_bssid.is_empty() && self.config.settings.target_bssid == bssid)
+                    let cur_target_bssid = self.config.settings.target_bssid.as_str();
+                    let cur_target_ssid = self.config.settings.target_network.as_str();
+                    let is_target = (!cur_target_bssid.is_empty() && cur_target_bssid == bssid)
                         || (!self.config.settings.target_network.is_empty() && self.config.settings.target_network == ssid);
                     let target_marker = if is_target { "*" } else { " " };
                     let lock = if net.encrypted { "L" } else { " " };

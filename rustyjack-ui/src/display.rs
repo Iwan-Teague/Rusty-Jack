@@ -99,7 +99,9 @@ const LCD_HEIGHT: u16 = 128;
 // 0 so UI fills the entire visible area on typical Waveshare 1.44" modules.
 const LCD_OFFSET_X: u16 = 0;
 #[cfg(target_os = "linux")]
-const LCD_OFFSET_Y: u16 = 1;
+// Use zero vertical offset to avoid leaving the bottom row unused; some
+// panels had a dead row when an offset of 1 was applied.
+const LCD_OFFSET_Y: u16 = 0;
 
 #[cfg(target_os = "linux")]
 pub struct Display {
@@ -709,7 +711,7 @@ impl Display {
         let mut y = 22;
         
         let cpu_text = format!("CPU:{:.0}C {:.0}%", status.temp_c, status.cpu_percent);
-        if y <= 118 {
+            if y <= 119 {
             Text::with_baseline(&cpu_text, Point::new(4, y), self.text_style_small, Baseline::Top)
                 .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
             y += 10;
@@ -718,7 +720,7 @@ impl Display {
         }
 
         let mem_text = format!("MEM:{}M/{:.0}%", status.mem_used_mb, mem_percent);
-        if y <= 118 {
+            if y <= 119 {
             Text::with_baseline(&mem_text, Point::new(4, y), self.text_style_small, Baseline::Top)
                 .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
             y += 10;
@@ -727,7 +729,7 @@ impl Display {
         }
 
         let disk_text = format!("DSK:{:.1}G/{:.0}%", status.disk_used_gb, disk_percent);
-        if y <= 118 {
+            if y <= 119 {
             Text::with_baseline(&disk_text, Point::new(4, y), self.text_style_small, Baseline::Top)
                 .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
             y += 10;
@@ -738,7 +740,7 @@ impl Display {
         let uptime_hrs = status.uptime_secs / 3600;
         let uptime_mins = (status.uptime_secs % 3600) / 60;
         let uptime_text = format!("Up:{}h{}m", uptime_hrs, uptime_mins);
-        if y <= 118 {
+            if y <= 119 {
             Text::with_baseline(&uptime_text, Point::new(4, y), self.text_style_small, Baseline::Top)
                 .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
         }
@@ -757,26 +759,26 @@ impl Display {
 
         let mut y = 22;
         
-        if y <= 118 {
+        if y <= 119 {
             Text::with_baseline("Active Ops:", Point::new(4, y), self.text_style_small, Baseline::Top)
                 .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
             y += 12;
         }
 
         for op in status.active_operations.iter().take(3) {
-            if y > 110 { break; }
+            if y > 111 { break; }
             // Wrap operation names instead of truncating (max 18 chars to account for "• " prefix)
             let wrapped = wrap_text(op, 18);
             for line in wrapped.iter().take(1) {
                 Text::with_baseline(&format!("• {}", line), Point::new(6, y), self.text_style_small, Baseline::Top)
                     .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
                 y += 10;
-                if y > 110 { break; }
+                if y > 111 { break; }
             }
         }
         y += 6;
 
-        if y <= 118 {
+        if y <= 119 {
             Text::with_baseline("Net Traffic:", Point::new(4, y), self.text_style_small, Baseline::Top)
                 .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
             y += 12;
@@ -785,13 +787,13 @@ impl Display {
         let rx_kb = status.net_rx_rate / 1024.0;
         let tx_kb = status.net_tx_rate / 1024.0;
         
-        if y <= 118 {
+        if y <= 119 {
             Text::with_baseline(&format!("TX:{:.1}KB/s", tx_kb), Point::new(6, y), self.text_style_small, Baseline::Top)
                 .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
             y += 10;
         }
         
-        if y <= 118 {
+        if y <= 119 {
             Text::with_baseline(&format!("RX:{:.1}KB/s", rx_kb), Point::new(6, y), self.text_style_small, Baseline::Top)
                 .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
             y += 14;
@@ -816,20 +818,20 @@ impl Display {
 
         let mut y = 24;
         
-        if y <= 118 {
+        if y <= 119 {
             Text::with_baseline("Session Stats:", Point::new(4, y), self.text_style_small, Baseline::Top)
                 .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
             y += 14;
         }
 
-        if y <= 118 {
+        if y <= 119 {
             Text::with_baseline(&format!("Pkts:{}", status.packets_captured), Point::new(6, y), self.text_style_small, Baseline::Top)
                 .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
             y += 10;
         }
 
         let data_mb = status.net_rx_bytes / 1_048_576;
-        if y <= 118 {
+        if y <= 119 {
             Text::with_baseline(&format!("Data:{}MB", data_mb), Point::new(6, y), self.text_style_small, Baseline::Top)
                 .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
             y += 10;
@@ -837,19 +839,19 @@ impl Display {
 
         let uptime_hrs = status.uptime_secs / 3600;
         let uptime_mins = (status.uptime_secs % 3600) / 60;
-        if y <= 118 {
+        if y <= 119 {
             Text::with_baseline(&format!("Time:{}h{}m", uptime_hrs, uptime_mins), Point::new(6, y), self.text_style_small, Baseline::Top)
                 .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
             y += 16;
         }
 
-        if y <= 118 {
+        if y <= 119 {
             Text::with_baseline("Creds Found:", Point::new(4, y), self.text_style_small, Baseline::Top)
                 .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
             y += 14;
         }
 
-        if y <= 118 {
+        if y <= 119 {
             if status.creds_found > 0 {
                 Text::with_baseline(&format!("• NTLM:{}", status.creds_found), Point::new(6, y), self.text_style_small, Baseline::Top)
                     .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
@@ -873,7 +875,7 @@ impl Display {
 
         let mut y = 24;
         
-        if y <= 118 {
+        if y <= 119 {
             Text::with_baseline("Total:", Point::new(4, y), self.text_style_small, Baseline::Top)
                 .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
             y += 14;
@@ -882,13 +884,13 @@ impl Display {
         let rx_mb = status.net_rx_bytes / 1_048_576;
         let tx_mb = status.net_tx_bytes / 1_048_576;
         
-        if y <= 118 {
+        if y <= 119 {
             Text::with_baseline(&format!("RX:{}MB", rx_mb), Point::new(6, y), self.text_style_small, Baseline::Top)
                 .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
             y += 10;
         }
         
-        if y <= 118 {
+        if y <= 119 {
             Text::with_baseline(&format!("TX:{}MB", tx_mb), Point::new(6, y), self.text_style_small, Baseline::Top)
                 .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
             y += 16;
@@ -918,7 +920,7 @@ impl Display {
         let rate_bars_rx = ((rx_kb / 100.0).min(1.0) * 80.0) as u32;
         let rate_bars_tx = ((tx_kb / 100.0).min(1.0) * 80.0) as u32;
         
-        if y <= 110 {
+        if y <= 111 {
             y += 4;
             self.draw_progress_bar(Point::new(4, y), rate_bars_rx)?;
             y += 8;

@@ -429,12 +429,14 @@ impl KarmaAttack {
         
         let device_type = self.fingerprint_device(client_mac, &probes);
         
+        let handshake_captured = handshake_file.is_some();
+        
         let victim = KarmaVictim {
             client_mac: client_mac.to_string(),
             ssid: ssid.to_string(),
             fake_bssid: self.get_bssid_for_ssid(ssid),
             connected_at: timestamp,
-            handshake_captured: handshake_file.is_some(),
+            handshake_captured,
             handshake_file,
             device_type,
         };
@@ -443,7 +445,7 @@ impl KarmaAttack {
         
         let mut stats = self.stats.lock().unwrap();
         stats.victims += 1;
-        if handshake_file.is_some() {
+        if handshake_captured {
             stats.handshakes += 1;
         }
     }

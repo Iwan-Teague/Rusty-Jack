@@ -198,8 +198,8 @@ impl ProbeSniffer {
             total_probes,
             unique_clients: self.clients.len() as u32,
             unique_networks: self.networks.len() as u32,
-            top_networks: self.top_networks(10),
-            active_clients: self.active_clients(10),
+            top_networks: self.top_networks(10).into_iter().cloned().collect(),
+            active_clients: self.active_clients(10).into_iter().cloned().collect(),
         };
         
         log::info!(
@@ -263,8 +263,8 @@ impl ProbeSniffer {
             total_probes,
             unique_clients: self.clients.len() as u32,
             unique_networks: self.networks.len() as u32,
-            top_networks: self.top_networks(10),
-            active_clients: self.active_clients(10),
+            top_networks: self.top_networks(10).into_iter().cloned().collect(),
+            active_clients: self.active_clients(10).into_iter().cloned().collect(),
         })
     }
     

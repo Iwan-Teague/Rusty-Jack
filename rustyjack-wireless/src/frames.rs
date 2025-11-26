@@ -10,7 +10,7 @@ use serde::{Serialize, Deserialize};
 use crate::error::{WirelessError, Result};
 
 /// MAC address (6 bytes)
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct MacAddress(pub [u8; 6]);
 
 impl MacAddress {

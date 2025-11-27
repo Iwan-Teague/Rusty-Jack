@@ -16,6 +16,7 @@ use rustyjack_core::cli::{
     WifiStatusArgs, WifiProfileCommand, WifiProfileConnectArgs, WifiProfileDeleteArgs,
 };
 use rustyjack_core::InterfaceSummary;
+use rustyjack_evasion::{MacManager, MacGenerationStrategy, VendorOui};
 use serde::Deserialize;
 use serde_json::{self, Value};
 use tempfile::{NamedTempFile, TempPath};
@@ -1580,28 +1581,9 @@ impl App {
                     match choice {
                         Some(idx) => {
                             if let Some(network) = networks.get(idx) {
-                                        // On selecting an SSID from the scan list show an
-                                        // action chooser so users can set a target quickly
-                                        // or view details before choosing.
-                                        let actions = vec![
-                                            "Set Target".to_string(),
-                                            "Details".to_string(),
-                                            "Back".to_string(),
-                                        ];
-                                        if let Some(a) = self.choose_from_list("Action", &actions)? {
-                                            match a {
-                                                0 => {
-                                                    // Set selected network as target
-                                                    self.set_target_from_network(network)?;
-                                                }
-                                                1 => {
-                                                    // Details flow (existing)
-                                                    self.handle_network_selection(network)?;
-                                                }
-                                                _ => {}
-                                            }
-                                        }
-                                    }
+                                // Show details and allow connect / set target from the detail view
+                                self.handle_network_selection(network)?;
+                            }
                         }
                         None => break, // User pressed back
                     }
@@ -2775,89 +2757,69 @@ impl App {
             ]);
         }
         
+        let mut mac_manager = MacManager::new()?;
+        mac_manager.set_auto_restore(false);
+        
         // First, save the original MAC if we haven't already
         if self.config.settings.original_mac.is_empty() {
-            let mac_path = format!("/sys/class/net/{}/address", active_interface);
-            if let Ok(mac) = std::fs::read_to_string(&mac_path) {
-                self.config.settings.original_mac = mac.trim().to_uppercase();
+            if let Ok(mac) = mac_manager.get_mac(&active_interface) {
+                self.config.settings.original_mac = mac.to_string();
             }
         }
         
         self.show_progress("Randomize MAC", [
             &format!("Interface: {}", active_interface),
             "",
-            "Generating random MAC...",
+            "Generating new MAC...",
         ])?;
         
-        // Bring interface down
-        let down_result = Command::new("ip")
-            .args(["link", "set", &active_interface, "down"])
-            .output();
+        let vendor_choice = vendor_from_interface(&mac_manager, &active_interface);
+        let (state, strategy_label) = match vendor_choice {
+            Some(vendor) => match mac_manager.set_with_strategy(
+                &active_interface,
+                MacGenerationStrategy::Vendor(vendor.name),
+            ) {
+                Ok(state) => (state, format!("Vendor: {}", vendor.name)),
+                Err(_) => (mac_manager.randomize(&active_interface)?, "Random local-admin".to_string()),
+            },
+            None => (mac_manager.randomize(&active_interface)?, "Random local-admin".to_string()),
+        };
         
-        if down_result.is_err() {
-            return self.show_message("MAC Error", [
-                "Failed to bring down",
-                "interface. Need root?"
-            ]);
-        }
-        
-        // Generate random MAC (locally administered, unicast)
-        let random_mac = format!(
-            "{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
-            (rand_byte() | 0x02) & 0xFE, // Locally administered, unicast
-            rand_byte(),
-            rand_byte(),
-            rand_byte(),
-            rand_byte(),
-            rand_byte()
-        );
-        
-        // Set new MAC
-        let set_result = Command::new("ip")
-            .args(["link", "set", &active_interface, "address", &random_mac])
-            .output();
-        
-        // Bring interface back up regardless of success
-        let _ = Command::new("ip")
-            .args(["link", "set", &active_interface, "up"])
-            .output();
-        
-        if let Ok(output) = set_result {
-            if output.status.success() {
-                // Save the new MAC in config
-                let original_mac = self.config.settings.original_mac.clone();
-                self.config.settings.current_mac = random_mac.clone();
-                let config_path = self.root.join("gui_conf.json");
-                let _ = self.config.save(&config_path);
-                
-                self.show_message("MAC Randomized", [
-                    format!("Interface: {}", active_interface),
-                    "".to_string(),
-                    "New MAC:".to_string(),
-                    random_mac,
-                    "".to_string(),
-                    "Original saved:".to_string(),
-                    original_mac,
-                ])
-            } else {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                self.show_message("MAC Error", [
-                    "Failed to set new MAC",
-                    "",
-                    "Driver may not support",
-                    "MAC address changes.",
-                    "",
-                    &format!("{}", stderr.chars().take(30).collect::<String>())
-                ])
-            }
+        let original_mac = if self.config.settings.original_mac.is_empty() {
+            state.original_mac.to_string()
         } else {
-            self.show_message("MAC Error", [
-                "Failed to execute",
-                "ip link command.",
-                "",
-                "Check permissions."
-            ])
-        }
+            self.config.settings.original_mac.clone()
+        };
+        
+        self.config.settings.original_mac = original_mac.clone();
+        self.config.settings.current_mac = state.current_mac.to_string();
+        let config_path = self.root.join("gui_conf.json");
+        let _ = self.config.save(&config_path);
+        
+        let dhcp_refreshed = renew_dhcp(&active_interface);
+        let wifi_reconnected = trigger_wifi_reconnect(&active_interface);
+        
+        let lines = vec![
+            format!("Interface: {}", active_interface),
+            "".to_string(),
+            format!("New MAC: {}", state.current_mac),
+            format!("Source: {}", strategy_label),
+            "".to_string(),
+            if dhcp_refreshed {
+                "DHCP renewed".to_string()
+            } else {
+                "DHCP renew skipped".to_string()
+            },
+            if wifi_reconnected {
+                "WiFi reconnect signaled".to_string()
+            } else {
+                "Reconnect may be required".to_string()
+            },
+            "".to_string(),
+            format!("Original saved: {}", original_mac),
+        ];
+        
+        self.show_message("MAC Randomized", lines)
     }
     
     /// Restore original MAC address
@@ -3000,20 +2962,34 @@ impl App {
     }
 }
 
-/// Generate a pseudo-random byte
-fn rand_byte() -> u8 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    static mut SEED: u64 = 0;
-    unsafe {
-        if SEED == 0 {
-            SEED = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos() as u64;
-        }
-        SEED = SEED.wrapping_mul(6364136223846793005).wrapping_add(1);
-        (SEED >> 33) as u8
-    }
+fn vendor_from_interface(mac_manager: &MacManager, interface: &str) -> Option<&'static VendorOui> {
+    mac_manager
+        .get_mac(interface)
+        .ok()
+        .and_then(|mac| {
+            let bytes = mac.as_bytes();
+            VendorOui::from_oui([bytes[0], bytes[1], bytes[2]])
+        })
+}
+
+fn renew_dhcp(interface: &str) -> bool {
+    let release = Command::new("dhclient").args(["-r", interface]).output();
+    let request = Command::new("dhclient").args([interface]).output();
+    
+    release.map(|o| o.status.success()).unwrap_or(false)
+        || request.map(|o| o.status.success()).unwrap_or(false)
+}
+
+fn trigger_wifi_reconnect(interface: &str) -> bool {
+    let wpa = Command::new("wpa_cli")
+        .args(["-i", interface, "reconnect"])
+        .output();
+    let nmcli = Command::new("nmcli")
+        .args(["device", "reconnect", interface])
+        .output();
+    
+    wpa.map(|o| o.status.success()).unwrap_or(false)
+        || nmcli.map(|o| o.status.success()).unwrap_or(false)
 }
 
 /// Auto-randomize MAC before attack if enabled in settings
@@ -3023,33 +2999,19 @@ pub fn auto_randomize_mac_if_enabled(interface: &str, settings: &crate::config::
         return false;
     }
     
-    // Bring interface down
-    let _ = std::process::Command::new("ip")
-        .args(["link", "set", interface, "down"])
-        .output();
+    let mut mac_manager = MacManager::new().ok()?;
+    mac_manager.set_auto_restore(false);
     
-    // Generate random MAC
-    let random_mac = format!(
-        "{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
-        (rand_byte() | 0x02) & 0xFE,
-        rand_byte(),
-        rand_byte(),
-        rand_byte(),
-        rand_byte(),
-        rand_byte()
-    );
+    let vendor_choice = vendor_from_interface(&mac_manager, interface);
+    let result = match vendor_choice {
+        Some(vendor) => mac_manager.set_with_strategy(
+            interface,
+            MacGenerationStrategy::Vendor(vendor.name),
+        ),
+        None => mac_manager.randomize(interface),
+    };
     
-    // Set new MAC
-    let result = std::process::Command::new("ip")
-        .args(["link", "set", interface, "address", &random_mac])
-        .output();
-    
-    // Bring interface back up
-    let _ = std::process::Command::new("ip")
-        .args(["link", "set", interface, "up"])
-        .output();
-    
-    result.map(|o| o.status.success()).unwrap_or(false)
+    result.is_ok()
 }
 
 /// Restore original MAC from saved settings

@@ -43,7 +43,7 @@ PACKAGES=(
   # DKMS for WiFi driver compilation
   dkms bc libelf-dev linux-headers-$(uname -r)
   # network / offensive tools
-  nmap ncat tcpdump arp-scan dsniff ettercap-text-only php procps
+  nmap ncat tcpdump arp-scan dsniff ettercap-text-only php procps iproute2 isc-dhcp-client network-manager
   # WiFi interface tools (for native Rust wireless operations)
   wireless-tools wpasupplicant iw hostapd dnsmasq
   # USB WiFi dongle support
@@ -264,6 +264,25 @@ if cmd iw && cmd iwconfig; then
   info "     Native rustyjack-wireless crate handles all wireless attacks"
 else
   warn "[X] Wireless tools missing - install 'iw' and 'wireless-tools'"
+fi
+
+# 6-b2 MAC randomization runtime deps
+if cmd ip; then
+  info "[OK] iproute2 present (ip command)"
+else
+  warn "[X] ip command missing - install iproute2"
+fi
+
+if cmd dhclient; then
+  info "[OK] dhclient present (DHCP renew for MAC changes)"
+else
+  warn "[X] dhclient missing - install isc-dhcp-client"
+fi
+
+if cmd wpa_cli || cmd nmcli; then
+  info "[OK] WiFi control present (wpa_cli/nmcli) for reconnect"
+else
+  warn "[X] Neither wpa_cli nor nmcli found - WiFi reconnect after MAC change may need manual intervention"
 fi
 
 # 6-c USB WiFi dongle detection

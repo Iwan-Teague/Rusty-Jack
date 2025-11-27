@@ -76,6 +76,12 @@ impl VendorOui {
         })
     }
     
+    /// Look up a vendor by its OUI bytes
+    #[must_use]
+    pub fn from_oui(oui: [u8; 3]) -> Option<&'static VendorOui> {
+        VENDOR_DATABASE.iter().find(|v| v.oui == oui)
+    }
+    
     /// Get all vendors matching a partial name
     #[must_use]
     pub fn search(query: &str) -> Vec<&'static VendorOui> {
@@ -340,6 +346,12 @@ mod tests {
     fn test_oui_string() {
         let apple = VendorOui::from_name("apple").unwrap();
         assert_eq!(apple.oui_string(), "F4:0F:24");
+    }
+    
+    #[test]
+    fn test_lookup_by_oui() {
+        let apple = VendorOui::from_name("apple").unwrap();
+        assert_eq!(VendorOui::from_oui(apple.oui).unwrap().name, apple.name);
     }
     
     #[test]

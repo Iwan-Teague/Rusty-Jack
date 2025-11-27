@@ -47,7 +47,7 @@ PACKAGES=(
   # build tools for Rust compilation
   build-essential pkg-config libssl-dev
   # WiFi interface tools (for native Rust wireless operations)
-  wireless-tools wpasupplicant iw
+  wireless-tools wpasupplicant iw iproute2 isc-dhcp-client network-manager
   # USB WiFi dongle support
   firmware-linux-nonfree firmware-realtek firmware-atheros
   # misc
@@ -258,6 +258,25 @@ if cmd iw && cmd iwconfig; then
   info "[OK] Wireless tools found"
 else
   warn "[X] Wireless tools missing"
+fi
+
+# MAC randomization runtime deps
+if cmd ip; then
+  info "[OK] iproute2 present (ip command)"
+else
+  warn "[X] ip command missing - install iproute2"
+fi
+
+if cmd dhclient; then
+  info "[OK] dhclient present (DHCP renew for MAC changes)"
+else
+  warn "[X] dhclient missing - install isc-dhcp-client"
+fi
+
+if cmd wpa_cli || cmd nmcli; then
+  info "[OK] WiFi control present (wpa_cli/nmcli) for reconnect"
+else
+  warn "[X] Neither wpa_cli nor nmcli found - WiFi reconnect after MAC change may need manual intervention"
 fi
 
 if [ -x /usr/local/bin/rustyjack-ui ]; then

@@ -831,49 +831,29 @@ impl App {
         });
         self.show_message("Network", details.iter().map(|s| s.as_str()))?;
 
-        let actions = vec!["Connect".to_string(), "Set Target".to_string(), "Back".to_string()];
+        // Prefer target selection first so the default action doesn't try to connect
+        // with missing credentials. Connection remains available via a secondary option.
+        let actions = vec![
+            "Set Target".to_string(),
+            "Connect (saved profile)".to_string(),
+            "Back".to_string(),
+        ];
         if let Some(choice) = self.choose_from_list("Network action", &actions)? {
             match choice {
                 0 => {
-                    // Connect
-                    if self.connect_profile_by_ssid(&ssid)? {
-                        // message handled in helper
-                    } else {
-                        let msg = vec![format!("No saved profile for {ssid}")];
-                        self.show_message("Wi-Fi", msg.iter().map(|s| s.as_str()))?;
-                    }
+                    // Set as target for subsequent attacks/recon
+                    self.set_target_from_network(network)?;
                 }
                 1 => {
-                    // Set as Target for deauth attack. We will accept a target even
-                    // if the network record omits the BSSID. When BSSID is missing
-                    // we store an empty string — deauth attacks require a BSSID and
-                    // will error later if it's absent, so the UI warns the user.
-                    self.config.settings.target_network = ssid.clone();
-                    self.config.settings.target_bssid = network.bssid.clone().unwrap_or_default();
-                    self.config.settings.target_channel = network.channel.unwrap_or(0) as u8;
+                    // Connect using an existing profile
+                    if !self.connect_profile_by_ssid(&ssid)? {
+                        let msg = vec![format!("No saved profile for {ssid}")];
+                        self.show_message("Wi-Fi", msg.iter().map(|s| s.as_str()))?;
 
-                    // Save config
-                    let config_path = self.root.join("gui_conf.json");
-                    if let Err(e) = self.config.save(&config_path) {
-                        self.show_message("Error", [format!("Failed to save: {}", e)])?;
-                    } else {
-                        // Informative feedback — highlight missing BSSID if applicable
-                        if self.config.settings.target_bssid.is_empty() {
-                            self.show_message("Target Set", [
-                                &format!("SSID: {}", ssid),
-                                "BSSID: (none)",
-                                &format!("Channel: {}", self.config.settings.target_channel),
-                                "",
-                                "Note: target has no BSSID. Deauth requires a BSSID",
-                            ])?;
-                        } else {
-                            self.show_message("Target Set", [
-                                &format!("SSID: {}", ssid),
-                                &format!("BSSID: {}", self.config.settings.target_bssid),
-                                &format!("Channel: {}", self.config.settings.target_channel),
-                                "",
-                                "Ready for Deauth Attack",
-                            ])?;
+                        // If connect isn't possible, offer to set this network as the target
+                        let fallback = vec!["Set Target".to_string(), "Back".to_string()];
+                        if self.choose_from_list("Use as target?", &fallback)? == Some(0) {
+                            self.set_target_from_network(network)?;
                         }
                     }
                 }

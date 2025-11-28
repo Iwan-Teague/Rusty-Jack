@@ -2999,7 +2999,10 @@ pub fn auto_randomize_mac_if_enabled(interface: &str, settings: &crate::config::
         return false;
     }
     
-    let mut mac_manager = MacManager::new().ok()?;
+    let mut mac_manager = match MacManager::new() {
+        Ok(manager) => manager,
+        Err(_) => return false,
+    };
     mac_manager.set_auto_restore(false);
     
     let vendor_choice = vendor_from_interface(&mac_manager, interface);

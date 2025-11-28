@@ -1,6 +1,0 @@
-$ mkdir -p "/Users/iwanteague/Desktop/Rustyjack/target/debug/build/az-ed14f03612e0729b/out/try_track_caller"
-$ cd "/Users/iwanteague/Desktop/Rustyjack/target/debug/build/az-ed14f03612e0729b/out/try_track_caller"
-$ printf '%s' "// try_tra"... > "/Users/iwanteague/Desktop/Rustyjack/target/debug/build/az-ed14f03612e0729b/out/try_track_caller/try_track_caller.rs"
-$ cd "/Users/iwanteague/Desktop/Rustyjack/target/debug/build/az-ed14f03612e0729b/out/try_track_caller" && "rustc" "try_track_caller.rs" "--emit=dep-info,metadata" >& /dev/null
-cargo:rustc-cfg=track_caller
-$ rm -r "/Users/iwanteague/Desktop/Rustyjack/target/debug/build/az-ed14f03612e0729b/out/try_track_caller"

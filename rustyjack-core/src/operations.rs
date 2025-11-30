@@ -9,6 +9,8 @@ use anyhow::{Context, Result, anyhow, bail};
 use chrono::Local;
 use regex::Regex;
 use serde_json::{Value, json};
+use ipnet::Ipv4Net;
+use rustyjack_ethernet::{discover_hosts, quick_port_scan};
 
 use crate::cli::{
     AutopilotCommand, AutopilotStartArgs, BridgeCommand, BridgeStartArgs, BridgeStopArgs, Commands, 
@@ -20,6 +22,7 @@ use crate::cli::{
     WifiEvilTwinArgs, WifiPmkidArgs, WifiProbeSniffArgs, WifiProfileCommand, 
     WifiProfileConnectArgs, WifiProfileDeleteArgs, WifiProfileSaveArgs, WifiRouteCommand, 
     WifiRouteEnsureArgs, WifiRouteMetricArgs, WifiScanArgs, WifiStatusArgs, WifiSwitchArgs,
+    EthernetCommand, EthernetDiscoverArgs, EthernetPortScanArgs,
 };
 use crate::system::{
     KillResult, WifiProfile, append_payload_log, backup_repository, backup_routing_state,
@@ -108,11 +111,99 @@ pub fn dispatch_command(root: &Path, command: Commands) -> Result<HandlerResult>
         Commands::Hardware(cmd) => match cmd {
             HardwareCommand::Detect => handle_hardware_detect(),
         },
+        Commands::Ethernet(sub) => match sub {
+            EthernetCommand::Discover(args) => handle_eth_discover(root, args),
+            EthernetCommand::PortScan(args) => handle_eth_port_scan(root, args),
+        },
     }
 }
 
 fn handle_scan_run(root: &Path, args: ScanRunArgs) -> Result<HandlerResult> {
     run_scan_with_progress(root, args, |_, _| {})
+}
+
+fn handle_eth_discover(root: &Path, args: EthernetDiscoverArgs) -> Result<HandlerResult> {
+    let interface = detect_interface(args.interface.clone())?;
+    let cidr = args
+        .target
+        .clone()
+        .unwrap_or_else(|| interface.network_cidr());
+    let net: Ipv4Net = cidr.parse().context("parsing target CIDR")?;
+
+    let timeout = Duration::from_millis(args.timeout_ms.max(50));
+    let result = discover_hosts(net, timeout).context("running LAN discovery")?;
+
+    // Save loot
+    let loot_dir = root.join("loot").join("Ethernet");
+    fs::create_dir_all(&loot_dir).context("creating loot/Ethernet")?;
+    let timestamp = Local::now().format("%Y%m%d_%H%M%S");
+    let file = loot_dir.join(format!("discovery_{}_{}.txt", net, timestamp));
+    let mut out = String::new();
+    out.push_str(&format!("LAN Discovery on {}\n", net));
+    out.push_str(&format!("Interface: {}\n", interface.name));
+    out.push_str(&format!("Timeout: {:?}\n", timeout));
+    out.push_str("\nHosts:\n");
+    for ip in &result.hosts {
+        out.push_str(&format!("{}\n", ip));
+    }
+    fs::write(&file, out).with_context(|| format!("writing {}", file.display()))?;
+
+    let data = json!({
+        "network": net.to_string(),
+        "interface": interface.name,
+        "hosts_found": result.hosts,
+        "loot_path": file.display().to_string(),
+    });
+    Ok((format!("LAN discovery complete ({} hosts)", result.hosts.len()), data))
+}
+
+fn handle_eth_port_scan(root: &Path, args: EthernetPortScanArgs) -> Result<HandlerResult> {
+    let interface = detect_interface(args.interface.clone())?;
+    let target: std::net::Ipv4Addr = if let Some(t) = args.target.as_ref() {
+        t.parse().context("parsing target IPv4")?
+    } else if let Some(gw) = interface_gateway(&interface.name)? {
+        gw
+    } else {
+        bail!("No target provided and no gateway found");
+    };
+
+    let ports: Vec<u16> = if let Some(list) = args.ports.as_ref() {
+        list.split(',')
+            .filter_map(|p| p.trim().parse::<u16>().ok())
+            .collect()
+    } else {
+        vec![22, 80, 443, 53, 445, 3389, 8080, 8000, 8443, 21, 23, 25, 110, 143]
+    };
+
+    if ports.is_empty() {
+        bail!("No ports provided for scan");
+    }
+
+    let timeout = Duration::from_millis(args.timeout_ms.max(50));
+    let result = quick_port_scan(target, &ports, timeout).context("running port scan")?;
+
+    // Save loot
+    let loot_dir = root.join("loot").join("Ethernet");
+    fs::create_dir_all(&loot_dir).context("creating loot/Ethernet")?;
+    let timestamp = Local::now().format("%Y%m%d_%H%M%S");
+    let file = loot_dir.join(format!("portscan_{}_{}.txt", target, timestamp));
+    let mut out = String::new();
+    out.push_str(&format!("Port scan on {}\n", target));
+    out.push_str(&format!("Timeout: {:?}\n", timeout));
+    out.push_str("Ports tested:\n");
+    out.push_str(&format!("{:?}\n\n", ports));
+    out.push_str("Open ports:\n");
+    for p in &result.open_ports {
+        out.push_str(&format!("{}\n", p));
+    }
+    fs::write(&file, out).with_context(|| format!("writing {}", file.display()))?;
+
+    let data = json!({
+        "target": target.to_string(),
+        "open_ports": result.open_ports,
+        "loot_path": file.display().to_string(),
+    });
+    Ok((format!("Port scan complete ({} open)", result.open_ports.len()), data))
 }
 
 pub fn run_scan_with_progress<F>(

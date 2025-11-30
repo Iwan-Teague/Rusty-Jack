@@ -94,6 +94,10 @@ Notes:
 - Navigate and open files using LCD buttons
 - Wireless loot is grouped per target under `loot/Wireless/<target>/` (target = SSID, else BSSID). Handshakes, PMKIDs, and attack logs are saved inside that folder for easy export (USB/FAT/exFAT compatible).
 
+**Ethernet recon:**
+- LAN discovery (Rust ICMP sweep) using the active interface
+- Quick port scan (Rust TCP connect, top ports) across the local network
+
 **Discord integration:**
 - Manual upload of ZIP loot archives via the UI when configured
 - Formatted embeds for notifications and metadata

@@ -28,6 +28,7 @@ Project structure (selected):
 - `scripts/` — helper shell scripts (e.g., WiFi driver installer).
 - `install_rustyjack.sh`, `install_rustyjack_dev.sh` — production and debug installers that build and deploy the UI service.
 - `WAVESHARE_PINS.md`, `WAVESHARE_BUTTONS.md` — validated pinout and button behavior references.
+- `rustyjack-ethernet/` — Rust-only Ethernet recon (ICMP sweep + TCP port scan) used by the UI Ethernet menu.
 - Loot storage: wireless captures are grouped per target under `loot/Wireless/<target>/` (target = SSID, else BSSID); reuse that when saving handshakes, PMKIDs, logs.
 
 Style guard:

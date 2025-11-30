@@ -63,11 +63,55 @@ pub enum Commands {
     Autopilot(AutopilotCommand),
     #[command(subcommand)]
     Hardware(HardwareCommand),
+    #[command(subcommand)]
+    Ethernet(EthernetCommand),
 }
 
 #[derive(Subcommand, Debug)]
 pub enum ScanCommand {
     Run(ScanRunArgs),
+}
+
+#[derive(Subcommand, Debug)]
+pub enum EthernetCommand {
+    /// Discover hosts on the local network (ICMP sweep)
+    Discover(EthernetDiscoverArgs),
+    /// Quick TCP port scan on a target
+    PortScan(EthernetPortScanArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct EthernetDiscoverArgs {
+    /// Optional interface override (defaults to best interface)
+    #[arg(long)]
+    pub interface: Option<String>,
+
+    /// Optional CIDR target (defaults to interface network)
+    #[arg(long)]
+    pub target: Option<String>,
+
+    /// Timeout per host in milliseconds
+    #[arg(long, default_value_t = 500)]
+    pub timeout_ms: u64,
+}
+
+#[derive(Args, Debug)]
+pub struct EthernetPortScanArgs {
+    /// Target IPv4 address (defaults to gateway if omitted)
+    #[arg(long)]
+    pub target: Option<String>,
+
+    /// Optional interface override
+    #[arg(long)]
+    pub interface: Option<String>,
+
+    /// Ports to scan (comma-separated, default top common ports)
+    #[arg(long)]
+    pub ports: Option<String>,
+
+    /// Connect timeout per port (ms)
+    #[arg(long, default_value_t = 500)]
+    pub timeout_ms: u64,
 }
 
 #[derive(Args, Debug)]

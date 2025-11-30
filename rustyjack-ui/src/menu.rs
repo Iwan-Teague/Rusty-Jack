@@ -42,6 +42,10 @@ pub enum MenuAction {
     TogglePassiveMode,
     /// Enter passive recon mode
     PassiveRecon,
+    /// Ethernet LAN discovery
+    EthernetDiscovery,
+    /// Ethernet quick port scan
+    EthernetPortScan,
     /// Placeholder for informational entries (no action)
     ShowInfo,
 }
@@ -107,6 +111,7 @@ impl MenuTree {
         nodes.insert("ap", MenuNode::Static(pipeline_menu));
         nodes.insert("ao", MenuNode::Static(obfuscation_menu));  // Obfuscation & Evasion
         nodes.insert("atx", MenuNode::Static(tx_power_menu));
+        nodes.insert("aeth", MenuNode::Static(ethernet_menu));
         Self { nodes }
     }
 
@@ -140,6 +145,7 @@ fn main_menu() -> Vec<MenuEntry> {
         MenuEntry::new("Hardware Detect", MenuAction::HardwareDetect),
         MenuEntry::new("Install WiFi Drv", MenuAction::InstallWifiDrivers),
         MenuEntry::new("WiFi Attacks", MenuAction::Submenu("aw")),
+        MenuEntry::new("Ethernet Recon", MenuAction::Submenu("aeth")),
         MenuEntry::new("Obfuscation", MenuAction::Submenu("ao")),
         MenuEntry::new("View Dashboards", MenuAction::ViewDashboards),
         MenuEntry::new("Settings", MenuAction::Submenu("as")),
@@ -158,6 +164,13 @@ fn wifi_menu() -> Vec<MenuEntry> {
         MenuEntry::new("Probe Sniff", MenuAction::ProbeSniff),
         MenuEntry::new("Crack Handshake", MenuAction::CrackHandshake),
         MenuEntry::new("Connect Network", MenuAction::ConnectKnownNetwork),
+    ]
+}
+
+fn ethernet_menu() -> Vec<MenuEntry> {
+    vec![
+        MenuEntry::new("LAN Discovery", MenuAction::EthernetDiscovery),
+        MenuEntry::new("Port Scan (quick)", MenuAction::EthernetPortScan),
     ]
 }
 
@@ -259,6 +272,7 @@ pub fn menu_title(id: &str) -> &'static str {
         "af" => "System",
         "ah" => "Loot",
         "aw" => "WiFi Attacks",
+        "aeth" => "Ethernet Recon",
         "as" => "Settings",
         "ap" => "Attack Pipelines",
         "ao" => "Obfuscation & Evasion",

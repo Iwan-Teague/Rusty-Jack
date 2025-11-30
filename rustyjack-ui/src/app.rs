@@ -12,9 +12,10 @@ use anyhow::{Result, bail, Context};
 use rustyjack_core::cli::{
     Commands, DiscordCommand, DiscordSendArgs,
     HardwareCommand, LootCommand, LootKind, LootListArgs, 
-    LootReadArgs, NotifyCommand, SystemUpdateArgs,
+    LootReadArgs, NotifyCommand, SystemUpdateArgs, ScanRunArgs,
     WifiCommand, WifiDeauthArgs, WifiRouteCommand, WifiScanArgs, 
     WifiStatusArgs, WifiProfileCommand, WifiProfileConnectArgs, WifiProfileDeleteArgs,
+    EthernetCommand, EthernetDiscoverArgs, EthernetPortScanArgs,
 };
 use rustyjack_core::InterfaceSummary;
 use rustyjack_evasion::{MacManager, MacGenerationStrategy, VendorOui};
@@ -626,6 +627,8 @@ impl App {
             MenuAction::SetTxPower(level) => self.set_tx_power(level)?,
             MenuAction::TogglePassiveMode => self.toggle_passive_mode()?,
             MenuAction::PassiveRecon => self.launch_passive_recon()?,
+            MenuAction::EthernetDiscovery => self.ethernet_lan_discovery()?,
+            MenuAction::EthernetPortScan => self.ethernet_port_scan()?,
             MenuAction::ShowInfo => {} // No-op for informational entries
         }
         Ok(())
@@ -2907,6 +2910,103 @@ impl App {
             "captured data.",
         ])?;
         
+        Ok(())
+    }
+
+    /// Ethernet LAN discovery (ping sweep using nmap -sn)
+    fn ethernet_lan_discovery(&mut self) -> Result<()> {
+        let _op = match self.guard_operation("LAN Discovery")? {
+            Some(g) => g,
+            None => return Ok(()),
+        };
+
+        if !self.preflight_check("LAN Discovery", false)? {
+            return Ok(());
+        }
+
+        let iface = self.config.settings.active_network_interface.clone();
+        let args = EthernetDiscoverArgs {
+            interface: Some(iface.clone()),
+            target: None,
+            timeout_ms: 500,
+        };
+
+        self.show_progress("Ethernet", [
+            "Running LAN discovery...",
+            &format!("Interface: {}", iface),
+        ])?;
+
+        match self.core.dispatch(Commands::Ethernet(EthernetCommand::Discover(args))) {
+            Ok((msg, data)) => {
+                let loot = data
+                    .get("loot_path")
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown");
+                let count = data
+                    .get("hosts_found")
+                    .and_then(Value::as_array)
+                    .map(|a| a.len())
+                    .unwrap_or(0);
+                self.show_message("Ethernet", [
+                    msg,
+                    &format!("Hosts: {}", count),
+                    &format!("Loot: {}", loot),
+                ])?;
+            }
+            Err(e) => {
+                self.show_message("Ethernet Error", [format!("{}", e)])?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Ethernet quick port scan (top ports) on local network
+    fn ethernet_port_scan(&mut self) -> Result<()> {
+        let _op = match self.guard_operation("Port Scan")? {
+            Some(g) => g,
+            None => return Ok(()),
+        };
+
+        if !self.preflight_check("Port Scan", false)? {
+            return Ok(());
+        }
+
+        let iface = self.config.settings.active_network_interface.clone();
+        let args = EthernetPortScanArgs {
+            target: None,
+            interface: Some(iface.clone()),
+            ports: None,
+            timeout_ms: 500,
+        };
+
+        self.show_progress("Ethernet", [
+            "Quick port scan...",
+            &format!("Interface: {}", iface),
+        ])?;
+
+        match self.core.dispatch(Commands::Ethernet(EthernetCommand::PortScan(args))) {
+            Ok((msg, data)) => {
+                let loot = data
+                    .get("loot_path")
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown");
+                let open = data
+                    .get("open_ports")
+                    .and_then(Value::as_array)
+                    .map(|a| a.len())
+                    .unwrap_or(0);
+                self.show_message("Ethernet", [
+                    msg,
+                    &format!("Open ports: {}", open),
+                    &format!("Loot: {}", loot),
+                ])?;
+            }
+            Err(e) => {
+                self.show_message("Ethernet Error", [format!("{}", e)])?;
+            }
+        }
+
         Ok(())
     }
     

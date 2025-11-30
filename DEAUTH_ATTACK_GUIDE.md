@@ -4,7 +4,7 @@
 
 This document explains how deauthentication attacks work, the **native Rust implementation** in RustyJack using `rustyjack-wireless`, hardware requirements, and technical details.
 
-## ⚠️ No External Dependencies
+## No External Dependencies
 
 RustyJack uses a **pure Rust implementation** for all wireless operations. **No aircrack-ng suite is required.**
 
@@ -201,11 +201,11 @@ For deauthentication attacks, you **MUST** have:
 
 | Chipset | Driver | Monitor | Injection | Notes |
 |---------|--------|---------|-----------|-------|
-| **Atheros AR9271** | ath9k_htc | ✅ | ✅ | Best compatibility |
-| **Realtek RTL8812AU** | rtl8812au | ✅ | ✅ | 5GHz support |
-| **Realtek RTL8814AU** | rtl8814au | ✅ | ✅ | High power |
-| **Ralink RT3070** | rt2800usb | ✅ | ✅ | Good, older |
-| **MediaTek MT7612U** | mt76x2u | ✅ | ✅ | Modern |
+| **Atheros AR9271** | ath9k_htc | Yes | Yes | Best compatibility |
+| **Realtek RTL8812AU** | rtl8812au | Yes | Yes | 5GHz support |
+| **Realtek RTL8814AU** | rtl8814au | Yes | Yes | High power |
+| **Ralink RT3070** | rt2800usb | Yes | Yes | Good, older |
+| **MediaTek MT7612U** | mt76x2u | Yes | Yes | Modern |
 
 ### Popular Adapters
 
@@ -220,11 +220,11 @@ For deauthentication attacks, you **MUST** have:
 
 | Model | Chip | Monitor | Injection |
 |-------|------|---------|-----------|
-| Pi 3B/3B+ | BCM43438 | Limited | ❌ |
-| Pi 4 | BCM43455 | Limited | ❌ |
-| Pi Zero W | BCM43438 | Limited | ❌ |
+| Pi 3B/3B+ | BCM43438 | Limited | No |
+| Pi 4 | BCM43455 | Limited | No |
+| Pi Zero W | BCM43438 | Limited | No |
 
-**⚠️ Built-in Pi WiFi does NOT reliably support packet injection. Use an external adapter!**
+**Warning:** Built-in Pi WiFi does NOT reliably support packet injection. Use an external adapter!
 
 ### Testing Your Adapter
 
@@ -313,7 +313,7 @@ fn is_handshake_complete(messages: &[Option<EapolMessage>; 4]) -> bool {
 
 ### Legal Notice
 
-⚠️ **Deauthentication attacks are illegal without explicit authorization!**
+Warning: **Deauthentication attacks are illegal without explicit authorization!**
 
 - Only test on networks you own or have written permission to test
 - Unauthorized deauth attacks violate FCC regulations (in the US)

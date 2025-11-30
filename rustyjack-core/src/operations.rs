@@ -976,8 +976,12 @@ fn handle_wifi_deauth(root: &Path, args: WifiDeauthArgs) -> Result<HandlerResult
         );
     }
     
-    // Create loot directory
-    let loot_dir = loot_directory(root, LootKind::Wireless);
+    // Create loot directory under network-specific folder
+    let loot_dir = wireless_target_directory(
+        root,
+        args.ssid.clone(),
+        Some(args.bssid.clone()),
+    );
     fs::create_dir_all(&loot_dir)
         .with_context(|| format!("creating loot directory: {}", loot_dir.display()))?;
     
@@ -1058,8 +1062,12 @@ fn handle_wifi_evil_twin(root: &Path, args: WifiEvilTwinArgs) -> Result<HandlerR
         bail!("Interface {} does not support packet injection (required for Evil Twin)", args.interface);
     }
     
-    // Create loot directory for captured credentials
-    let loot_dir = loot_directory(root, LootKind::Wireless);
+    // Create loot directory for captured credentials under target
+    let loot_dir = wireless_target_directory(
+        root,
+        Some(args.ssid.clone()),
+        args.target_bssid.clone(),
+    );
     fs::create_dir_all(&loot_dir)
         .with_context(|| format!("creating loot directory: {}", loot_dir.display()))?;
     
@@ -1101,8 +1109,12 @@ fn handle_wifi_pmkid(root: &Path, args: WifiPmkidArgs) -> Result<HandlerResult> 
         bail!("Interface {} does not support monitor mode (required for PMKID)", args.interface);
     }
     
-    // Create loot directory
-    let loot_dir = loot_directory(root, LootKind::Wireless);
+    // Create loot directory under target network
+    let loot_dir = wireless_target_directory(
+        root,
+        args.ssid.clone(),
+        args.bssid.clone(),
+    );
     fs::create_dir_all(&loot_dir)?;
     
     let data = json!({
@@ -1140,7 +1152,7 @@ fn handle_wifi_probe_sniff(root: &Path, args: WifiProbeSniffArgs) -> Result<Hand
         bail!("Interface {} does not support monitor mode (required for probe sniffing)", args.interface);
     }
     
-    // Create loot directory
+    // Create loot directory (probe sniff is passive and not target-specific)
     let loot_dir = loot_directory(root, LootKind::Wireless);
     fs::create_dir_all(&loot_dir)?;
     
@@ -1407,6 +1419,47 @@ fn loot_directory(root: &Path, kind: LootKind) -> PathBuf {
         LootKind::Dnsspoof => root.join("DNSSpoof").join("captures"),
         LootKind::Wireless => root.join("loot").join("Wireless"),
     }
+}
+
+/// Build a per-network loot directory under loot/Wireless/<safe_name>
+/// Falls back to BSSID, then "Unknown" if nothing provided.
+fn wireless_target_directory(
+    root: &Path,
+    ssid: Option<String>,
+    bssid: Option<String>,
+) -> PathBuf {
+    let make_safe = |s: &str| {
+        let mut out = String::with_capacity(s.len());
+        for ch in s.chars() {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                out.push(ch);
+            } else {
+                out.push('_');
+            }
+        }
+        let trimmed = out.trim_matches('_').to_string();
+        if trimmed.is_empty() {
+            "Unknown".to_string()
+        } else {
+            trimmed
+        }
+    };
+
+    let name = ssid
+        .as_ref()
+        .map(|s| s.as_str())
+        .filter(|s| !s.is_empty())
+        .map(|s| make_safe(s))
+        .or_else(|| {
+            bssid
+                .as_ref()
+                .map(|b| b.as_str())
+                .filter(|b| !b.is_empty())
+                .map(|b| make_safe(b))
+        })
+        .unwrap_or_else(|| "Unknown".to_string());
+
+    root.join("loot").join("Wireless").join(name)
 }
 
 fn loot_kind_label(kind: LootKind) -> &'static str {

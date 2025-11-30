@@ -3,6 +3,7 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
     process::Command,
+    sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}},
     thread,
     time::Duration,
 };
@@ -22,6 +23,9 @@ use serde_json::{self, Value};
 use tempfile::{NamedTempFile, TempPath};
 use walkdir::WalkDir;
 use zip::{CompressionMethod, ZipWriter, write::FileOptions};
+
+#[cfg(target_os = "linux")]
+use linux_embedded_hal::gpio_cdev::{Chip, LineHandle, LineRequestFlags};
 
 use crate::{
     config::GuiConfig,
@@ -89,6 +93,8 @@ pub struct App {
     core: CoreBridge,
     display: Display,
     buttons: ButtonPad,
+    activity_led: Option<ActivityLed>,
+    active_operation: Option<String>,
     config: GuiConfig,
     menu: MenuTree,
     menu_state: MenuState,
@@ -109,6 +115,97 @@ impl App {
             Button::Key2 => ButtonAction::MainMenu,
             Button::Key3 => ButtonAction::Reboot,
         }
+    }
+
+    fn blink_activity(&self) -> Option<LedBlinker> {
+        self.activity_led.as_ref().map(|led| led.blink())
+    }
+
+    /// Prevent concurrent offensive/recon operations. If busy, inform user and reject.
+    fn guard_operation(&mut self, name: &str) -> Result<Option<OperationGuard>> {
+        if let Some(current) = self.active_operation.clone() {
+            self.show_message("Busy", [
+                "An operation is already running",
+                &format!("Current: {}", current),
+                "Wait for it to finish",
+            ])?;
+            return Ok(None);
+        }
+        self.active_operation = Some(name.to_string());
+        Ok(Some(OperationGuard {
+            app_ptr: self as *mut _,
+            active: true,
+        }))
+    }
+
+    /// Quick preflight before offensive/recon tasks.
+    /// Returns false if preflight failed and the operation should not proceed.
+    fn preflight_check(&mut self, op_name: &str, require_monitor: bool) -> Result<bool> {
+        let iface = self.config.settings.active_network_interface.clone();
+        let mut issues = Vec::new();
+
+        if iface.is_empty() {
+            issues.push("No WiFi interface set (Hardware Detect)");
+        } else {
+            // Check that ip can see the interface and it's not down
+            match Command::new("ip").args(["link", "show", &iface]).output() {
+                Ok(out) if out.status.success() => {
+                    let s = String::from_utf8_lossy(&out.stdout);
+                    if s.to_ascii_lowercase().contains("state down") {
+                        issues.push(&format!("Interface {iface} is DOWN"));
+                    }
+                }
+                _ => issues.push(&format!("Cannot query interface {iface} (ip link)")),
+            }
+
+            // Check monitor support if required
+            if require_monitor {
+                match Command::new("iw").arg("list").output() {
+                    Ok(out) if out.status.success() => {
+                        let text = String::from_utf8_lossy(&out.stdout);
+                        let mut in_modes = false;
+                        let mut has_monitor = false;
+                        for line in text.lines() {
+                            let line = line.trim();
+                            if line.starts_with("Supported interface modes:") {
+                                in_modes = true;
+                                continue;
+                            }
+                            if in_modes {
+                                if line.starts_with('*') {
+                                    if line.contains("monitor") {
+                                        has_monitor = true;
+                                        break;
+                                    }
+                                } else if !line.is_empty() {
+                                    // exited the modes section
+                                    in_modes = false;
+                                }
+                            }
+                        }
+                        if !has_monitor {
+                            issues.push("Adapter lacks monitor mode (needs injection-capable WiFi)");
+                        }
+                    }
+                    _ => issues.push("Cannot determine monitor support (iw list failed)"),
+                }
+            }
+        }
+
+        if issues.is_empty() {
+            return Ok(true);
+        }
+
+        let mut lines = Vec::new();
+        lines.push(format!("{op_name}: preflight failed"));
+        for issue in issues.iter().take(3) {
+            lines.push(issue.to_string());
+        }
+        if issues.len() > 3 {
+            lines.push("More issues...".to_string());
+        }
+        self.show_message("Preflight", lines.iter().map(|s| s.as_str()))?;
+        Ok(false)
     }
 
     fn confirm_reboot(&mut self) -> Result<()> {
@@ -232,6 +329,106 @@ enum ButtonAction {
     Reboot,
 }
 
+#[cfg(target_os = "linux")]
+struct ActivityLed {
+    handle: Arc<Mutex<LineHandle>>,
+}
+
+#[cfg(target_os = "linux")]
+impl ActivityLed {
+    fn new(pin: u32) -> Result<Option<Self>> {
+        if pin == 0 {
+            return Ok(None);
+        }
+
+        let mut chip = Chip::new("/dev/gpiochip0")?;
+        let line = chip.get_line(pin)?;
+        let handle = line.request(
+            LineRequestFlags::OUTPUT,
+            0,
+            "rustyjack-ui-activity-led",
+        )?;
+
+        Ok(Some(Self {
+            handle: Arc::new(Mutex::new(handle)),
+        }))
+    }
+
+    fn blink(&self) -> LedBlinker {
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_flag = Arc::clone(&stop);
+        let handle = Arc::clone(&self.handle);
+        let thread = thread::spawn(move || {
+            let mut state = false;
+            while !stop_flag.load(Ordering::Relaxed) {
+                state = !state;
+                if let Ok(mut h) = handle.lock() {
+                    let _ = h.set_value(if state { 1 } else { 0 });
+                }
+                thread::sleep(Duration::from_millis(350));
+            }
+            if let Ok(mut h) = handle.lock() {
+                let _ = h.set_value(0);
+            }
+        });
+
+        LedBlinker {
+            stop,
+            thread: Some(thread),
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+struct LedBlinker {
+    stop: Arc<AtomicBool>,
+    thread: Option<thread::JoinHandle<()>>,
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for LedBlinker {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(handle) = self.thread.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+struct ActivityLed;
+
+#[cfg(not(target_os = "linux"))]
+impl ActivityLed {
+    fn new(_: u32) -> Result<Option<Self>> {
+        Ok(None)
+    }
+    
+    fn blink(&self) -> LedBlinker {
+        LedBlinker
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+struct LedBlinker;
+
+/// Guard to ensure only one offensive/recon operation runs at a time.
+/// Uses raw pointer to avoid holding a mutable borrow for the entire operation scope.
+struct OperationGuard {
+    app_ptr: *mut App,
+    active: bool,
+}
+
+impl Drop for OperationGuard {
+    fn drop(&mut self) {
+        if self.active {
+            unsafe {
+                (*self.app_ptr).active_operation = None;
+            }
+        }
+    }
+}
+
 impl App {
     pub fn new() -> Result<Self> {
         let core = CoreBridge::with_root(None)?;
@@ -239,6 +436,14 @@ impl App {
         let config = GuiConfig::load(&root)?;
         let mut display = Display::new(&config.colors)?;
         let buttons = ButtonPad::new(&config.pins)?;
+        // Reserve BCM23 (physical pin 16) as the activity LED.
+        // If config overrides to 0, the LED is disabled; otherwise uses that pin.
+        let led_pin = if config.pins.status_led_pin == 0 {
+            23
+        } else {
+            config.pins.status_led_pin
+        };
+        let activity_led = ActivityLed::new(led_pin)?;
         
         // Show splash screen during initialization
         let splash_path = root.join("img").join("rustyjack.png");
@@ -254,6 +459,8 @@ impl App {
             core,
             display,
             buttons,
+            activity_led,
+            active_operation: None,
             config,
             menu: MenuTree::new(),
             menu_state: MenuState::new(),
@@ -522,9 +729,8 @@ impl App {
                 ButtonAction::Back => index = (index + choices.len() - 1) % choices.len(),
                 ButtonAction::Select => {
                     self.apply_color(target.clone(), hex);
-                    self.display
-                        .draw_dialog(&["Color updated".into()], &overlay)?;
-                    thread::sleep(Duration::from_millis(600));
+                    // Require explicit confirmation so the user acknowledges the change
+                    self.show_message("Color", ["Color updated"])?;
                     break;
                 }
                 ButtonAction::Reboot => {
@@ -1543,6 +1749,8 @@ impl App {
                 // primary scan list for clarity. Additional metadata is shown
                 // in the details view.
                 let networks = response.networks;
+                let target_ssid = self.config.settings.target_network.clone();
+                let target_bssid = self.config.settings.target_bssid.clone();
                 let mut labels = Vec::new();
                 for net in &networks {
                     let ssid = net.ssid.as_deref().unwrap_or("<hidden>");
@@ -1552,7 +1760,25 @@ impl App {
                     } else {
                         ssid.to_string()
                     };
-                    labels.push(ssid_display);
+                    // Mark the current target network with a leading asterisk
+                    let mut label = ssid_display;
+                    let mut is_target = false;
+                    if !target_bssid.is_empty() {
+                        if let Some(bssid) = net.bssid.as_deref() {
+                            if bssid.eq_ignore_ascii_case(&target_bssid) {
+                                is_target = true;
+                            }
+                        }
+                    }
+                    if !is_target && !target_ssid.is_empty() {
+                        if net.ssid.as_deref() == Some(target_ssid.as_str()) {
+                            is_target = true;
+                        }
+                    }
+                    if is_target {
+                        label = format!("* {}", label);
+                    }
+                    labels.push(label);
                 }
                 
                 // Interactive network list - loop until user backs out
@@ -1578,6 +1804,15 @@ impl App {
     }
     
     fn launch_deauth_attack(&mut self) -> Result<()> {
+        let _op = match self.guard_operation("Deauth Attack")? {
+            Some(g) => g,
+            None => return Ok(()),
+        };
+
+        if !self.preflight_check("Deauth Attack", true)? {
+            return Ok(());
+        }
+
         let active_interface = self.config.settings.active_network_interface.clone();
         let target_network = self.config.settings.target_network.clone();
         let target_bssid = self.config.settings.target_bssid.clone();
@@ -1616,6 +1851,8 @@ impl App {
             "Duration: 120s",
             "Press SELECT to start"
         ])?;
+        
+        let _activity = self.blink_activity();
         
         // Show progress stages for 120 second attack
         let progress_stages = vec![
@@ -1774,6 +2011,15 @@ impl App {
     }
     
     fn launch_evil_twin(&mut self) -> Result<()> {
+        let _op = match self.guard_operation("Evil Twin Attack")? {
+            Some(g) => g,
+            None => return Ok(()),
+        };
+
+        if !self.preflight_check("Evil Twin Attack", true)? {
+            return Ok(());
+        }
+
         // Check if we have a target set
         let target_network = self.config.settings.target_network.clone();
         let target_bssid = self.config.settings.target_bssid.clone();
@@ -1819,6 +2065,8 @@ impl App {
             return Ok(());
         }
         
+        let _activity = self.blink_activity();
+        
         // Show progress - in background start evil twin
         self.show_progress("Evil Twin", [
             &format!("Creating fake: {}", target_network),
@@ -1857,6 +2105,15 @@ impl App {
     }
     
     fn launch_probe_sniff(&mut self) -> Result<()> {
+        let _op = match self.guard_operation("Probe Sniff")? {
+            Some(g) => g,
+            None => return Ok(()),
+        };
+
+        if !self.preflight_check("Probe Sniff", true)? {
+            return Ok(());
+        }
+
         let active_interface = self.config.settings.active_network_interface.clone();
         
         if active_interface.is_empty() {
@@ -1882,6 +2139,8 @@ impl App {
             Some(2) => 300,
             _ => return Ok(()),
         };
+        
+        let _activity = self.blink_activity();
         
         self.show_progress("Probe Sniff", [
             "Capturing probe requests",
@@ -1933,6 +2192,15 @@ impl App {
     }
     
     fn launch_pmkid_capture(&mut self) -> Result<()> {
+        let _op = match self.guard_operation("PMKID Capture")? {
+            Some(g) => g,
+            None => return Ok(()),
+        };
+
+        if !self.preflight_check("PMKID Capture", true)? {
+            return Ok(());
+        }
+
         let target_network = self.config.settings.target_network.clone();
         let target_bssid = self.config.settings.target_bssid.clone();
         let target_channel = self.config.settings.target_channel;
@@ -1964,6 +2232,8 @@ impl App {
             Some(1) | Some(0) => (false, 60),
             _ => return Ok(()),
         };
+        
+        let _activity = self.blink_activity();
         
         self.show_progress("PMKID Capture", [
             if use_target { "Targeting network..." } else { "Passive capture..." },
@@ -2419,6 +2689,15 @@ impl App {
     
     /// Launch Karma attack
     fn launch_karma_attack(&mut self) -> Result<()> {
+        let _op = match self.guard_operation("Karma Attack")? {
+            Some(g) => g,
+            None => return Ok(()),
+        };
+
+        if !self.preflight_check("Karma Attack", true)? {
+            return Ok(());
+        }
+
         let active_interface = self.config.settings.active_network_interface.clone();
         
         if active_interface.is_empty() {
@@ -2459,6 +2738,8 @@ impl App {
             _ => return Ok(()),
         };
         
+        let _activity = self.blink_activity();
+        
         self.show_progress("Karma Attack", [
             "Listening for probes...",
             "",
@@ -2481,6 +2762,15 @@ impl App {
     
     /// Launch an attack pipeline
     fn launch_attack_pipeline(&mut self, pipeline_type: PipelineType) -> Result<()> {
+        let _op = match self.guard_operation("Attack Pipeline")? {
+            Some(g) => g,
+            None => return Ok(()),
+        };
+
+        if !self.preflight_check("Attack Pipeline", true)? {
+            return Ok(());
+        }
+
         let active_interface = self.config.settings.active_network_interface.clone();
         
         if active_interface.is_empty() {
@@ -2600,6 +2890,8 @@ impl App {
             self.scan_wifi_networks()?;
         }
         
+        let _activity = self.blink_activity();
+        
         // Execute pipeline
         self.show_progress(title, [
             "Pipeline running...",
@@ -2677,6 +2969,15 @@ impl App {
     
     /// Launch passive reconnaissance mode
     fn launch_passive_recon(&mut self) -> Result<()> {
+        let _op = match self.guard_operation("Passive Recon")? {
+            Some(g) => g,
+            None => return Ok(()),
+        };
+
+        if !self.preflight_check("Passive Recon", true)? {
+            return Ok(());
+        }
+
         let active_interface = self.config.settings.active_network_interface.clone();
         
         if active_interface.is_empty() {
@@ -2704,6 +3005,8 @@ impl App {
             Some(3) => 600,
             _ => return Ok(()),
         };
+        
+        let _activity = self.blink_activity();
         
         self.show_progress("Passive Recon", [
             "Starting passive mode...",

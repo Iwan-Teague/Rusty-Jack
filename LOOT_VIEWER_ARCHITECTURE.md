@@ -284,7 +284,7 @@ T9: User presses BACK again
 ---
 
 This architecture enables:
-✅ Efficient memory usage (no full file buffering)
-✅ Responsive UI (event-driven updates)
-✅ Intuitive navigation (familiar button patterns)
-✅ Extensible design (easy to add features)
+- Efficient memory usage (no full file buffering)
+- Responsive UI (event-driven updates)
+- Intuitive navigation (familiar button patterns)
+- Extensible design (easy to add features)

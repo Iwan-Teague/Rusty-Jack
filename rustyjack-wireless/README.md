@@ -1,4 +1,4 @@
-# rustyjack-wireless 🦀📡
+# rustyjack-wireless
 
 Native Rust wireless security toolkit for Raspberry Pi Zero W 2. Replaces aircrack-ng with pure Rust implementations for offensive WiFi operations.
 
@@ -57,11 +57,11 @@ Native Rust wireless security toolkit for Raspberry Pi Zero W 2. Replaces aircra
 
 | Chipset | Monitor | Injection | Notes |
 |---------|:-------:|:---------:|-------|
-| AR9271 | ✅ | ✅ | Best compatibility |
-| RTL8812AU | ✅ | ✅ | 5GHz support |
-| RTL8187 | ✅ | ✅ | Legacy but works |
-| RT3070 | ✅ | ✅ | Good range |
-| MT7612U | ✅ | ✅ | Modern, fast |
+| AR9271 | Yes | Yes | Best compatibility |
+| RTL8812AU | Yes | Yes | 5GHz support |
+| RTL8187 | Yes | Yes | Legacy but works |
+| RT3070 | Yes | Yes | Good range |
+| MT7612U | Yes | Yes | Modern, fast |
 
 ### Recommended Adapters
 
@@ -71,7 +71,7 @@ Native Rust wireless security toolkit for Raspberry Pi Zero W 2. Replaces aircra
 | Alfa AWUS036ACH | RTL8812AU | ~$50 | Dual-band, high power |
 | TP-Link TL-WN722N **v1** | AR9271 | ~$15 | Budget (v1 ONLY!) |
 
-⚠️ **Pi Zero W 2 Built-in WiFi does NOT support injection** - External adapter required.
+Warning: **Pi Zero W 2 Built-in WiFi does NOT support injection** - External adapter required.
 
 ## Usage Examples
 
@@ -223,7 +223,7 @@ DeauthConfig::stealth()     // 8 packets, 5s interval
 
 ## Security & Legal Notice
 
-⚠️ **AUTHORIZED USE ONLY**
+Warning: **AUTHORIZED USE ONLY**
 
 This toolkit is designed for:
 - Penetration testing with explicit written authorization

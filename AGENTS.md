@@ -28,3 +28,6 @@ Project structure (selected):
 - `scripts/` — helper shell scripts (e.g., WiFi driver installer).
 - `install_rustyjack.sh`, `install_rustyjack_dev.sh` — production and debug installers that build and deploy the UI service.
 - `WAVESHARE_PINS.md`, `WAVESHARE_BUTTONS.md` — validated pinout and button behavior references.
+
+Style guard:
+- Don't add any emojis and remove emojis if found in the code.

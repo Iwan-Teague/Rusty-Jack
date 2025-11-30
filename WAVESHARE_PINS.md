@@ -1,12 +1,12 @@
 # Waveshare 1.44″ LCD HAT - Complete GPIO Pin Mapping
 
-## 🎯 Quick Reference
+## Quick Reference
 
 This document lists **ALL** GPIO pins used by the Waveshare 1.44″ LCD HAT on your Raspberry Pi Zero 2 W, as implemented in the Rustyjack project.
 
 ---
 
-## 🔁 Display Rotation
+## Display Rotation
 
 By default Rustyjack rotates the display 90° clockwise so the UI is shown
 in landscape mode on portable Pi builds (e.g. Pi Zero 2 W). You can override
@@ -24,7 +24,7 @@ default (see `install_rustyjack.sh` systemd `Environment=` line).
 
 ---
 
-## 📺 Display Pins (ST7735S LCD Controller)
+## Display Pins (ST7735S LCD Controller)
 
 ### SPI Interface
 | Function | BCM GPIO | Physical Pin | Description | Wire Color (typical) |
@@ -48,7 +48,7 @@ default (see `install_rustyjack.sh` systemd `Environment=` line).
 
 ---
 
-## 🕹️ Input Pins (Joystick + Buttons)
+## Input Pins (Joystick + Buttons)
 
 ### 5-Way Joystick
 | Direction | BCM GPIO | Physical Pin | Description | Config File Key |
@@ -68,7 +68,25 @@ default (see `install_rustyjack.sh` systemd `Environment=` line).
 
 ---
 
-## 🔧 Configuration Files
+## Status LED (Attack/Recon Activity)
+
+- **BCM GPIO**: **23**  
+- **Physical Pin**: **16**  
+- **Purpose**: Flashes during any offensive or reconnaissance operation (deauth, PMKID, probe sniff, karma, passive recon, attack pipelines, evil twin).  
+- **Default Behavior**: Enabled by default. Set `status_led_pin: 0` in `gui_conf.json` to disable or change to another free GPIO.  
+
+### Wiring
+- Connect GPIO23 → **330Ω–470Ω resistor** → LED anode (+).  
+- Connect LED cathode (–) → **GND**.  
+- Use a standard 3mm/5mm red LED (typical forward drop ~2V @ ~5–10mA).  
+
+### Notes
+- Keep this pin free for the activity LED; it is otherwise unused by the Waveshare HAT.  
+- If you prefer PWM dimming, you can move the LED to BCM18 (pin 12) or BCM12 (pin 32) and set `status_led_pin` accordingly in `gui_conf.json`.  
+
+---
+
+## Configuration Files
 
 ### Display Pins - `rustyjack-ui/src/display.rs`
 ```rust
@@ -109,7 +127,7 @@ const fn default_key3() -> u32 { 16 }
 
 ---
 
-## 📋 Physical Layout Diagram
+## Physical Layout Diagram
 
 ```
 ┌─────────────────────────────────────────┐
@@ -134,7 +152,7 @@ const fn default_key3() -> u32 { 16 }
 
 ---
 
-## 🧪 Pin Testing Commands
+## Pin Testing Commands
 
 ### Test Display Backlight
 ```bash
@@ -189,7 +207,7 @@ spi-config -d /dev/spidev0.0 -q
 
 ---
 
-## 🔍 Troubleshooting
+## Troubleshooting
 
 ### Display Not Working?
 
@@ -250,7 +268,7 @@ spi-config -d /dev/spidev0.0 -q
 
 ---
 
-## 📖 Official Documentation
+## Official Documentation
 
 - **Waveshare Wiki**: [1.44inch LCD HAT](https://www.waveshare.com/wiki/1.44inch_LCD_HAT)
 - **ST7735S Datasheet**: [PDF Link](https://files.waveshare.com/upload/e/e2/ST7735S_V1.1_20111121.pdf)
@@ -259,15 +277,15 @@ spi-config -d /dev/spidev0.0 -q
 
 ---
 
-## 🚨 Important Notes
+## Important Notes
 
-### ✅ DO:
+### DO:
 - Use BCM GPIO numbering (as shown in tables above)
 - Ensure SPI is enabled before running Rustyjack
 - Test buttons with `gpioget` before debugging code
 - Keep HAT firmly seated on GPIO header
 
-### ❌ DON'T:
+### DON'T:
 - Use physical pin numbers in code (use BCM GPIO numbers)
 - Hot-swap the HAT while Pi is powered on
 - Connect 5V to any GPIO pins (all are 3.3V only)
@@ -275,7 +293,7 @@ spi-config -d /dev/spidev0.0 -q
 
 ---
 
-## 📝 Change History
+## Change History
 
 | Date | Change | Reason |
 |------|--------|--------|
@@ -288,7 +306,7 @@ spi-config -d /dev/spidev0.0 -q
 
 ---
 
-## ✅ Verification Checklist
+## Verification Checklist
 
 Use this when setting up a new Pi or debugging hardware:
 

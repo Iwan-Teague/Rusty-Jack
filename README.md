@@ -6,7 +6,7 @@
 </p>
 
 <div align="center">
-  <h1>🦀 Rustyjack</h1>
+  <h1>Rustyjack</h1>
 
   <img src="img/rustyjack.bmp" alt="Rustyjack Logo" width="300"/>
 
@@ -16,7 +16,7 @@
     <em>Pure Rust offensive security toolkit</em>
   </p>
 
-> ⚠️ **LEGAL DISCLAIMER**
+> WARNING: **LEGAL DISCLAIMER**
 > 
 > This tool is for **authorized security testing and educational purposes ONLY**.
 > 
@@ -34,29 +34,29 @@
 
 ---
 
-## 📋 Table of Contents
+## Table of Contents
 
-- [What is Rustyjack?](#-what-is-rustyjack)
-- [Features](#-features)
-- [Hardware Requirements](#-hardware-requirements)
-- [Installation](#-installation)
-- [Usage](#-usage)
-- [Loot & Data](#-loot--data)
-- [Troubleshooting](#-troubleshooting)
-- [Credits](#-credits)
+- [What is Rustyjack?](#what-is-rustyjack)
+- [Features](#features)
+- [Hardware Requirements](#hardware-requirements)
+- [Installation](#installation)
+- [Usage](#usage)
+- [Loot & Data](#loot--data)
+- [Troubleshooting](#troubleshooting)
+- [Credits](#credits)
 
 ---
 
-## 🎯 What is Rustyjack?
+## What is Rustyjack?
 
 **Rustyjack** is a self-contained offensive security platform that runs on a Raspberry Pi with an LCD screen. It provides penetration testing tools accessible through a simple joystick interface—no keyboard, monitor, or external computer needed.
 
 ### What Makes It Special?
 
-- **🦀 100% Rust** - Standalone Rust toolkit
-- **📟 Standalone** - LCD screen, buttons, all tools built-in
-- **🔋 Portable** - Pocket-sized, battery-powered option
-- **🛡️ Complete** - Recon, credential capture, phishing, and other integrated tools
+- **100% Rust** - Standalone Rust toolkit
+- **Standalone** - LCD screen, buttons, all tools built-in
+- **Portable** - Pocket-sized, battery-powered option
+- **Complete** - Recon, credential capture, phishing, and other integrated tools
 
 ### Architecture
 
@@ -83,10 +83,10 @@ Notes:
 
 ---
 
-## ✨ Features
+## Features
 
 
-### 💾 Loot & Data
+### Loot & Data
 
 **On-device loot viewer:**
 - Browse captured output and logs (Wireless and other supported outputs)
@@ -99,7 +99,7 @@ Notes:
 - File attachments up to configured size limits
 
 
-### 🎨 User Interface
+### User Interface
 
 **3 View Modes:**
 - **List View** - Classic vertical list (7 items)
@@ -114,7 +114,7 @@ Notes:
 
 ---
 
-## 🛠️ Hardware Requirements
+## Hardware Requirements
 
 ### Required Components
 
@@ -151,12 +151,13 @@ Notes:
 | Key 1 | GPIO 21 | View mode toggle |
 | Key 2 | GPIO 20 | Reserved |
 | Key 3 | GPIO 16 | Back button |
+| Activity LED | GPIO 23 | Flashes during offensive/recon tasks |
 
 **All pins configured in:** `/root/Rustyjack/gui_conf.json`
 
 ---
 
-## 🔘 Button controls
+## Button controls
 
 The on-HAT buttons and joystick map directly to menu navigation and actions. Below is a concise mapping of logical controls (and the GPIO pins used — see the Pin Configuration table above).
 
@@ -242,15 +243,15 @@ chmod +x install_rustyjack.sh
 ```
 
 **What it does:**
-- ✅ Installs Rust toolchain (rustup)
-- ✅ Installs optional system tooling as needed by configured features
-- ✅ Enables SPI and I2C in boot configuration
-- ✅ Compiles `rustyjack-core` (orchestration engine)
-- ✅ Compiles `rustyjack-ui` (LCD interface)
-- ✅ Installs binaries to `/usr/local/bin/`
-- ✅ Creates systemd service `rustyjack.service`
-- ✅ Sets up needed directories (e.g. `loot/`)
-- ✅ Starts service automatically
+- Installs Rust toolchain (rustup)
+- Installs optional system tooling as needed by configured features
+- Enables SPI and I2C in boot configuration
+- Compiles `rustyjack-core` (orchestration engine)
+- Compiles `rustyjack-ui` (LCD interface)
+- Installs binaries to `/usr/local/bin/`
+- Creates systemd service `rustyjack.service`
+- Sets up needed directories (e.g. `loot/`)
+- Starts service automatically
 
 **Time:** ~10-15 minutes (Rust compilation is CPU-intensive)
 
@@ -312,14 +313,14 @@ git pull
 reboot
 ```
 
-⚠️ **Backup loot before updating:**
+Backup loot before updating:
 ```bash
 tar -czf ~/loot_backup_$(date +%Y%m%d).tar.gz loot/
 ```
 
 ---
 
-## 🎮 Usage
+## Usage
 
 ### Button Controls
 
@@ -387,7 +388,7 @@ These components are the primary surface of the current Rustyjack project.
 
 ---
 
-## 📊 Performance
+## Performance
 
 ### Boot Time
 
@@ -530,21 +531,21 @@ Repository: https://github.com/Iwan-Teague/Rusty-Jack.git
 
 ---
 
-## 📄 License
+## License
 
 **Educational and Authorized Testing Only**
 
 This software is provided for:
-- ✅ Security education and research
-- ✅ Authorized penetration testing
-- ✅ CTF competitions
-- ✅ Personal lab environments
+- Security education and research
+- Authorized penetration testing
+- CTF competitions
+- Personal lab environments
 
 This software is **NOT** for:
-- ❌ Unauthorized access
-- ❌ Malicious activities
-- ❌ Breaking laws
-- ❌ Causing harm
+- Unauthorized access
+- Malicious activities
+- Breaking laws
+- Causing harm
 
 **You are solely responsible for your use of this tool.**
 
@@ -552,12 +553,12 @@ This software is **NOT** for:
 
 ---
 
-## ⚠️ Legal Warning
+## Legal Warning
 
 ```
 ╔═══════════════════════════════════════════════════════╗
 ║                                                       ║
-║   ⚠️  UNAUTHORIZED ACCESS IS A FEDERAL CRIME  ⚠️      ║
+║   WARNING  UNAUTHORIZED ACCESS IS A FEDERAL CRIME      ║
 ║                                                       ║
 ║   Violating computer security laws can result in:    ║
 ║   • Heavy fines ($100,000+)                          ║
@@ -574,7 +575,7 @@ This software is **NOT** for:
 
 <div align="center">
 
-**🦀 Rustyjack - Portable Offensive Security 🦀**
+**Rustyjack - Portable Offensive Security**
 
 *Built with Rust • Powered by Raspberry Pi • Made for Security Professionals*
 

@@ -43,15 +43,11 @@
 
 ## Tips
 
-✅ **Browse Multiple Files**: After viewing a file, press BACK to return to file list - no need to navigate from main menu again
-
-✅ **Quick Navigation**: Use SELECT to jump down pages quickly when reading long files
-
-✅ **Check Position**: The `(current/total)` indicator always shows where you are in the file
-
-✅ **Long Lines**: Lines longer than 18 characters automatically wrap to next line
-
-⚠️ **Large Files**: Files with 5000+ lines will be truncated - you'll see the first 5000 lines only
+- Browse multiple files: After viewing a file, press BACK to return to file list - no need to navigate from main menu again
+- Quick navigation: Use SELECT to jump down pages quickly when reading long files
+- Check position: The `(current/total)` indicator always shows where you are in the file
+- Long lines: Lines longer than 18 characters automatically wrap to next line
+- Large files: Files with 5000+ lines will be truncated - you'll see the first 5000 lines only
 
 ## Example Workflow
 

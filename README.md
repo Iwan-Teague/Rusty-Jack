@@ -92,6 +92,7 @@ Notes:
 - Browse captured output and logs (Wireless and other supported outputs)
 - View device-generated logs and export files
 - Navigate and open files using LCD buttons
+- Wireless loot is grouped per target under `loot/Wireless/<target>/` (target = SSID, else BSSID). Handshakes, PMKIDs, and attack logs are saved inside that folder for easy export (USB/FAT/exFAT compatible).
 
 **Discord integration:**
 - Manual upload of ZIP loot archives via the UI when configured

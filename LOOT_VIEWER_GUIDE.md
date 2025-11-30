@@ -87,6 +87,7 @@ Main Menu
 | Can't scroll down at end | Already at last line |
 
 ## File Locations
+- **Wireless**: `~/Rustyjack/loot/Wireless/<target>/` (target = SSID, else BSSID). Handshakes, PMKIDs, logs are grouped per network.
 - **Nmap**: `~/Rustyjack/loot/Nmap/`
 - **Responder**: `~/Rustyjack/loot/Responder/` and `~/Rustyjack/Responder/logs/`
 - **DNSSpoof**: `~/Rustyjack/loot/MITM/` and `~/Rustyjack/DNSSpoof/captures/`

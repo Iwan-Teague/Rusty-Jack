@@ -24,7 +24,6 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::error::{WirelessError, Result};
-use crate::frames::MacAddress;
 use crate::handshake::HandshakeExport;
 
 use hmac::{Hmac, Mac};

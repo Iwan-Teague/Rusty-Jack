@@ -142,20 +142,20 @@ impl App {
     /// Returns false if preflight failed and the operation should not proceed.
     fn preflight_check(&mut self, op_name: &str, require_monitor: bool) -> Result<bool> {
         let iface = self.config.settings.active_network_interface.clone();
-        let mut issues = Vec::new();
+        let mut issues: Vec<String> = Vec::new();
 
         if iface.is_empty() {
-            issues.push("No WiFi interface set (Hardware Detect)");
+            issues.push("No WiFi interface set (Hardware Detect)".to_string());
         } else {
             // Check that ip can see the interface and it's not down
             match Command::new("ip").args(["link", "show", &iface]).output() {
                 Ok(out) if out.status.success() => {
                     let s = String::from_utf8_lossy(&out.stdout);
                     if s.to_ascii_lowercase().contains("state down") {
-                        issues.push(&format!("Interface {iface} is DOWN"));
+                        issues.push(format!("Interface {iface} is DOWN"));
                     }
                 }
-                _ => issues.push(&format!("Cannot query interface {iface} (ip link)")),
+                _ => issues.push(format!("Cannot query interface {iface} (ip link)")),
             }
 
             // Check monitor support if required
@@ -184,10 +184,10 @@ impl App {
                             }
                         }
                         if !has_monitor {
-                            issues.push("Adapter lacks monitor mode (needs injection-capable WiFi)");
+                            issues.push("Adapter lacks monitor mode (needs injection-capable WiFi)".to_string());
                         }
                     }
-                    _ => issues.push("Cannot determine monitor support (iw list failed)"),
+                    _ => issues.push("Cannot determine monitor support (iw list failed)".to_string()),
                 }
             }
         }
@@ -362,12 +362,12 @@ impl ActivityLed {
             let mut state = false;
             while !stop_flag.load(Ordering::Relaxed) {
                 state = !state;
-                if let Ok(mut h) = handle.lock() {
+                if let Ok(h) = handle.lock() {
                     let _ = h.set_value(if state { 1 } else { 0 });
                 }
                 thread::sleep(Duration::from_millis(350));
             }
-            if let Ok(mut h) = handle.lock() {
+            if let Ok(h) = handle.lock() {
                 let _ = h.set_value(0);
             }
         });
@@ -1683,7 +1683,7 @@ impl App {
                         details.push("".to_string());
                         details.push("[OK] Set Active".to_string());
                         
-                        self.display.draw_menu("Interface details", &details, usize::MAX, &self.stats.snapshot())?;;
+                        self.display.draw_menu("Interface details", &details, usize::MAX, &self.stats.snapshot())?;
                         // Wait for action
                         loop {
                             let btn = self.buttons.wait_for_press()?;
@@ -2261,7 +2261,7 @@ impl App {
                         lines.push("Auto-cracking...".to_string());
                         
                         // If PMKID was captured, trigger auto-crack
-                        if let Some(hashcat) = data.get("hashcat_format").and_then(|v| v.as_str()) {
+                        if let Some(_hashcat) = data.get("hashcat_format").and_then(|v| v.as_str()) {
                             lines.push(format!("Hash saved for cracking"));
                         }
                     } else {
@@ -2388,7 +2388,6 @@ impl App {
     /// Keeps user on screen until installation completes or fails
     fn install_wifi_drivers(&mut self) -> Result<()> {
         use std::fs;
-        use std::io::{BufRead, BufReader};
         use std::process::{Command, Stdio};
         
         // Status file used by the driver installer script

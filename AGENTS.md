@@ -28,6 +28,7 @@ Project structure (selected):
 - `scripts/` — helper shell scripts (e.g., WiFi driver installer).
 - `install_rustyjack.sh`, `install_rustyjack_dev.sh` — production and debug installers that build and deploy the UI service.
 - `WAVESHARE_PINS.md`, `WAVESHARE_BUTTONS.md` — validated pinout and button behavior references.
+- Loot storage: wireless captures are grouped per target under `loot/Wireless/<target>/` (target = SSID, else BSSID); reuse that when saving handshakes, PMKIDs, logs.
 
 Style guard:
 - Don't add any emojis and remove emojis if found in the code.

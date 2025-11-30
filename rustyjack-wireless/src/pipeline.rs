@@ -5,7 +5,7 @@
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// Pipeline objective - what the user wants to achieve
 #[derive(Debug, Clone, Copy, PartialEq)]

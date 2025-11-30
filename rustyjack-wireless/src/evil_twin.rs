@@ -15,9 +15,7 @@
 //! - Or single interface if not doing simultaneous deauth
 //! - hostapd for AP creation (or native beacon injection)
 
-use std::fs::{self, File};
-use std::io::Write;
-use std::path::Path;
+use std::fs;
 use std::process::{Command, Child, Stdio};
 use std::time::{Duration, Instant};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -27,8 +25,8 @@ use std::thread;
 use crate::error::{WirelessError, Result};
 use crate::frames::MacAddress;
 use crate::interface::WirelessInterface;
-use crate::capture::{PacketCapture, CaptureFilter};
-use crate::handshake::{HandshakeCapture, HandshakeState};
+use crate::capture::PacketCapture;
+use crate::handshake::HandshakeCapture;
 use crate::deauth::{DeauthAttacker, DeauthConfig};
 
 /// Evil Twin configuration
@@ -184,7 +182,7 @@ impl EvilTwin {
         }
         
         // Start handshake capture
-        let handshake_capture = if !self.config.open_network {
+        let _handshake_capture = if !self.config.open_network {
             Some(Arc::new(std::sync::Mutex::new(
                 HandshakeCapture::new(
                     self.get_ap_mac()?,
@@ -217,8 +215,8 @@ impl EvilTwin {
         };
         
         // Monitor for connections/handshakes
-        let capture_stop = Arc::clone(&self.stop_flag);
-        let ap_iface = self.config.ap_interface.clone();
+        let _capture_stop = Arc::clone(&self.stop_flag);
+        let _ap_iface = self.config.ap_interface.clone();
         
         while start.elapsed() < self.config.duration && !self.stop_flag.load(Ordering::Relaxed) {
             thread::sleep(Duration::from_secs(1));

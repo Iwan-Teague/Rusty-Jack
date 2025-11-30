@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// Karma attack configuration
 #[derive(Debug, Clone)]
@@ -358,7 +358,6 @@ impl KarmaAttack {
         };
         
         // Probe pattern analysis
-        let has_hidden = probes.iter().any(|p| p.is_empty());
         let probe_count = probes.len();
         
         let device_type = if vendor == "Apple" {
@@ -475,7 +474,7 @@ impl KarmaAttack {
         let victims = self.victims.lock().unwrap().clone();
         
         let ssids_seen: Vec<String> = {
-            let mut ssids: std::collections::HashSet<String> = probes.iter()
+            let ssids: std::collections::HashSet<String> = probes.iter()
                 .map(|p| p.ssid.clone())
                 .collect();
             ssids.into_iter().collect()

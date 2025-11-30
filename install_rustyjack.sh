@@ -177,7 +177,7 @@ fi
 step "Setting up WiFi attack environment..."
 
 # Create loot directories
-sudo mkdir -p "$PROJECT_ROOT/loot"/{Wireless,Nmap,Responder,DNSSpoof}
+sudo mkdir -p "$PROJECT_ROOT/loot"/{Wireless,Nmap,Responder,DNSSpoof,Ethernet}
 sudo chmod -R 755 "$PROJECT_ROOT/loot"
 
 # Create WiFi profiles directory

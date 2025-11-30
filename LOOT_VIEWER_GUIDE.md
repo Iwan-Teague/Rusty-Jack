@@ -88,6 +88,7 @@ Main Menu
 
 ## File Locations
 - **Wireless**: `~/Rustyjack/loot/Wireless/<target>/` (target = SSID, else BSSID). Handshakes, PMKIDs, logs are grouped per network.
+- **Ethernet**: `~/Rustyjack/loot/Ethernet/` (LAN discovery and port scan results).
 - **Nmap**: `~/Rustyjack/loot/Nmap/`
 - **Responder**: `~/Rustyjack/loot/Responder/` and `~/Rustyjack/Responder/logs/`
 - **DNSSpoof**: `~/Rustyjack/loot/MITM/` and `~/Rustyjack/DNSSpoof/captures/`

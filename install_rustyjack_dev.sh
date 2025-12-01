@@ -15,6 +15,14 @@ info()  { printf "\e[1;32m[INFO]\e[0m %s\n"  "$*"; }
 warn()  { printf "\e[1;33m[WARN]\e[0m %s\n"  "$*"; }
 fail()  { printf "\e[1;31m[FAIL]\e[0m %s\n"  "$*"; exit 1; }
 cmd()   { command -v "$1" >/dev/null 2>&1; }
+has_crate_artifact() {
+  local crate="$1"
+  local mode="${2:-debug}"
+  local base="$PROJECT_ROOT/target/$mode"
+  compgen -G "$base/deps/lib${crate}-*.rlib" >/dev/null || \
+  compgen -G "$base/deps/lib${crate}-*.rmeta" >/dev/null || \
+  compgen -G "$base/deps/lib${crate}-*.so" >/dev/null
+}
 
 echo ""
 info "=========================================="
@@ -287,16 +295,16 @@ else
 fi
 
 # Verify library crates were compiled
-if [ -f "$PROJECT_ROOT/target/debug/librustyjack_core.rlib" ]; then
+if has_crate_artifact "rustyjack_core" "debug"; then
   info "[OK] rustyjack-core library compiled"
 else
-  warn "[X] rustyjack-core library not found"
+  warn "[X] rustyjack-core library not found in target/debug/deps/ (Cargo hashes file names)"
 fi
 
-if [ -f "$PROJECT_ROOT/target/debug/librustyjack_evasion.rlib" ]; then
+if has_crate_artifact "rustyjack_evasion" "debug"; then
   info "[OK] rustyjack-evasion library compiled"
 else
-  warn "[X] rustyjack-evasion library not found"
+  warn "[X] rustyjack-evasion library not found in target/debug/deps/ (Cargo hashes file names)"
 fi
 
 if systemctl is-active --quiet rustyjack.service; then

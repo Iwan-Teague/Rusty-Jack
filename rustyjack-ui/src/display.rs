@@ -192,18 +192,6 @@ impl Display {
             .context("requesting backlight line")?;
         let __backlight = CdevPin::new(bl_handle).context("creating backlight pin")?;
 
-        // If diagnostic mode is enabled via env var we run a set of init
-        // permutations to help identify a working configuration on a
-        // problematic module. This routine doesn't replace the normal UI
-        // flow, it just allows you to run diagnostics when invoked.
-        if std::env::var("RUSTYJACK_DISPLAY_DIAG").is_ok() {
-            // run diagnostics by taking ownership of the SPI and pins.
-            if let Err(e) = Self::run_diagnostics(colors) {
-                eprintln!("Display diagnostics failed: {:#}", e);
-            }
-            std::process::exit(0);
-        }
-
         let mut delay = Delay {};
         // Default to non-inverted / RGB mode so color names map correctly.
         // Previous default used inverted/BGR which can make blacks/whites and

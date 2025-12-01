@@ -1,4 +1,4 @@
-use std::{thread, time::Duration};
+use std::{thread, time::{Duration, Instant}};
 
 use anyhow::Result;
 
@@ -52,10 +52,11 @@ mod platform {
         }
     }
 
-pub struct ButtonPad {
-    buttons: Vec<ButtonInput>,
-    __debounce: Duration,
-}
+    pub struct ButtonPad {
+        buttons: Vec<ButtonInput>,
+        __debounce: Duration,
+        last_press: Instant,
+    }
 
     impl ButtonPad {
         pub fn new(pins: &PinConfig) -> Result<Self> {
@@ -86,9 +87,11 @@ pub struct ButtonPad {
             buttons.push(ButtonInput::new(Button::Key2, pins.key2_pin, &mut chip)?);
             buttons.push(ButtonInput::new(Button::Key3, pins.key3_pin, &mut chip)?);
 
+            let debounce = Duration::from_millis(120);
             Ok(Self {
                 buttons,
-                __debounce: Duration::from_millis(120),
+                __debounce: debounce,
+                last_press: Instant::now() - debounce,
             })
         }
 
@@ -125,9 +128,13 @@ pub struct ButtonPad {
             }
         }
 
-        fn poll(&self) -> Result<Option<Button>> {
+        fn poll(&mut self) -> Result<Option<Button>> {
             for btn in &self.buttons {
                 if btn.is_pressed()? {
+                    if self.last_press.elapsed() < self.__debounce {
+                        return Ok(None);
+                    }
+                    self.last_press = Instant::now();
                     return Ok(Some(btn.kind));
                 }
             }

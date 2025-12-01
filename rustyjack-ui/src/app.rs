@@ -774,11 +774,25 @@ impl App {
         for entry in &files {
             if let Some(path) = entry.get("path").and_then(Value::as_str) {
                 let display_path = Path::new(path);
-                let display = display_path
-                    .strip_prefix(&self.root)
-                    .unwrap_or(display_path)
-                    .to_string_lossy()
-                    .to_string();
+                let display = match section {
+                    LootSection::Wireless => {
+                        // Show path relative to loot/Wireless to highlight target folder
+                        let base = self.root.join("loot").join("Wireless");
+                        display_path
+                            .strip_prefix(&base)
+                            .unwrap_or(display_path)
+                            .to_string_lossy()
+                            .to_string()
+                    }
+                    LootSection::Ethernet => {
+                        let base = self.root.join("loot").join("Ethernet");
+                        display_path
+                            .strip_prefix(&base)
+                            .unwrap_or(display_path)
+                            .to_string_lossy()
+                            .to_string()
+                    }
+                };
                 paths.push(path.to_string());
                 labels.push(display);
             }

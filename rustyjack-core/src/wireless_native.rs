@@ -119,8 +119,8 @@ pub fn execute_deauth_attack(
     let ssid_display = config.ssid.clone().unwrap_or_else(|| config.bssid.clone());
     let safe_ssid =
         ssid_display.replace(|c: char| !c.is_alphanumeric() && c != '-' && c != '_', "_");
-    let log_file = loot_dir.join(format!("deauth_{}_{}.txt", safe_ssid, timestamp));
-    let capture_file = loot_dir.join(format!("{}_{}.pcap", safe_ssid, timestamp));
+    let log_file = loot_dir.join(format!("log_deauth_{}_{}.txt", safe_ssid, timestamp));
+    let capture_file = loot_dir.join(format!("handshake_{}_{}.pcap", safe_ssid, timestamp));
 
     // Create loot directory
     fs::create_dir_all(loot_dir)

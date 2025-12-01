@@ -88,7 +88,7 @@ pub struct ButtonPad {
 
             Ok(Self {
                 buttons,
-                _debounce: Duration::from_millis(120),
+                __debounce: Duration::from_millis(120),
             })
         }
 

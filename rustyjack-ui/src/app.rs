@@ -12,7 +12,7 @@ use anyhow::{Result, bail, Context};
 use rustyjack_core::cli::{
     Commands, DiscordCommand, DiscordSendArgs,
     HardwareCommand, LootCommand, LootKind, LootListArgs, 
-    LootReadArgs, NotifyCommand, SystemUpdateArgs, ScanRunArgs,
+    LootReadArgs, NotifyCommand, SystemUpdateArgs,
     WifiCommand, WifiDeauthArgs, WifiScanArgs, 
     WifiProfileCommand, WifiProfileConnectArgs, WifiProfileDeleteArgs,
     EthernetCommand, EthernetDiscoverArgs, EthernetPortScanArgs,
@@ -1107,6 +1107,27 @@ impl App {
                 self.show_message("Wi-Fi error", msg.iter().map(|s| s.as_str()))?;
             }
         }
+        Ok(())
+    }
+
+    fn delete_profile(&mut self, ssid: &str) -> Result<()> {
+        let args = WifiProfileDeleteArgs {
+            ssid: ssid.to_string(),
+        };
+
+        match self.core.dispatch(Commands::Wifi(WifiCommand::Profile(
+            WifiProfileCommand::Delete(args),
+        ))) {
+            Ok(_) => {
+                let msg = vec![format!("Deleted profile {ssid}")];
+                self.show_message("Wi-Fi", msg.iter().map(|s| s.as_str()))?;
+            }
+            Err(err) => {
+                let msg = vec![String::from("Delete failed"), format!("{err}")];
+                self.show_message("Wi-Fi error", msg.iter().map(|s| s.as_str()))?;
+            }
+        }
+
         Ok(())
     }
 

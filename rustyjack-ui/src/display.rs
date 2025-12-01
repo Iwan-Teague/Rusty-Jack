@@ -190,7 +190,7 @@ impl Display {
         let bl_line = chip.get_line(24).context("getting backlight line")?;
         let bl_handle = bl_line.request(LineRequestFlags::OUTPUT, 1, "rustyjack-bl")
             .context("requesting backlight line")?;
-        let _backlight = CdevPin::new(bl_handle).context("creating backlight pin")?;
+        let __backlight = CdevPin::new(bl_handle).context("creating backlight pin")?;
 
         // If diagnostic mode is enabled via env var we run a set of init
         // permutations to help identify a working configuration on a
@@ -253,7 +253,7 @@ impl Display {
             text_style_regular,
             text_style_highlight,
             text_style_small,
-            _backlight,
+            __backlight,
         })
     }
 

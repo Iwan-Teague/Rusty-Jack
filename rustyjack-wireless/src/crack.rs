@@ -118,6 +118,59 @@ impl WpaCracker {
         self.attempts.load(Ordering::Relaxed)
     }
 
+    /// Crack using a password list with progress callback
+    pub fn crack_passwords_with_progress(
+        &mut self,
+        passwords: &[String],
+        total: Option<u64>,
+        mut on_progress: Option<&mut dyn FnMut(CrackProgress)>,
+    ) -> Result<CrackResult> {
+        let start = Instant::now();
+        let total = total.unwrap_or(passwords.len() as u64);
+        let progress_interval = self.config.progress_interval.max(1);
+
+        for (idx, password) in passwords.iter().enumerate() {
+            if self.stop_flag.load(Ordering::Relaxed) {
+                return Ok(CrackResult::Stopped {
+                    attempts: self.attempts(),
+                });
+            }
+
+            let attempts = self.attempts.fetch_add(1, Ordering::Relaxed) + 1;
+            if self.verify_password(password)? {
+                return Ok(CrackResult::Found(password.clone()));
+            }
+
+            if let Some(ref mut cb) = on_progress {
+                if attempts % progress_interval == 0 || attempts == total {
+                    let elapsed = start.elapsed();
+                    let rate = if elapsed.as_secs_f32() > 0.0 {
+                        attempts as f32 / elapsed.as_secs_f32()
+                    } else {
+                        0.0
+                    };
+                    let eta = if rate > 0.0 && total > 0 {
+                        let remaining = total.saturating_sub(attempts) as f32 / rate;
+                        Some(Duration::from_secs_f32(remaining))
+                    } else {
+                        None
+                    };
+                    cb(CrackProgress {
+                        attempts,
+                        current: password.clone(),
+                        elapsed,
+                        rate,
+                        eta,
+                    });
+                }
+            }
+        }
+
+        Ok(CrackResult::Exhausted {
+            attempts: self.attempts(),
+        })
+    }
+
     /// Crack using wordlist file
     pub fn crack_wordlist(&mut self, wordlist_path: &Path) -> Result<CrackResult> {
         if !wordlist_path.exists() {

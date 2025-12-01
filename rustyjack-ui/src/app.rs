@@ -12,6 +12,7 @@ use std::{
 };
 
 use anyhow::{bail, Context, Result};
+use chrono::Local;
 use rustyjack_core::cli::{
     Commands, DiscordCommand, DiscordSendArgs, EthernetCommand, EthernetDiscoverArgs,
     EthernetPortScanArgs, HardwareCommand, LootCommand, LootKind, LootListArgs, LootReadArgs,
@@ -2478,61 +2479,96 @@ impl App {
         let selected_file = &handshake_files[idx];
         let file_path = loot_dir.join(selected_file);
 
-        // Crack method selection
-        let methods = vec![
-            "Quick (common)".to_string(),
-            "8-digit PINs".to_string(),
-            "SSID patterns".to_string(),
-        ];
+        // Local crack using rustyjack-wireless with progress updates
+        #[derive(serde::Deserialize)]
+        struct HandshakeBundle {
+            ssid: String,
+            handshake: rustyjack_wireless::handshake::HandshakeExport,
+        }
 
-        let method = self.choose_from_list("Crack Method", &methods)?;
-
-        let crack_mode = match method {
-            Some(0) => "quick",
-            Some(1) => "pins",
-            Some(2) => "ssid",
-            _ => return Ok(()),
+        let bundle: HandshakeBundle = {
+            let data = std::fs::read(&file_path)
+                .map_err(|e| anyhow::anyhow!("Failed to read handshake export: {}", e))?;
+            serde_json::from_slice(&data)
+                .map_err(|e| anyhow::anyhow!("Failed to parse handshake export: {}", e))?
         };
 
-        self.show_progress(
-            "Cracking",
-            [
-                &format!("File: {}", selected_file),
-                "This may take a while...",
-            ],
-        )?;
+        let ssid = bundle.ssid.clone();
 
-        use rustyjack_core::{Commands, WifiCommand, WifiCrackArgs};
+        // Build password list (common + SSID-based), limited to 100k entries
+        let mut passwords = rustyjack_wireless::crack::generate_common_passwords();
+        passwords.append(&mut rustyjack_wireless::crack::generate_ssid_passwords(&ssid));
+        let max_pw = 100_000usize;
+        if passwords.len() > max_pw {
+            passwords.truncate(max_pw);
+        }
+        let total = passwords.len() as u64;
 
-        let cmd = Commands::Wifi(WifiCommand::Crack(WifiCrackArgs {
-            file: file_path.to_string_lossy().to_string(),
-            mode: crack_mode.to_string(),
-            ssid: None,
-            wordlist: None,
-        }));
+        let mut cracker =
+            rustyjack_wireless::crack::WpaCracker::new(bundle.handshake.clone(), &ssid);
+        let mut attempts = 0u64;
+        let mut found: Option<String> = None;
 
-        match self.core.dispatch(cmd) {
-            Ok((msg, data)) => {
-                let mut lines = vec![msg];
-
-                if let Some(password) = data.get("password").and_then(|v| v.as_str()) {
-                    lines.push("".to_string());
-                    lines.push("PASSWORD FOUND!".to_string());
-                    lines.push(format!("{}", password));
+        // Progress callback updates the progress dialog
+        {
+            let mut progress_cb = |prog: rustyjack_wireless::crack::CrackProgress| {
+                attempts = prog.attempts;
+                let pct = if total > 0 {
+                    (prog.attempts as f32 / total as f32 * 100.0).min(100.0)
                 } else {
-                    if let Some(attempts) = data.get("attempts").and_then(|v| v.as_u64()) {
-                        lines.push(format!("Tried: {} passwords", attempts));
-                    }
-                    lines.push("No match found".to_string());
-                    lines.push("Try different method".to_string());
-                }
+                    0.0
+                };
+                let msg = format!("{} / {} ({:.1}%)", prog.attempts, total, pct);
+                let _ = self.display.draw_progress_dialog(
+                    "Cracking (quick)",
+                    &msg,
+                    pct,
+                    &self.stats.snapshot(),
+                );
+            };
 
-                self.show_message("Crack Result", lines.iter().map(|s| s.as_str()))?;
-            }
-            Err(e) => {
-                self.show_message("Crack Error", [format!("{}", e)])?;
+            match cracker.crack_passwords_with_progress(&passwords, Some(total), Some(&mut progress_cb)) {
+                Ok(rustyjack_wireless::crack::CrackResult::Found(p)) => {
+                    found = Some(p);
+                }
+                Ok(rustyjack_wireless::crack::CrackResult::Exhausted { attempts: a }) => {
+                    attempts = a;
+                }
+                Ok(rustyjack_wireless::crack::CrackResult::Stopped { attempts: a }) => {
+                    attempts = a;
+                }
+                Err(e) => {
+                    return self.show_message("Crack Error", [format!("{}", e)]);
+                }
             }
         }
+
+        // Save result if found
+        let mut lines = Vec::new();
+        if let Some(password) = found {
+            let ts = chrono::Local::now().format("%Y%m%d_%H%M%S");
+            let outfile = file_path
+                .parent()
+                .unwrap_or(&loot_dir)
+                .join(format!("crack_result_{}.txt", ts));
+            let content = format!(
+                "SSID: {}\nFile: {}\nMode: quick\nPassword: {}\nAttempts: {}\n",
+                ssid,
+                selected_file,
+                password,
+                attempts
+            );
+            let _ = std::fs::write(&outfile, content);
+
+            lines.push("PASSWORD FOUND!".to_string());
+            lines.push(format!("{}", password));
+            lines.push(format!("Saved: {}", outfile.display()));
+        } else {
+            lines.push(format!("Tried: {} passwords", attempts));
+            lines.push("No match found".to_string());
+        }
+
+        self.show_message("Crack Result", lines.iter().map(|s| s.as_str()))?;
 
         Ok(())
     }

@@ -184,6 +184,7 @@ fn pipeline_menu() -> Vec<MenuEntry> {
     ]
 }
 
+#[allow(dead_code)]
 fn stealth_menu() -> Vec<MenuEntry> {
     vec![
         MenuEntry::new("Randomize MAC", MenuAction::RandomizeMacNow),

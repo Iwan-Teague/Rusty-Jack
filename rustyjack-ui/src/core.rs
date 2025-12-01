@@ -28,6 +28,7 @@ impl CoreBridge {
     where
         F: FnMut(f32, &str),
     {
+        #[allow(dead_code)]
         run_scan_with_progress(&self.root, args, on_progress)
     }
 

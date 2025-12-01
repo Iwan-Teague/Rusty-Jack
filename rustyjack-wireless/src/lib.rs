@@ -45,7 +45,7 @@
 //! ```
 
 #![cfg(target_os = "linux")]
-#![warn(missing_docs)]
+#![allow(missing_docs)]
 #![warn(clippy::all)]
 
 // Module declarations

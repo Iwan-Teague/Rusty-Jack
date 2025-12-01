@@ -68,13 +68,3 @@ default = []
 async = ["tokio"]
 
 # Build configuration
-[profile.release]
-opt-level = 3
-lto = true
-codegen-units = 1
-strip = true
-
-# Raspberry Pi optimized build
-[profile.release-pi]
-inherits = "release"
-opt-level = "s"  # Optimize for size on embedded

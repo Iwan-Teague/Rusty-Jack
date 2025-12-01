@@ -5,7 +5,6 @@
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}};
-use std::time::Duration;
 
 /// Pipeline objective - what the user wants to achieve
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -151,7 +150,6 @@ pub struct AttackPipeline {
     config: PipelineConfig,
     running: Arc<AtomicBool>,
     current_stage: Arc<Mutex<PipelineStage>>,
-    results: Arc<Mutex<Vec<TechniqueResult>>>,
 }
 
 impl AttackPipeline {
@@ -160,7 +158,6 @@ impl AttackPipeline {
             config,
             running: Arc::new(AtomicBool::new(false)),
             current_stage: Arc::new(Mutex::new(PipelineStage::Recon)),
-            results: Arc::new(Mutex::new(Vec::new())),
         }
     }
     

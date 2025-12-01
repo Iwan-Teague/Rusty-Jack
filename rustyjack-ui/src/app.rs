@@ -48,46 +48,19 @@ struct WifiNetworkEntry {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct WifiScanResponse {
     networks: Vec<WifiNetworkEntry>,
-    count: usize,
 }
 
 #[derive(Debug, Deserialize)]
 struct WifiProfileSummary {
     ssid: String,
-    #[serde(default)]
-    interface: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 struct WifiProfilesResponse {
     profiles: Vec<WifiProfileSummary>,
-}
-
-#[derive(Debug, Deserialize)]
-struct WifiListResponse {
-    interfaces: Vec<InterfaceSummary>,
-}
-
-#[derive(Debug, Deserialize)]
-struct RouteSnapshot {
-    #[serde(default)]
-    default_gateway: Option<String>,
-    #[serde(default)]
-    default_interface: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct WifiStatusOverview {
-    #[serde(default)]
-    connected: bool,
-    #[serde(default)]
-    ssid: Option<String>,
-    #[serde(default)]
-    interface: Option<String>,
-    #[serde(default)]
-    signal_dbm: Option<i32>,
 }
 
 pub struct App {
@@ -634,15 +607,7 @@ impl App {
         Ok(())
     }
 
-    fn simple_command(&mut self, command: Commands, success: &str) -> Result<()> {
-        if let Err(err) = self.core.dispatch(command) {
-            self.show_message("Error", [format!("{err}")])?;
-        } else {
-            self.show_message("Success", [success.to_string()])?;
-        }
-        Ok(())
-    }
-
+    #[allow(dead_code)]
     fn show_message<I, S>(&mut self, title: &str, lines: I) -> Result<()>
     where
         I: IntoIterator<Item = S>,
@@ -677,6 +642,7 @@ impl App {
         Ok(())
     }
     
+    #[allow(dead_code)]
     fn show_progress<I, S>(&mut self, title: &str, lines: I) -> Result<()>
     where
         I: IntoIterator<Item = S>,
@@ -688,15 +654,6 @@ impl App {
             .collect();
         self.display.draw_dialog(&content, &overlay)?;
         Ok(())
-    }
-    
-    fn execute_with_progress<F, T>(&mut self, title: &str, message: &str, operation: F) -> Result<T>
-    where
-        F: FnOnce() -> Result<T>,
-    {
-        self.show_progress(title, [message, "Please wait..."])?;
-        let result = operation();
-        result
     }
 
     fn reload_config(&mut self) -> Result<()> {
@@ -984,35 +941,6 @@ impl App {
         }
     }
 
-    fn prompt_octet(&mut self, prefix: &str) -> Result<Option<u8>> {
-        let mut value: i32 = 1;
-        loop {
-            let overlay = self.stats.snapshot();
-            let content = vec![
-                "Reverse shell target".to_string(),
-                format!("{prefix}.{}", value.clamp(0, 255)),
-                "UP/DOWN to adjust".to_string(),
-                "OK to confirm".to_string(),
-            ];
-            self.display.draw_dialog(&content, &overlay)?;
-            let button = self.buttons.wait_for_press()?;
-            match self.map_button(button) {
-                ButtonAction::Up => value = (value + 1).min(255),
-                ButtonAction::Down => value = (value - 1).max(0),
-                ButtonAction::Select => return Ok(Some(value as u8)),
-                ButtonAction::Back => return Ok(None),
-                ButtonAction::MainMenu => {
-                    self.menu_state.home();
-                    return Ok(None);
-                }
-                ButtonAction::Reboot => {
-                    self.confirm_reboot()?;
-                }
-                _ => {}
-            }
-        }
-    }
-
     fn handle_network_selection(&mut self, network: &WifiNetworkEntry) -> Result<()> {
         let Some(ssid) = network
             .ssid
@@ -1112,6 +1040,7 @@ impl App {
         Ok(())
     }
 
+    #[allow(dead_code)]
     fn handle_profile_selection(&mut self, profile: &WifiProfileSummary) -> Result<()> {
         let actions = vec![
             "Connect".to_string(),
@@ -1147,29 +1076,6 @@ impl App {
         Ok(resp.profiles)
     }
 
-    fn fetch_wifi_interfaces(&mut self) -> Result<Vec<InterfaceSummary>> {
-        let (_, data) = self.core.dispatch(Commands::Wifi(WifiCommand::List))?;
-        let resp: WifiListResponse = serde_json::from_value(data)?;
-        Ok(resp.interfaces)
-    }
-
-    fn fetch_route_snapshot(&mut self) -> Result<RouteSnapshot> {
-        let (_, data) = self
-            .core
-            .dispatch(Commands::Wifi(WifiCommand::Route(WifiRouteCommand::Status)))?;
-        let resp: RouteSnapshot = serde_json::from_value(data)?;
-        Ok(resp)
-    }
-
-    fn fetch_wifi_status(&mut self) -> Result<WifiStatusOverview> {
-        let args = WifiStatusArgs { interface: None };
-        let (_, data) = self
-            .core
-            .dispatch(Commands::Wifi(WifiCommand::Status(args)))?;
-        let status: WifiStatusOverview = serde_json::from_value(data)?;
-        Ok(status)
-    }
-
     fn connect_profile_by_ssid(&mut self, ssid: &str) -> Result<bool> {
         let profiles = self.fetch_wifi_profiles()?;
         if !profiles.iter().any(|profile| profile.ssid == ssid) {
@@ -1199,25 +1105,6 @@ impl App {
             }
             Err(err) => {
                 let msg = vec![format!("Connection failed:"), format!("{err}")];
-                self.show_message("Wi-Fi error", msg.iter().map(|s| s.as_str()))?;
-            }
-        }
-        Ok(())
-    }
-
-    fn delete_profile(&mut self, ssid: &str) -> Result<()> {
-        let args = WifiProfileDeleteArgs {
-            ssid: ssid.to_string(),
-        };
-        match self.core.dispatch(Commands::Wifi(WifiCommand::Profile(
-            WifiProfileCommand::Delete(args),
-        ))) {
-            Ok(_) => {
-                let msg = vec![format!("Deleted {ssid}")];
-                self.show_message("Wi-Fi", msg.iter().map(|s| s.as_str()))?;
-            }
-            Err(err) => {
-                let msg = vec![format!("{err}")];
                 self.show_message("Wi-Fi error", msg.iter().map(|s| s.as_str()))?;
             }
         }
@@ -1602,6 +1489,7 @@ impl App {
         Ok(())
     }
 
+    #[allow(dead_code)]
     fn choose_interface_name(&mut self, title: &str, names: &[String]) -> Result<Option<String>> {
         if names.is_empty() {
             self.show_message("Interfaces", ["No interfaces detected"])?;
@@ -3372,50 +3260,4 @@ fn trigger_wifi_reconnect(interface: &str) -> bool {
     
     wpa.map(|o| o.status.success()).unwrap_or(false)
         || nmcli.map(|o| o.status.success()).unwrap_or(false)
-}
-
-/// Auto-randomize MAC before attack if enabled in settings
-/// Returns true if MAC was randomized (so caller knows to restore later)
-pub fn auto_randomize_mac_if_enabled(interface: &str, settings: &crate::config::SettingsConfig) -> bool {
-    if !settings.mac_randomization_enabled {
-        return false;
-    }
-    
-    let mut mac_manager = match MacManager::new() {
-        Ok(manager) => manager,
-        Err(_) => return false,
-    };
-    mac_manager.set_auto_restore(false);
-    
-    let vendor_choice = vendor_from_interface(&mac_manager, interface);
-    let result = match vendor_choice {
-        Some(vendor) => mac_manager.set_with_strategy(
-            interface,
-            MacGenerationStrategy::Vendor(vendor.name),
-        ),
-        None => mac_manager.randomize(interface),
-    };
-    
-    result.is_ok()
-}
-
-/// Restore original MAC from saved settings
-pub fn restore_original_mac(interface: &str, original_mac: &str) -> bool {
-    if original_mac.is_empty() {
-        return false;
-    }
-    
-    let _ = std::process::Command::new("ip")
-        .args(["link", "set", interface, "down"])
-        .output();
-    
-    let result = std::process::Command::new("ip")
-        .args(["link", "set", interface, "address", original_mac])
-        .output();
-    
-    let _ = std::process::Command::new("ip")
-        .args(["link", "set", interface, "up"])
-        .output();
-    
-    result.map(|o| o.status.success()).unwrap_or(false)
 }

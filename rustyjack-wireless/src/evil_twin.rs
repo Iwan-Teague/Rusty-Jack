@@ -25,7 +25,6 @@ use std::thread;
 use crate::error::{WirelessError, Result};
 use crate::frames::MacAddress;
 use crate::interface::WirelessInterface;
-use crate::capture::PacketCapture;
 use crate::handshake::HandshakeCapture;
 use crate::deauth::{DeauthAttacker, DeauthConfig};
 

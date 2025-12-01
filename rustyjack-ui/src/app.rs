@@ -221,9 +221,10 @@ impl App {
             let button = self.buttons.wait_for_press()?;
             match self.map_button(button) {
                 ButtonAction::Select => {
-                    // Run reboot command and then exit
-                    let _ = Command::new("systemctl").arg("reboot").status();
-                    // If the command succeeded the system will reboot; exit the app regardless.
+                    // Trigger reboot without blocking the UI; prefer systemctl, fallback to reboot
+                    let _ = Command::new("systemctl").arg("reboot").spawn();
+                    let _ = Command::new("reboot").spawn();
+                    // Exit the UI regardless; system will reboot if either command succeeds
                     std::process::exit(0);
                 }
                 ButtonAction::Back | ButtonAction::MainMenu => {
@@ -473,10 +474,6 @@ impl App {
 
                 let button = self.buttons.wait_for_press()?;
                 match self.map_button(button) {
-                    ButtonAction::Back => {
-                        // Exit dashboard, return to menu
-                        self.dashboard_view = None;
-                    }
                     ButtonAction::Select => {
                         // Cycle to next dashboard
                         self.dashboard_view = Some(match view {
@@ -485,6 +482,9 @@ impl App {
                             DashboardView::LootSummary => DashboardView::NetworkTraffic,
                             DashboardView::NetworkTraffic => DashboardView::SystemHealth,
                         });
+                    }
+                    ButtonAction::Back => {
+                        // Ignore back while in dashboard
                     }
                     ButtonAction::Refresh => {
                         // force redraw; nothing else required (loop will redraw)
@@ -2427,7 +2427,7 @@ impl App {
             );
         }
 
-        // Find .hc22000 or .cap files
+        // Find handshake export files (.json) for cracking
         let mut handshake_files = Vec::new();
         if let Ok(entries) = std::fs::read_dir(&loot_dir) {
             for entry in entries.flatten() {
@@ -2437,7 +2437,7 @@ impl App {
                         for sub in subentries.flatten() {
                             let sub_path = sub.path();
                             if let Some(ext) = sub_path.extension() {
-                                if ext == "hc22000" || ext == "cap" || ext == "pcap" {
+                                if ext == "json" {
                                     let rel = sub_path
                                         .strip_prefix(&loot_dir)
                                         .unwrap_or(&sub_path)
@@ -2449,7 +2449,7 @@ impl App {
                         }
                     }
                 } else if let Some(ext) = path.extension() {
-                    if ext == "hc22000" || ext == "cap" || ext == "pcap" {
+                    if ext == "json" {
                         let rel = path
                             .strip_prefix(&loot_dir)
                             .unwrap_or(&path)

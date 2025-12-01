@@ -1291,42 +1291,144 @@ fn handle_wifi_probe_sniff(root: &Path, args: WifiProbeSniffArgs) -> Result<Hand
 }
 
 fn handle_wifi_crack(root: &Path, args: WifiCrackArgs) -> Result<HandlerResult> {
+    use rustyjack_wireless::crack::{generate_ssid_passwords, quick_crack, WpaCracker};
+    use rustyjack_wireless::handshake::HandshakeExport;
     use std::path::PathBuf;
 
     log::info!("Starting handshake crack on file: {}", args.file);
+
+    #[derive(serde::Deserialize)]
+    struct HandshakeBundle {
+        ssid: String,
+        handshake: HandshakeExport,
+    }
 
     let file_path = PathBuf::from(&args.file);
     if !file_path.exists() {
         bail!("Handshake file not found: {}", args.file);
     }
 
+    // Only support JSON handshake exports for cracking
+    if file_path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase()
+        != "json"
+    {
+        bail!("Unsupported handshake format. Use the generated handshake_export_*.json file from a capture.");
+    }
+
+    // Load handshake export bundle (JSON)
+    let bundle: HandshakeBundle = {
+        let data = fs::read(&file_path)
+            .with_context(|| format!("reading handshake export {}", file_path.display()))?;
+        serde_json::from_slice(&data)
+            .with_context(|| format!("parsing handshake export {}", file_path.display()))?
+    };
+
+    let ssid = args
+        .ssid
+        .as_deref()
+        .unwrap_or(&bundle.ssid)
+        .to_string();
+
     // Determine crack mode
     let mode = args.mode.as_str();
 
-    // Create loot directory for results
-    let loot_dir = loot_directory(root, LootKind::Wireless);
-    fs::create_dir_all(&loot_dir)?;
+    // Prepare loot directory for results (use same folder as the handshake export)
+    let parent_dir = file_path
+        .parent()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| loot_directory(root, LootKind::Wireless));
+    fs::create_dir_all(&parent_dir)?;
 
-    // For now, return placeholder - actual cracking would use rustyjack-wireless::crack module
+    let mut cracker = WpaCracker::new(bundle.handshake.clone(), &ssid);
+    let mut attempts = 0u64;
+    let mut password: Option<String> = None;
+
+    match mode {
+        "quick" => {
+            password = quick_crack(&bundle.handshake, &ssid);
+            attempts = cracker.attempts();
+        }
+        "pins" => match cracker.crack_pins() {
+            Ok(r) => match r {
+                rustyjack_wireless::crack::CrackResult::Found(p) => password = Some(p),
+                rustyjack_wireless::crack::CrackResult::Exhausted { attempts: a }
+                | rustyjack_wireless::crack::CrackResult::Stopped { attempts: a } => attempts = a,
+            },
+            Err(e) => bail!("PIN crack error: {}", e),
+        },
+        "ssid" => {
+            let patterns = generate_ssid_passwords(&ssid);
+            match cracker.crack_passwords(&patterns) {
+                Ok(r) => match r {
+                    rustyjack_wireless::crack::CrackResult::Found(p) => password = Some(p),
+                    rustyjack_wireless::crack::CrackResult::Exhausted { attempts: a }
+                    | rustyjack_wireless::crack::CrackResult::Stopped { attempts: a } => attempts = a,
+                },
+                Err(e) => bail!("SSID-pattern crack error: {}", e),
+            }
+        }
+        "wordlist" => {
+            let wordlist = args
+                .wordlist
+                .as_ref()
+                .ok_or_else(|| anyhow!("wordlist mode requires --wordlist"))?;
+            match cracker.crack_wordlist(PathBuf::from(wordlist).as_path()) {
+                Ok(r) => match r {
+                    rustyjack_wireless::crack::CrackResult::Found(p) => password = Some(p),
+                    rustyjack_wireless::crack::CrackResult::Exhausted { attempts: a }
+                    | rustyjack_wireless::crack::CrackResult::Stopped { attempts: a } => attempts = a,
+                },
+                Err(e) => bail!("Wordlist crack error: {}", e),
+            }
+        }
+        _ => bail!("Unknown crack mode: {}", mode),
+    }
+
+    if attempts == 0 {
+        attempts = cracker.attempts();
+    }
+
+    // Save result if password found
+    let mut loot_path = None;
+    if let Some(ref pwd) = password {
+        let ts = chrono::Local::now().format("%Y%m%d_%H%M%S");
+        let outfile = parent_dir.join(format!("crack_result_{}.txt", ts));
+        let content = format!(
+            "SSID: {}\nFile: {}\nMode: {}\nPassword: {}\nAttempts: {}\n",
+            ssid,
+            file_path.display(),
+            mode,
+            pwd,
+            attempts
+        );
+        fs::write(&outfile, content)
+            .with_context(|| format!("writing crack result {}", outfile.display()))?;
+        loot_path = Some(outfile);
+    }
+
     let data = json!({
         "file": args.file,
-        "ssid": args.ssid,
+        "ssid": ssid,
         "mode": mode,
         "wordlist": args.wordlist,
-        "status": "started",
-        "attempts": 0,
-        "password": null,
-        "loot_directory": loot_dir.display().to_string(),
-        "note": match mode {
-            "quick" => "Testing ~120 common passwords",
-            "pins" => "Testing 8-digit PIN patterns",
-            "ssid" => "Testing SSID-based patterns",
-            "wordlist" => "Testing wordlist file",
-            _ => "Unknown mode"
-        }
+        "status": if password.is_some() { "found" } else { "exhausted" },
+        "attempts": attempts,
+        "password": password,
+        "loot_path": loot_path.as_ref().map(|p| p.display().to_string()),
     });
 
-    Ok(("Handshake crack started".to_string(), data))
+    Ok((
+        if password.is_some() {
+            "Password found".to_string()
+        } else {
+            "Crack attempt finished".to_string()
+        },
+        data,
+    ))
 }
 
 fn handle_wifi_profile_list(root: &Path) -> Result<HandlerResult> {

@@ -417,7 +417,9 @@ impl HandshakeCapture {
 }
 
 /// Exported handshake data for cracking
-#[derive(Debug, Clone)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HandshakeExport {
     /// Access Point BSSID
     pub bssid: MacAddress,

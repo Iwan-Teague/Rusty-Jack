@@ -30,6 +30,7 @@ Project structure (selected):
 - `WAVESHARE_PINS.md`, `WAVESHARE_BUTTONS.md` — validated pinout and button behavior references.
 - `rustyjack-ethernet/` — Rust-only Ethernet recon (ICMP sweep + TCP port scan) used by the UI Ethernet menu.
 - Loot storage: wireless captures are grouped per target under `loot/Wireless/<target>/` (target = SSID, else BSSID); reuse that when saving handshakes, PMKIDs, logs.
+- MAC randomization: `rustyjack-evasion::MacManager` sets locally administered, unicast MACs with CSPRNG; vendor-match OUI from the current interface when available.
 
 Style guard:
 - Don't add any emojis and remove emojis if found in the code.

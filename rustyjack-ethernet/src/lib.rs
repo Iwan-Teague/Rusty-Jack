@@ -1,7 +1,7 @@
 use std::net::{Ipv4Addr, SocketAddr};
 use std::time::Duration;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use ipnet::Ipv4Net;
 use socket2::{Domain, Protocol, Socket, Type};
 
@@ -41,14 +41,17 @@ pub fn discover_hosts(network: Ipv4Net, timeout: Duration) -> Result<LanDiscover
         seq = seq.wrapping_add(1);
 
         let addr = SocketAddr::new(ip.into(), 0);
-        let _ = socket.send_to(&packet, &addr);
+        let sock_addr = socket2::SockAddr::from(addr);
+        let _ = socket.send_to(&packet, &sock_addr);
 
-        let mut buf = [0u8; 1500];
+        let mut buf = [std::mem::MaybeUninit::<u8>::uninit(); 1500];
         if let Ok((n, from)) = socket.recv_from(&mut buf) {
             if n >= 20 {
-                if let std::net::SocketAddr::V4(from_v4) = from {
-                    if from_v4.ip() == &ip {
-                        hosts.push(ip);
+                if let Some(sock) = from.as_socket() {
+                    if let std::net::SocketAddr::V4(from_v4) = sock {
+                        if from_v4.ip() == &ip {
+                            hosts.push(ip);
+                        }
                     }
                 }
             }

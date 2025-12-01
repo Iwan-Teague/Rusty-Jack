@@ -289,6 +289,31 @@ impl KarmaAttack {
         
         stats
     }
+
+    /// Simple device fingerprinting placeholder based on OUI and probe count.
+    fn fingerprint_device(&self, client_mac: &str, probes: &[String]) -> Option<String> {
+        let oui = client_mac.get(0..8).unwrap_or("");
+        let vendor = match oui.to_uppercase().as_str() {
+            "F4:0F:24" | "A4:83:E7" | "AC:BC:32" => "Apple",
+            "00:1A:8A" | "8C:F5:A3" | "CC:07:AB" => "Samsung",
+            "F8:8F:CA" | "94:EB:2C" => "Google",
+            "00:1E:67" | "8C:F1:12" => "Intel",
+            _ => "Unknown",
+        };
+
+        let probe_count = probes.len();
+        let device_type = if vendor == "Apple" {
+            if probe_count > 10 { "iPhone" } else { "MacBook/iPad" }
+        } else if vendor == "Samsung" {
+            "Android (Samsung)"
+        } else if vendor == "Google" {
+            "Android (Pixel)"
+        } else {
+            "Unknown"
+        };
+
+        Some(device_type.to_string())
+    }
     
     /// Get result summary
     pub fn get_result(&self) -> KarmaResult {

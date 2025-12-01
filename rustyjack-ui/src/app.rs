@@ -131,8 +131,21 @@ impl App {
             match Command::new("ip").args(["link", "show", &iface]).output() {
                 Ok(out) if out.status.success() => {
                     let s = String::from_utf8_lossy(&out.stdout);
-                    if s.to_ascii_lowercase().contains("state down") {
-                        issues.push(format!("Interface {iface} is DOWN"));
+                    if let Some(first_line) = s.lines().next() {
+                        if let Some(flags) = first_line.split('<').nth(1).and_then(|rest| rest.split('>').next()) {
+                            let mut has_up_flag = false;
+                            for f in flags.split(',') {
+                                if f.trim() == "UP" {
+                                    has_up_flag = true;
+                                    break;
+                                }
+                            }
+                            if !has_up_flag {
+                                issues.push(format!(
+                                    "Interface {iface} is DOWN (run: ip link set {iface} up)"
+                                ));
+                            }
+                        }
                     }
                 }
                 _ => issues.push(format!("Cannot query interface {iface} (ip link)")),

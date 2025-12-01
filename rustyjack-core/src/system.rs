@@ -199,6 +199,48 @@ pub fn detect_interface(override_name: Option<String>) -> Result<InterfaceInfo> 
     })
 }
 
+/// Detect an Ethernet interface (eth*/en*) and fail if none are present.
+pub fn detect_ethernet_interface(override_name: Option<String>) -> Result<InterfaceInfo> {
+    let summaries = list_interface_summaries().context("listing interfaces")?;
+
+    // Helper to validate a wired, Ethernet-style name
+    let is_eth = |s: &InterfaceSummary| {
+        s.kind == "wired" && (s.name.starts_with("eth") || s.name.starts_with("en"))
+    };
+
+    if let Some(name) = override_name {
+        let summary = summaries
+            .iter()
+            .find(|s| s.name == name)
+            .ok_or_else(|| anyhow!("interface {} not found", name))?;
+
+        if !is_eth(summary) {
+            bail!("interface {} is not an Ethernet port (expected eth*/en*)", name);
+        }
+
+        return detect_interface(Some(name));
+    }
+
+    // Prefer: up + has IP -> has IP -> up -> any eth*/en*
+    if let Some(summary) = summaries
+        .iter()
+        .find(|s| is_eth(s) && s.oper_state == "up" && s.ip.is_some())
+    {
+        return detect_interface(Some(summary.name.clone()));
+    }
+    if let Some(summary) = summaries.iter().find(|s| is_eth(s) && s.ip.is_some()) {
+        return detect_interface(Some(summary.name.clone()));
+    }
+    if let Some(summary) = summaries.iter().find(|s| is_eth(s) && s.oper_state == "up") {
+        return detect_interface(Some(summary.name.clone()));
+    }
+    if let Some(summary) = summaries.iter().find(|s| is_eth(s)) {
+        return detect_interface(Some(summary.name.clone()));
+    }
+
+    bail!("No Ethernet interfaces detected (need eth*/en*)");
+}
+
 pub fn discover_default_interface() -> Result<String> {
     let output = Command::new("ip")
         .args(["-4", "route", "show", "default"])

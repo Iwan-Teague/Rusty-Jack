@@ -27,8 +27,8 @@ use crate::cli::{
 use crate::system::{
     append_payload_log, backup_repository, backup_routing_state, build_loot_path,
     build_manual_embed, build_mitm_pcap_path, compose_status_text, connect_wifi_network,
-    default_gateway_ip, delete_wifi_profile, detect_interface, disconnect_wifi_interface,
-    enable_ip_forwarding, git_reset_to_remote, interface_gateway, kill_process,
+    default_gateway_ip, delete_wifi_profile, detect_ethernet_interface, detect_interface,
+    disconnect_wifi_interface, enable_ip_forwarding, git_reset_to_remote, interface_gateway, kill_process,
     kill_process_pattern, list_interface_summaries, list_wifi_profiles, load_wifi_profile,
     ping_host, process_running_exact, process_running_pattern, read_default_route,
     read_discord_webhook, read_dns_servers, read_interface_preference, read_interface_stats,
@@ -123,7 +123,7 @@ fn handle_scan_run(root: &Path, args: ScanRunArgs) -> Result<HandlerResult> {
 }
 
 fn handle_eth_discover(root: &Path, args: EthernetDiscoverArgs) -> Result<HandlerResult> {
-    let interface = detect_interface(args.interface.clone())?;
+    let interface = detect_ethernet_interface(args.interface.clone())?;
     let cidr = args
         .target
         .clone()
@@ -161,7 +161,7 @@ fn handle_eth_discover(root: &Path, args: EthernetDiscoverArgs) -> Result<Handle
 }
 
 fn handle_eth_port_scan(root: &Path, args: EthernetPortScanArgs) -> Result<HandlerResult> {
-    let interface = detect_interface(args.interface.clone())?;
+    let interface = detect_ethernet_interface(args.interface.clone())?;
     let target: std::net::Ipv4Addr = if let Some(t) = args.target.as_ref() {
         t.parse().context("parsing target IPv4")?
     } else if let Some(gw) = interface_gateway(&interface.name)? {

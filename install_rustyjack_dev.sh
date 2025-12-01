@@ -205,6 +205,15 @@ sudo mkdir -p "$PROJECT_ROOT/wifi/profiles"
 sudo chown root:root "$PROJECT_ROOT/wifi/profiles"
 sudo chmod 755 "$PROJECT_ROOT/wifi/profiles"
 
+# Ensure WLAN interfaces are unblocked and up (avoid default DOWN state)
+step "Ensuring WLAN interfaces are unblocked and up"
+sudo rfkill unblock all || true
+for dev in /sys/class/net/wlan*; do
+  [ -e "$dev" ] || continue
+  iface=$(basename "$dev")
+  sudo ip link set "$iface" up || warn "Could not bring up $iface"
+done
+
 if [ ! -f "$PROJECT_ROOT/wifi/profiles/sample.json" ]; then
   sudo tee "$PROJECT_ROOT/wifi/profiles/sample.json" >/dev/null <<'PROFILE'
 {

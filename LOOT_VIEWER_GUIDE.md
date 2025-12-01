@@ -4,7 +4,7 @@
 
 ### Opening Loot Files
 1. From Main Menu, select **Loot**
-2. Choose category: **Nmap**, **Responder**, or **DNSSpoof**
+2. Choose category: **Wireless Captures** or **Ethernet Loot** (Transfer to USB is also available)
 3. Navigate file list with **UP/DOWN**
 4. Press **SELECT** to open file
 
@@ -49,32 +49,6 @@
 - Long lines: Lines longer than 18 characters automatically wrap to next line
 - Large files: Files with 5000+ lines will be truncated - you'll see the first 5000 lines only
 
-## Example Workflow
-
-### Reviewing Nmap Scan Results
-```
-Main Menu 
-  → Loot 
-    → Nmap
-      → [Navigate with UP/DOWN to find scan]
-      → SELECT to open
-      → Read results with UP/DOWN
-      → BACK when done
-      → [Opens next file or BACK again to exit]
-```
-
-### Checking Responder Captures
-```
-Main Menu
-  → Loot
-    → Responder  
-      → [Find hash file]
-      → SELECT
-      → Scroll through captured hashes
-      → BACK → Select another hash file
-      → BACK → Exit to main menu
-```
-
 ## Troubleshooting
 
 | Issue | Solution |
@@ -87,11 +61,8 @@ Main Menu
 | Can't scroll down at end | Already at last line |
 
 ## File Locations
-- **Wireless**: `~/Rustyjack/loot/Wireless/<target>/` (target = SSID, else BSSID). Handshakes, PMKIDs, logs are grouped per network.
+- **Wireless**: `~/Rustyjack/loot/Wireless/<target>/` (target = SSID, else BSSID). Handshakes, PMKIDs, and deauth logs are grouped per network. The UI lists files recursively, so captures inside per-target folders appear in the menu.
 - **Ethernet**: `~/Rustyjack/loot/Ethernet/` (LAN discovery and port scan results).
-- **Nmap**: `~/Rustyjack/loot/Nmap/`
-- **Responder**: `~/Rustyjack/loot/Responder/` and `~/Rustyjack/Responder/logs/`
-- **DNSSpoof**: `~/Rustyjack/loot/MITM/` and `~/Rustyjack/DNSSpoof/captures/`
 
 ---
 **Quick Access Path**: Main Menu → Loot → [Category] → [File] → Scroll

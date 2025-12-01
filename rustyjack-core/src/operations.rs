@@ -1586,6 +1586,7 @@ fn loot_kind_label(kind: LootKind) -> &'static str {
         LootKind::Nmap => "nmap",
         LootKind::Responder => "responder",
         LootKind::Dnsspoof => "dnsspoof",
+        LootKind::Ethernet => "ethernet",
         LootKind::Wireless => "wireless",
     }
 }

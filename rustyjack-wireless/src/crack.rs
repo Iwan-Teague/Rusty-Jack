@@ -137,7 +137,7 @@ impl WpaCracker {
             }
 
             let attempts = self.attempts.fetch_add(1, Ordering::Relaxed) + 1;
-            if self.try_password(password)? {
+            if self.try_password(password) {
                 return Ok(CrackResult::Found(password.clone()));
             }
 

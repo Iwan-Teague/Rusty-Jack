@@ -13,11 +13,10 @@ use rustyjack_core::cli::{
     Commands, DiscordCommand, DiscordSendArgs,
     HardwareCommand, LootCommand, LootKind, LootListArgs, 
     LootReadArgs, NotifyCommand, SystemUpdateArgs, ScanRunArgs,
-    WifiCommand, WifiDeauthArgs, WifiRouteCommand, WifiScanArgs, 
-    WifiStatusArgs, WifiProfileCommand, WifiProfileConnectArgs, WifiProfileDeleteArgs,
+    WifiCommand, WifiDeauthArgs, WifiScanArgs, 
+    WifiProfileCommand, WifiProfileConnectArgs, WifiProfileDeleteArgs,
     EthernetCommand, EthernetDiscoverArgs, EthernetPortScanArgs,
 };
-use rustyjack_core::InterfaceSummary;
 use rustyjack_evasion::{MacManager, MacGenerationStrategy, VendorOui};
 use serde::Deserialize;
 use serde_json::{self, Value};
@@ -2837,8 +2836,8 @@ impl App {
                     .unwrap_or(0);
                 self.show_message("Ethernet", [
                     msg,
-                    &format!("Hosts: {}", count),
-                    &format!("Loot: {}", loot),
+                    format!("Hosts: {}", count),
+                    format!("Loot: {}", loot),
                 ])?;
             }
             Err(e) => {
@@ -2886,8 +2885,8 @@ impl App {
                     .unwrap_or(0);
                 self.show_message("Ethernet", [
                     msg,
-                    &format!("Open ports: {}", open),
-                    &format!("Loot: {}", loot),
+                    format!("Open ports: {}", open),
+                    format!("Loot: {}", loot),
                 ])?;
             }
             Err(e) => {

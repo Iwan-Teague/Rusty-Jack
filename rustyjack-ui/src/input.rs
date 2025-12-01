@@ -54,7 +54,7 @@ mod platform {
 
 pub struct ButtonPad {
     buttons: Vec<ButtonInput>,
-    _debounce: Duration,
+    __debounce: Duration,
 }
 
     impl ButtonPad {
@@ -88,7 +88,7 @@ pub struct ButtonPad {
 
             Ok(Self {
                 buttons,
-                debounce: Duration::from_millis(120),
+                _debounce: Duration::from_millis(120),
             })
         }
 

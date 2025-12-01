@@ -1,7 +1,7 @@
 use anyhow::Result;
 use clap::Parser;
-use rustyjack_core::{Cli, OutputFormat, dispatch_command, resolve_root};
-use serde_json::{Value, json};
+use rustyjack_core::{dispatch_command, resolve_root, Cli, OutputFormat};
+use serde_json::{json, Value};
 
 fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();

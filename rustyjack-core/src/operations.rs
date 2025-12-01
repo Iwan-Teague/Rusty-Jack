@@ -5,39 +5,39 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{anyhow, bail, Context, Result};
 use chrono::Local;
-use regex::Regex;
-use serde_json::{Value, json};
 use ipnet::Ipv4Net;
+use regex::Regex;
 use rustyjack_ethernet::{discover_hosts, quick_port_scan};
+use serde_json::{json, Value};
 
 use crate::cli::{
-    AutopilotCommand, AutopilotStartArgs, BridgeCommand, BridgeStartArgs, BridgeStopArgs, Commands, 
-    DiscordCommand, DiscordSendArgs, DnsSpoofCommand, DnsSpoofStartArgs, HardwareCommand,
-    LootCommand, LootKind, LootListArgs, LootReadArgs, MitmCommand, MitmStartArgs, NotifyCommand, 
-    ProcessCommand, ProcessKillArgs, ProcessStatusArgs, ResponderArgs, ResponderCommand, 
-    ReverseCommand, ReverseLaunchArgs, ScanCommand, ScanRunArgs, StatusCommand, SystemCommand, 
-    SystemUpdateArgs, WifiBestArgs, WifiCommand, WifiCrackArgs, WifiDeauthArgs, WifiDisconnectArgs, 
-    WifiEvilTwinArgs, WifiPmkidArgs, WifiProbeSniffArgs, WifiProfileCommand, 
-    WifiProfileConnectArgs, WifiProfileDeleteArgs, WifiProfileSaveArgs, WifiRouteCommand, 
-    WifiRouteEnsureArgs, WifiRouteMetricArgs, WifiScanArgs, WifiStatusArgs, WifiSwitchArgs,
-    EthernetCommand, EthernetDiscoverArgs, EthernetPortScanArgs,
+    AutopilotCommand, AutopilotStartArgs, BridgeCommand, BridgeStartArgs, BridgeStopArgs, Commands,
+    DiscordCommand, DiscordSendArgs, DnsSpoofCommand, DnsSpoofStartArgs, EthernetCommand,
+    EthernetDiscoverArgs, EthernetPortScanArgs, HardwareCommand, LootCommand, LootKind,
+    LootListArgs, LootReadArgs, MitmCommand, MitmStartArgs, NotifyCommand, ProcessCommand,
+    ProcessKillArgs, ProcessStatusArgs, ResponderArgs, ResponderCommand, ReverseCommand,
+    ReverseLaunchArgs, ScanCommand, ScanRunArgs, StatusCommand, SystemCommand, SystemUpdateArgs,
+    WifiBestArgs, WifiCommand, WifiCrackArgs, WifiDeauthArgs, WifiDisconnectArgs, WifiEvilTwinArgs,
+    WifiPmkidArgs, WifiProbeSniffArgs, WifiProfileCommand, WifiProfileConnectArgs,
+    WifiProfileDeleteArgs, WifiProfileSaveArgs, WifiRouteCommand, WifiRouteEnsureArgs,
+    WifiRouteMetricArgs, WifiScanArgs, WifiStatusArgs, WifiSwitchArgs,
 };
 use crate::system::{
-    KillResult, WifiProfile, append_payload_log, backup_repository, backup_routing_state,
-    build_loot_path, build_manual_embed, build_mitm_pcap_path, compose_status_text,
-    connect_wifi_network, default_gateway_ip, delete_wifi_profile, detect_interface,
-    disconnect_wifi_interface, enable_ip_forwarding, git_reset_to_remote, interface_gateway,
-    kill_process, kill_process_pattern, list_interface_summaries, list_wifi_profiles,
-    load_wifi_profile, ping_host, process_running_exact, process_running_pattern,
-    read_default_route, read_discord_webhook, read_dns_servers, read_interface_preference,
-    read_interface_stats, read_wifi_link_info, restart_system_service, restore_routing_state,
-    rewrite_dns_servers, rewrite_ettercap_dns, save_wifi_profile, scan_local_hosts,
-    scan_wifi_networks, select_best_interface, select_wifi_interface, send_discord_payload,
-    send_scan_to_discord, set_default_route, set_interface_metric, spawn_arpspoof_pair,
-    start_bridge_pair, start_ettercap, start_php_server, start_tcpdump_capture, stop_bridge_pair,
-    strip_nmap_header, write_interface_preference, write_wifi_profile,
+    append_payload_log, backup_repository, backup_routing_state, build_loot_path,
+    build_manual_embed, build_mitm_pcap_path, compose_status_text, connect_wifi_network,
+    default_gateway_ip, delete_wifi_profile, detect_interface, disconnect_wifi_interface,
+    enable_ip_forwarding, git_reset_to_remote, interface_gateway, kill_process,
+    kill_process_pattern, list_interface_summaries, list_wifi_profiles, load_wifi_profile,
+    ping_host, process_running_exact, process_running_pattern, read_default_route,
+    read_discord_webhook, read_dns_servers, read_interface_preference, read_interface_stats,
+    read_wifi_link_info, restart_system_service, restore_routing_state, rewrite_dns_servers,
+    rewrite_ettercap_dns, save_wifi_profile, scan_local_hosts, scan_wifi_networks,
+    select_best_interface, select_wifi_interface, send_discord_payload, send_scan_to_discord,
+    set_default_route, set_interface_metric, spawn_arpspoof_pair, start_bridge_pair,
+    start_ettercap, start_php_server, start_tcpdump_capture, stop_bridge_pair, strip_nmap_header,
+    write_interface_preference, write_wifi_profile, KillResult, WifiProfile,
 };
 
 pub type HandlerResult = (String, Value);
@@ -154,7 +154,10 @@ fn handle_eth_discover(root: &Path, args: EthernetDiscoverArgs) -> Result<Handle
         "hosts_found": result.hosts,
         "loot_path": file.display().to_string(),
     });
-    Ok((format!("LAN discovery complete ({} hosts)", result.hosts.len()), data))
+    Ok((
+        format!("LAN discovery complete ({} hosts)", result.hosts.len()),
+        data,
+    ))
 }
 
 fn handle_eth_port_scan(root: &Path, args: EthernetPortScanArgs) -> Result<HandlerResult> {
@@ -172,7 +175,9 @@ fn handle_eth_port_scan(root: &Path, args: EthernetPortScanArgs) -> Result<Handl
             .filter_map(|p| p.trim().parse::<u16>().ok())
             .collect()
     } else {
-        vec![22, 80, 443, 53, 445, 3389, 8080, 8000, 8443, 21, 23, 25, 110, 143]
+        vec![
+            22, 80, 443, 53, 445, 3389, 8080, 8000, 8443, 21, 23, 25, 110, 143,
+        ]
     };
 
     if ports.is_empty() {
@@ -203,7 +208,10 @@ fn handle_eth_port_scan(root: &Path, args: EthernetPortScanArgs) -> Result<Handl
         "open_ports": result.open_ports,
         "loot_path": file.display().to_string(),
     });
-    Ok((format!("Port scan complete ({} open)", result.open_ports.len()), data))
+    Ok((
+        format!("Port scan complete ({} open)", result.open_ports.len()),
+        data,
+    ))
 }
 
 pub fn run_scan_with_progress<F>(
@@ -235,10 +243,10 @@ where
     if !nmap_args.is_empty() {
         cmd.args(&nmap_args);
     }
-    
+
     // Add stats-every to get progress updates
     cmd.arg("--stats-every").arg("1s");
-    
+
     cmd.arg("-oN")
         .arg(&loot_path)
         .arg("-S")
@@ -251,7 +259,7 @@ where
         .stdin(std::process::Stdio::null());
 
     let mut child = cmd.spawn().context("failed to launch nmap")?;
-    
+
     if let Some(stdout) = child.stdout.take() {
         let reader = BufReader::new(stdout);
         // Regex to match: "SYN Stealth Scan Timing: About 15.50% done"
@@ -707,7 +715,7 @@ fn handle_wifi_list() -> Result<HandlerResult> {
 
 fn handle_wifi_status(root: &Path, args: WifiStatusArgs) -> Result<HandlerResult> {
     log::info!("Collecting WiFi status information");
-    
+
     let interface_name = args.interface.clone();
     let info = if let Some(name) = interface_name.clone() {
         log::info!("Getting status for specified interface: {name}");
@@ -724,14 +732,14 @@ fn handle_wifi_status(root: &Path, args: WifiStatusArgs) -> Result<HandlerResult
             Ok(i) => {
                 log::info!("Detected default interface: {}", i.name);
                 i
-            },
+            }
             Err(e) => {
                 log::error!("Failed to detect default interface: {e}");
                 bail!("Failed to detect default interface: {e}");
             }
         }
     };
-    
+
     let stats = read_interface_stats(&info.name).ok();
     let gateway = if let Some(name) = interface_name.clone() {
         interface_gateway(&name)
@@ -744,13 +752,13 @@ fn handle_wifi_status(root: &Path, args: WifiStatusArgs) -> Result<HandlerResult
             .flatten()
             .or_else(|| default_gateway_ip().ok())
     };
-    
+
     let preferred = read_interface_preference(root, "system_preferred")
         .ok()
         .flatten();
-    
+
     let link = read_wifi_link_info(&info.name);
-    
+
     // Determine if this is the active interface
     let default_route = read_default_route().ok().flatten();
     let is_active = default_route
@@ -758,9 +766,13 @@ fn handle_wifi_status(root: &Path, args: WifiStatusArgs) -> Result<HandlerResult
         .and_then(|r| r.interface.as_ref())
         .map(|iface| iface == &info.name)
         .unwrap_or(false);
-    
-    log::info!("Interface {} status: active={}, connected={}", 
-        info.name, is_active, link.connected);
+
+    log::info!(
+        "Interface {} status: active={}, connected={}",
+        info.name,
+        is_active,
+        link.connected
+    );
 
     let data = json!({
         "interface": info.name,
@@ -887,7 +899,10 @@ where
         "remote": args.remote,
         "branch": args.branch,
     });
-    Ok(("Repository updated, compiled, and service restarted".to_string(), data))
+    Ok((
+        "Repository updated, compiled, and service restarted".to_string(),
+        data,
+    ))
 }
 
 fn handle_bridge_start(root: &Path, args: BridgeStartArgs) -> Result<HandlerResult> {
@@ -919,8 +934,8 @@ fn handle_bridge_stop(root: &Path, args: BridgeStopArgs) -> Result<HandlerResult
 }
 
 // Global autopilot engine instance (lazy initialized)
+use crate::autopilot::{AutopilotConfig, AutopilotEngine};
 use std::sync::OnceLock;
-use crate::autopilot::{AutopilotEngine, AutopilotConfig};
 
 static AUTOPILOT: OnceLock<AutopilotEngine> = OnceLock::new();
 
@@ -985,32 +1000,31 @@ fn handle_autopilot_status() -> Result<HandlerResult> {
     Ok(("Autopilot status".to_string(), data))
 }
 
-
 fn handle_wifi_scan(args: WifiScanArgs) -> Result<HandlerResult> {
     log::info!("Starting WiFi scan");
-    
+
     let interface = match select_wifi_interface(args.interface) {
         Ok(iface) => {
             log::info!("Selected interface: {iface}");
             iface
-        },
+        }
         Err(e) => {
             log::error!("Failed to select WiFi interface: {e}");
             bail!("Failed to select WiFi interface: {e}");
         }
     };
-    
+
     let networks = match scan_wifi_networks(&interface) {
         Ok(nets) => {
             log::info!("Scan completed, found {} network(s)", nets.len());
             nets
-        },
+        }
         Err(e) => {
             log::error!("WiFi scan failed on {interface}: {e}");
             bail!("WiFi scan failed: {e}");
         }
     };
-    
+
     let data = json!({
         "interface": interface,
         "networks": networks,
@@ -1021,61 +1035,70 @@ fn handle_wifi_scan(args: WifiScanArgs) -> Result<HandlerResult> {
 
 fn handle_wifi_deauth(root: &Path, args: WifiDeauthArgs) -> Result<HandlerResult> {
     use crate::wireless_native::{self, DeauthConfig};
-    
+
     let ssid_display = args.ssid.clone().unwrap_or_else(|| args.bssid.clone());
-    log::info!("Starting native Rust deauth attack on BSSID: {} (SSID: {})", args.bssid, ssid_display);
-    
+    log::info!(
+        "Starting native Rust deauth attack on BSSID: {} (SSID: {})",
+        args.bssid,
+        ssid_display
+    );
+
     // Validate BSSID format (XX:XX:XX:XX:XX:XX)
     let mac_regex = Regex::new(r"^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$").unwrap();
     if !mac_regex.is_match(&args.bssid) {
         bail!("Invalid BSSID format. Expected MAC address like AA:BB:CC:DD:EE:FF");
     }
-    
+
     // Validate client MAC if provided
     if let Some(ref client) = args.client {
         if !mac_regex.is_match(client) {
             bail!("Invalid client MAC format. Expected like AA:BB:CC:DD:EE:FF");
         }
     }
-    
+
     // Validate channel (1-14 for 2.4GHz, 36-165 for 5GHz)
     if args.channel == 0 || (args.channel > 14 && args.channel < 36) || args.channel > 165 {
-        bail!("Invalid channel {}. Use 1-14 for 2.4GHz or 36-165 for 5GHz", args.channel);
+        bail!(
+            "Invalid channel {}. Use 1-14 for 2.4GHz or 36-165 for 5GHz",
+            args.channel
+        );
     }
-    
+
     // Check if we have root privileges (required for raw sockets)
     if !wireless_native::native_available() {
         bail!("Deauth attacks require root privileges. Run with sudo.");
     }
-    
+
     // Check if interface is wireless
     if !wireless_native::is_wireless_interface(&args.interface) {
         bail!("Interface {} is not a wireless interface", args.interface);
     }
-    
+
     // Check wireless capabilities
     let caps = wireless_native::check_capabilities(&args.interface);
     if !caps.is_attack_capable() {
         let mut reasons = Vec::new();
-        if !caps.has_root { reasons.push("not running as root"); }
-        if !caps.interface_is_wireless { reasons.push("interface is not wireless"); }
-        if !caps.supports_monitor_mode { reasons.push("monitor mode not supported"); }
+        if !caps.has_root {
+            reasons.push("not running as root");
+        }
+        if !caps.interface_is_wireless {
+            reasons.push("interface is not wireless");
+        }
+        if !caps.supports_monitor_mode {
+            reasons.push("monitor mode not supported");
+        }
         bail!(
             "Interface {} is not capable of attacks: {}",
             args.interface,
             reasons.join(", ")
         );
     }
-    
+
     // Create loot directory under network-specific folder
-    let loot_dir = wireless_target_directory(
-        root,
-        args.ssid.clone(),
-        Some(args.bssid.clone()),
-    );
+    let loot_dir = wireless_target_directory(root, args.ssid.clone(), Some(args.bssid.clone()));
     fs::create_dir_all(&loot_dir)
         .with_context(|| format!("creating loot directory: {}", loot_dir.display()))?;
-    
+
     // Build deauth config for native implementation
     let config = DeauthConfig {
         bssid: args.bssid.clone(),
@@ -1088,14 +1111,14 @@ fn handle_wifi_deauth(root: &Path, args: WifiDeauthArgs) -> Result<HandlerResult
         interval: args.interval,
         continuous: args.continuous,
     };
-    
+
     log::info!("Executing native Rust deauth attack (rustyjack-wireless)");
-    
+
     // Execute the native deauth attack
     let result = wireless_native::execute_deauth_attack(&loot_dir, &config, |progress, status| {
         log::debug!("Deauth progress: {:.0}% - {}", progress * 100.0, status);
     })?;
-    
+
     // Build response data
     let data = json!({
         "bssid": result.bssid,
@@ -1116,7 +1139,7 @@ fn handle_wifi_deauth(root: &Path, args: WifiDeauthArgs) -> Result<HandlerResult
         "loot_directory": loot_dir.display().to_string(),
         "implementation": "native-rust",
     });
-    
+
     let message = if result.handshake_captured {
         format!(
             "SUCCESS: Handshake captured! ({} packets in {} bursts, {} EAPOL frames)",
@@ -1128,40 +1151,40 @@ fn handle_wifi_deauth(root: &Path, args: WifiDeauthArgs) -> Result<HandlerResult
             result.packets_sent, result.bursts
         )
     };
-    
+
     Ok((message, data))
 }
 
 fn handle_wifi_evil_twin(root: &Path, args: WifiEvilTwinArgs) -> Result<HandlerResult> {
     use crate::wireless_native;
-    
+
     log::info!("Starting Evil Twin attack on SSID: {}", args.ssid);
-    
+
     // Check if we have root privileges
     if !wireless_native::native_available() {
         bail!("Evil Twin attacks require root privileges. Run with sudo.");
     }
-    
+
     // Check if interface is wireless
     if !wireless_native::is_wireless_interface(&args.interface) {
         bail!("Interface {} is not a wireless interface", args.interface);
     }
-    
+
     // Check wireless capabilities
     let caps = wireless_native::check_capabilities(&args.interface);
     if !caps.supports_injection {
-        bail!("Interface {} does not support packet injection (required for Evil Twin)", args.interface);
+        bail!(
+            "Interface {} does not support packet injection (required for Evil Twin)",
+            args.interface
+        );
     }
-    
+
     // Create loot directory for captured credentials under target
-    let loot_dir = wireless_target_directory(
-        root,
-        Some(args.ssid.clone()),
-        args.target_bssid.clone(),
-    );
+    let loot_dir =
+        wireless_target_directory(root, Some(args.ssid.clone()), args.target_bssid.clone());
     fs::create_dir_all(&loot_dir)
         .with_context(|| format!("creating loot directory: {}", loot_dir.display()))?;
-    
+
     // For now, return a placeholder - actual implementation would use hostapd/dnsmasq
     // The rustyjack-wireless crate has the evil_twin module but it needs system integration
     let data = json!({
@@ -1175,39 +1198,38 @@ fn handle_wifi_evil_twin(root: &Path, args: WifiEvilTwinArgs) -> Result<HandlerR
         "loot_directory": loot_dir.display().to_string(),
         "note": "Evil Twin attack requires hostapd and dnsmasq for full functionality"
     });
-    
+
     Ok(("Evil Twin attack configured".to_string(), data))
 }
 
 fn handle_wifi_pmkid(root: &Path, args: WifiPmkidArgs) -> Result<HandlerResult> {
     use crate::wireless_native;
-    
+
     log::info!("Starting PMKID capture on interface: {}", args.interface);
-    
+
     // Check privileges
     if !wireless_native::native_available() {
         bail!("PMKID capture requires root privileges. Run with sudo.");
     }
-    
+
     // Check if interface is wireless
     if !wireless_native::is_wireless_interface(&args.interface) {
         bail!("Interface {} is not a wireless interface", args.interface);
     }
-    
+
     // Check capabilities
     let caps = wireless_native::check_capabilities(&args.interface);
     if !caps.supports_monitor_mode {
-        bail!("Interface {} does not support monitor mode (required for PMKID)", args.interface);
+        bail!(
+            "Interface {} does not support monitor mode (required for PMKID)",
+            args.interface
+        );
     }
-    
+
     // Create loot directory under target network
-    let loot_dir = wireless_target_directory(
-        root,
-        args.ssid.clone(),
-        args.bssid.clone(),
-    );
+    let loot_dir = wireless_target_directory(root, args.ssid.clone(), args.bssid.clone());
     fs::create_dir_all(&loot_dir)?;
-    
+
     let data = json!({
         "interface": args.interface,
         "bssid": args.bssid,
@@ -1218,35 +1240,41 @@ fn handle_wifi_pmkid(root: &Path, args: WifiPmkidArgs) -> Result<HandlerResult> 
         "loot_directory": loot_dir.display().to_string(),
         "note": "PMKID capture uses passive association request technique"
     });
-    
+
     Ok(("PMKID capture started".to_string(), data))
 }
 
 fn handle_wifi_probe_sniff(root: &Path, args: WifiProbeSniffArgs) -> Result<HandlerResult> {
     use crate::wireless_native;
-    
-    log::info!("Starting probe request sniff on interface: {}", args.interface);
-    
+
+    log::info!(
+        "Starting probe request sniff on interface: {}",
+        args.interface
+    );
+
     // Check privileges
     if !wireless_native::native_available() {
         bail!("Probe sniffing requires root privileges. Run with sudo.");
     }
-    
+
     // Check if interface is wireless
     if !wireless_native::is_wireless_interface(&args.interface) {
         bail!("Interface {} is not a wireless interface", args.interface);
     }
-    
+
     // Check capabilities
     let caps = wireless_native::check_capabilities(&args.interface);
     if !caps.supports_monitor_mode {
-        bail!("Interface {} does not support monitor mode (required for probe sniffing)", args.interface);
+        bail!(
+            "Interface {} does not support monitor mode (required for probe sniffing)",
+            args.interface
+        );
     }
-    
+
     // Create loot directory (probe sniff is passive and not target-specific)
     let loot_dir = loot_directory(root, LootKind::Wireless);
     fs::create_dir_all(&loot_dir)?;
-    
+
     let data = json!({
         "interface": args.interface,
         "channel": args.channel,
@@ -1255,27 +1283,27 @@ fn handle_wifi_probe_sniff(root: &Path, args: WifiProbeSniffArgs) -> Result<Hand
         "loot_directory": loot_dir.display().to_string(),
         "note": "Capturing probe requests reveals networks devices have connected to"
     });
-    
+
     Ok(("Probe sniffing started".to_string(), data))
 }
 
 fn handle_wifi_crack(root: &Path, args: WifiCrackArgs) -> Result<HandlerResult> {
     use std::path::PathBuf;
-    
+
     log::info!("Starting handshake crack on file: {}", args.file);
-    
+
     let file_path = PathBuf::from(&args.file);
     if !file_path.exists() {
         bail!("Handshake file not found: {}", args.file);
     }
-    
+
     // Determine crack mode
     let mode = args.mode.as_str();
-    
+
     // Create loot directory for results
     let loot_dir = loot_directory(root, LootKind::Wireless);
     fs::create_dir_all(&loot_dir)?;
-    
+
     // For now, return placeholder - actual cracking would use rustyjack-wireless::crack module
     let data = json!({
         "file": args.file,
@@ -1294,25 +1322,25 @@ fn handle_wifi_crack(root: &Path, args: WifiCrackArgs) -> Result<HandlerResult> 
             _ => "Unknown mode"
         }
     });
-    
+
     Ok(("Handshake crack started".to_string(), data))
 }
 
 fn handle_wifi_profile_list(root: &Path) -> Result<HandlerResult> {
     log::info!("Listing WiFi profiles");
-    
+
     let profiles = match list_wifi_profiles(root) {
         Ok(p) => {
             log::info!("Found {} profile(s)", p.len());
             p
-        },
+        }
         Err(e) => {
             log::error!("Failed to list WiFi profiles: {e}");
             bail!("Failed to list WiFi profiles: {e}");
         }
     };
-    
-    let data = json!({ 
+
+    let data = json!({
         "profiles": profiles,
         "count": profiles.len(),
     });
@@ -1327,7 +1355,7 @@ fn handle_wifi_profile_save(root: &Path, args: WifiProfileSaveArgs) -> Result<Ha
         priority,
         auto_connect,
     } = args;
-    
+
     log::info!("Saving WiFi profile for SSID: {ssid}");
 
     let profile = WifiProfile {
@@ -1345,13 +1373,13 @@ fn handle_wifi_profile_save(root: &Path, args: WifiProfileSaveArgs) -> Result<Ha
         Ok(p) => {
             log::info!("Profile saved successfully to: {}", p.display());
             p
-        },
+        }
         Err(e) => {
             log::error!("Failed to save WiFi profile for {ssid}: {e}");
             bail!("Failed to save WiFi profile: {e}");
         }
     };
-    
+
     let data = json!({
         "ssid": ssid,
         "path": path,
@@ -1361,18 +1389,18 @@ fn handle_wifi_profile_save(root: &Path, args: WifiProfileSaveArgs) -> Result<Ha
 
 fn handle_wifi_profile_connect(root: &Path, args: WifiProfileConnectArgs) -> Result<HandlerResult> {
     log::info!("Attempting WiFi profile connection");
-    
+
     let interface = match select_wifi_interface(args.interface.clone()) {
         Ok(iface) => {
             log::info!("Selected interface: {iface}");
             iface
-        },
+        }
         Err(e) => {
             log::error!("Failed to select interface: {e}");
             bail!("Failed to select interface: {e}");
         }
     };
-    
+
     let stored = if let Some(ref profile_name) = args.profile {
         log::info!("Loading profile: {profile_name}");
         match load_wifi_profile(root, profile_name) {
@@ -1410,12 +1438,12 @@ fn handle_wifi_profile_connect(root: &Path, args: WifiProfileConnectArgs) -> Res
         .or_else(|| stored.as_ref().and_then(|p| p.profile.password.clone()));
 
     log::info!("Connecting to SSID: {ssid} on interface: {interface}");
-    
+
     if let Err(e) = connect_wifi_network(&interface, &ssid, password.as_deref()) {
         log::error!("Failed to connect to {ssid}: {e}");
         bail!("WiFi connection failed: {e}");
     }
-    
+
     log::info!("WiFi connection successful");
 
     let mut remembered = false;
@@ -1451,7 +1479,7 @@ fn handle_wifi_profile_connect(root: &Path, args: WifiProfileConnectArgs) -> Res
                 Ok(_) => {
                     remembered = true;
                     log::info!("New profile created and saved");
-                },
+                }
                 Err(e) => {
                     log::error!("Failed to save new profile: {e}");
                 }
@@ -1471,13 +1499,13 @@ fn handle_wifi_profile_connect(root: &Path, args: WifiProfileConnectArgs) -> Res
 
 fn handle_wifi_profile_delete(root: &Path, args: WifiProfileDeleteArgs) -> Result<HandlerResult> {
     log::info!("Attempting to delete WiFi profile: {}", args.ssid);
-    
+
     match delete_wifi_profile(root, &args.ssid) {
         Ok(()) => {
             log::info!("Profile deleted successfully: {}", args.ssid);
             let data = json!({ "ssid": args.ssid });
             Ok(("Wi-Fi profile deleted".to_string(), data))
-        },
+        }
         Err(e) => {
             log::error!("Failed to delete profile '{}': {e}", args.ssid);
             bail!("Failed to delete profile: {e}");
@@ -1487,18 +1515,18 @@ fn handle_wifi_profile_delete(root: &Path, args: WifiProfileDeleteArgs) -> Resul
 
 fn handle_wifi_disconnect(args: WifiDisconnectArgs) -> Result<HandlerResult> {
     log::info!("Attempting WiFi disconnect");
-    
+
     let interface = match disconnect_wifi_interface(args.interface.clone()) {
         Ok(iface) => {
             log::info!("Successfully disconnected interface: {iface}");
             iface
-        },
+        }
         Err(e) => {
             log::error!("Failed to disconnect WiFi: {e}");
             bail!("WiFi disconnect failed: {e}");
         }
     };
-    
+
     let data = json!({ "interface": interface });
     Ok(("Wi-Fi interface disconnected".to_string(), data))
 }
@@ -1514,11 +1542,7 @@ fn loot_directory(root: &Path, kind: LootKind) -> PathBuf {
 
 /// Build a per-network loot directory under loot/Wireless/<safe_name>
 /// Falls back to BSSID, then "Unknown" if nothing provided.
-fn wireless_target_directory(
-    root: &Path,
-    ssid: Option<String>,
-    bssid: Option<String>,
-) -> PathBuf {
+fn wireless_target_directory(root: &Path, ssid: Option<String>, bssid: Option<String>) -> PathBuf {
     let make_safe = |s: &str| {
         let mut out = String::with_capacity(s.len());
         for ch in s.chars() {
@@ -1579,20 +1603,20 @@ fn resolve_loot_path(root: &Path, path: &Path) -> Result<PathBuf> {
 
 fn handle_hardware_detect() -> Result<HandlerResult> {
     log::info!("Scanning hardware interfaces");
-    
+
     let interfaces = list_interface_summaries()?;
-    
+
     // Categorize interfaces
     let mut ethernet_ports = Vec::new();
     let mut wifi_modules = Vec::new();
     let mut other_interfaces = Vec::new();
-    
+
     for iface in &interfaces {
         // Skip loopback
         if iface.name == "lo" {
             continue;
         }
-        
+
         match iface.kind.as_str() {
             "wireless" => wifi_modules.push(iface.clone()),
             "wired" => {
@@ -1606,7 +1630,7 @@ fn handle_hardware_detect() -> Result<HandlerResult> {
             _ => other_interfaces.push(iface.clone()),
         }
     }
-    
+
     let data = json!({
         "ethernet_count": ethernet_ports.len(),
         "wifi_count": wifi_modules.len(),
@@ -1616,15 +1640,14 @@ fn handle_hardware_detect() -> Result<HandlerResult> {
         "other_interfaces": other_interfaces,
         "total_interfaces": interfaces.len() - 1, // Exclude loopback
     });
-    
+
     let summary = format!(
         "Found {} ethernet, {} wifi, {} other",
         ethernet_ports.len(),
         wifi_modules.len(),
         other_interfaces.len()
     );
-    
+
     log::info!("Hardware scan complete: {summary}");
     Ok((summary, data))
 }
-

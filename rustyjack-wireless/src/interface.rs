@@ -4,17 +4,16 @@
 //! monitor mode, channel setting, and state management.
 
 use std::fmt;
-use std::time::Duration;
 use std::thread;
+use std::time::Duration;
 
-use crate::error::{WirelessError, Result};
-use crate::nl80211::{
-    self, Nl80211IfType, InterfaceState,
-    get_ifindex, get_interface_state, is_monitor_mode,
-    set_interface_state, set_interface_type_iw, set_channel_iw,
-    get_channel, get_mac_address, kill_interfering_processes,
-};
+use crate::error::{Result, WirelessError};
 use crate::frames::MacAddress;
+use crate::nl80211::{
+    self, get_channel, get_ifindex, get_interface_state, get_mac_address, is_monitor_mode,
+    kill_interfering_processes, set_channel_iw, set_interface_state, set_interface_type_iw,
+    InterfaceState, Nl80211IfType,
+};
 
 /// Wireless interface wrapper
 #[derive(Debug)]
@@ -38,14 +37,15 @@ impl WirelessInterface {
     pub fn new(name: &str) -> Result<Self> {
         // Verify interface exists and is wireless
         if !crate::is_wireless_interface(name) {
-            return Err(WirelessError::Interface(
-                format!("'{}' is not a wireless interface", name)
-            ));
+            return Err(WirelessError::Interface(format!(
+                "'{}' is not a wireless interface",
+                name
+            )));
         }
-        
+
         let ifindex = get_ifindex(name)?;
         let original_mac = get_mac_address(name)?;
-        
+
         Ok(Self {
             name: name.to_string(),
             ifindex,
@@ -54,48 +54,48 @@ impl WirelessInterface {
             we_enabled_monitor: false,
         })
     }
-    
+
     /// Get interface name
     pub fn name(&self) -> &str {
         &self.name
     }
-    
+
     /// Get interface index
     pub fn ifindex(&self) -> i32 {
         self.ifindex
     }
-    
+
     /// Get MAC address
     pub fn mac_address(&self) -> Result<MacAddress> {
         let mac = get_mac_address(&self.name)?;
         Ok(MacAddress::new(mac))
     }
-    
+
     /// Check if interface is currently in monitor mode
     pub fn is_monitor_mode(&self) -> Result<bool> {
         is_monitor_mode(&self.name)
     }
-    
+
     /// Get interface state (up/down)
     pub fn state(&self) -> Result<InterfaceState> {
         get_interface_state(&self.name)
     }
-    
+
     /// Check if interface is up
     pub fn is_up(&self) -> Result<bool> {
         Ok(self.state()? == InterfaceState::Up)
     }
-    
+
     /// Bring interface up
     pub fn up(&self) -> Result<()> {
         set_interface_state(&self.name, true)
     }
-    
+
     /// Bring interface down
     pub fn down(&self) -> Result<()> {
         set_interface_state(&self.name, false)
     }
-    
+
     /// Enable monitor mode
     ///
     /// This will:
@@ -106,72 +106,72 @@ impl WirelessInterface {
     pub fn set_monitor_mode(&mut self) -> Result<()> {
         self.set_monitor_mode_opts(MonitorModeOptions::default())
     }
-    
+
     /// Enable monitor mode with options
     pub fn set_monitor_mode_opts(&mut self, opts: MonitorModeOptions) -> Result<()> {
         log::info!("Enabling monitor mode on {}", self.name);
-        
+
         // Check if already in monitor mode
         if self.is_monitor_mode()? {
             log::info!("{} already in monitor mode", self.name);
             return Ok(());
         }
-        
+
         // Kill interfering processes
         if opts.kill_processes {
             log::debug!("Killing interfering processes");
             kill_interfering_processes()?;
             thread::sleep(Duration::from_millis(500));
         }
-        
+
         // Set to monitor mode
         set_interface_type_iw(&self.name, Nl80211IfType::Monitor)?;
-        
+
         // Verify
         thread::sleep(Duration::from_millis(100));
         if !self.is_monitor_mode()? {
             return Err(WirelessError::MonitorMode(
-                "Failed to verify monitor mode".into()
+                "Failed to verify monitor mode".into(),
             ));
         }
-        
+
         self.we_enabled_monitor = true;
         log::info!("{} is now in monitor mode", self.name);
-        
+
         Ok(())
     }
-    
+
     /// Disable monitor mode and return to managed mode
     pub fn set_managed_mode(&mut self) -> Result<()> {
         log::info!("Disabling monitor mode on {}", self.name);
-        
+
         if !self.is_monitor_mode()? {
             log::info!("{} not in monitor mode", self.name);
             return Ok(());
         }
-        
+
         set_interface_type_iw(&self.name, Nl80211IfType::Managed)?;
-        
+
         // Restart network services
         self.restart_network_services()?;
-        
+
         self.we_enabled_monitor = false;
         log::info!("{} is now in managed mode", self.name);
-        
+
         Ok(())
     }
-    
+
     /// Set channel
     pub fn set_channel(&self, channel: u8) -> Result<()> {
         log::debug!("Setting {} to channel {}", self.name, channel);
         set_channel_iw(&self.name, channel)
     }
-    
+
     /// Get current channel
     pub fn get_channel(&self) -> Result<Option<u8>> {
         get_channel(&self.name)
     }
-    
+
     /// Set channel with retry
     pub fn set_channel_retry(&self, channel: u8, retries: u32) -> Result<()> {
         for attempt in 0..retries {
@@ -187,29 +187,30 @@ impl WirelessInterface {
                 }
             }
         }
-        
-        Err(WirelessError::Channel(
-            format!("Failed to set channel after {} attempts", retries)
-        ))
+
+        Err(WirelessError::Channel(format!(
+            "Failed to set channel after {} attempts",
+            retries
+        )))
     }
-    
+
     /// Restart network services (NetworkManager, etc.)
     fn restart_network_services(&self) -> Result<()> {
         use std::process::Command;
-        
+
         // Try to restart NetworkManager
         let _ = Command::new("systemctl")
             .args(["restart", "NetworkManager"])
             .status();
-        
+
         // Also try wpa_supplicant
         let _ = Command::new("systemctl")
             .args(["restart", "wpa_supplicant"])
             .status();
-        
+
         Ok(())
     }
-    
+
     /// Get monitor interface name
     /// Some drivers create a separate monitor interface (wlan0mon)
     pub fn monitor_interface_name(&self) -> String {
@@ -267,7 +268,7 @@ impl MonitorModeOptions {
         self.kill_processes = true;
         self
     }
-    
+
     /// Create without process killing
     pub fn without_kill_processes(mut self) -> Self {
         self.kill_processes = false;
@@ -293,13 +294,14 @@ impl InterfaceCapabilities {
     pub fn query(name: &str) -> Result<Self> {
         let monitor_mode = nl80211::supports_monitor_mode(name).unwrap_or(false);
         let injection = nl80211::supports_injection(name).unwrap_or(false);
-        
+
         // Default channels - actual detection would require iw phy parsing
         let channels_2g = (1..=14).collect();
-        let channels_5g = vec![36, 40, 44, 48, 52, 56, 60, 64, 100, 104, 108, 112, 
-                               116, 120, 124, 128, 132, 136, 140, 144, 149, 153, 
-                               157, 161, 165];
-        
+        let channels_5g = vec![
+            36, 40, 44, 48, 52, 56, 60, 64, 100, 104, 108, 112, 116, 120, 124, 128, 132, 136, 140,
+            144, 149, 153, 157, 161, 165,
+        ];
+
         Ok(Self {
             monitor_mode,
             injection,
@@ -307,7 +309,7 @@ impl InterfaceCapabilities {
             channels_5g,
         })
     }
-    
+
     /// Check if interface is suitable for attacks
     pub fn suitable_for_attacks(&self) -> bool {
         self.monitor_mode && self.injection
@@ -317,7 +319,7 @@ impl InterfaceCapabilities {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_monitor_mode_options() {
         let opts = MonitorModeOptions::default();

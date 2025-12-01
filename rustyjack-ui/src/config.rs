@@ -256,15 +256,15 @@ impl SettingsConfig {
     fn default_discord_enabled() -> bool {
         true
     }
-    
+
     fn default_active_interface() -> String {
         "wlan0".to_string()
     }
-    
+
     fn default_target_network() -> String {
         String::new()
     }
-    
+
     fn default_tx_power() -> String {
         "high".to_string()
     }

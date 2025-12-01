@@ -3,11 +3,11 @@
 //! Radiotap is the de-facto standard header prepended to 802.11 frames
 //! when injecting or capturing in monitor mode.
 
-use crate::error::{WirelessError, Result};
-use byteorder::{LittleEndian, ByteOrder};
+use crate::error::{Result, WirelessError};
+use byteorder::{ByteOrder, LittleEndian};
 
 /// Radiotap header for injection
-/// 
+///
 /// This is a minimal header that works with most drivers.
 /// More complex headers can specify rate, channel, TX power, etc.
 #[derive(Debug, Clone)]
@@ -26,14 +26,14 @@ impl RadiotapHeader {
         // - Present flags: 0x00000000 (no fields present)
         Self {
             data: vec![
-                0x00,       // Header revision
-                0x00,       // Header pad
+                0x00, // Header revision
+                0x00, // Header pad
                 0x08, 0x00, // Header length (8 bytes, LE)
                 0x00, 0x00, 0x00, 0x00, // Present flags (none)
             ],
         }
     }
-    
+
     /// Radiotap header with rate specification
     /// Useful for ensuring frames are sent at specific rates
     pub fn with_rate(rate: u8) -> Self {
@@ -41,89 +41,101 @@ impl RadiotapHeader {
         // Rate field is 1 byte, in 500kbps units (e.g., 2 = 1Mbps)
         Self {
             data: vec![
-                0x00,       // Header revision
-                0x00,       // Header pad
+                0x00, // Header revision
+                0x00, // Header pad
                 0x09, 0x00, // Header length (9 bytes, LE)
                 0x04, 0x00, 0x00, 0x00, // Present flags: rate
-                rate,       // Rate value
+                rate, // Rate value
             ],
         }
     }
-    
+
     /// Radiotap header with TX flags for injection
     pub fn for_injection() -> Self {
         // Present flags: bit 15 = TX flags
         // TX flags: 0x0008 = NO_ACK (don't wait for acknowledgment)
         Self {
             data: vec![
-                0x00,       // Header revision
-                0x00,       // Header pad
+                0x00, // Header revision
+                0x00, // Header pad
                 0x0A, 0x00, // Header length (10 bytes, LE)
                 0x00, 0x80, 0x00, 0x00, // Present flags: TX flags (bit 15)
                 0x08, 0x00, // TX flags: NO_ACK
             ],
         }
     }
-    
+
     /// Radiotap header with channel and rate (more compatible)
     pub fn with_channel(channel: u8, rate: u8) -> Self {
         let freq = channel_to_frequency(channel);
-        
+
         // Present flags: bit 2 (rate) | bit 3 (channel)
         Self {
             data: vec![
-                0x00,       // Header revision
-                0x00,       // Header pad
-                0x0D, 0x00, // Header length (13 bytes, LE)
-                0x0C, 0x00, 0x00, 0x00, // Present flags: rate + channel
-                rate,       // Rate
-                0x00,       // Padding for alignment
+                0x00, // Header revision
+                0x00, // Header pad
+                0x0D,
+                0x00, // Header length (13 bytes, LE)
+                0x0C,
+                0x00,
+                0x00,
+                0x00,                       // Present flags: rate + channel
+                rate,                       // Rate
+                0x00,                       // Padding for alignment
                 (freq & 0xFF) as u8,        // Channel frequency low byte
                 ((freq >> 8) & 0xFF) as u8, // Channel frequency high byte
-                0xA0, 0x00, // Channel flags: 2GHz spectrum + CCK
+                0xA0,
+                0x00, // Channel flags: 2GHz spectrum + CCK
             ],
         }
     }
-    
+
     /// Get header length
     pub fn len(&self) -> usize {
         self.data.len()
     }
-    
+
     /// Check if header is empty (shouldn't happen)
     pub fn is_empty(&self) -> bool {
         self.data.is_empty()
     }
-    
+
     /// Get as byte slice
     pub fn as_bytes(&self) -> &[u8] {
         &self.data
     }
-    
+
     /// Parse radiotap header from captured packet
     pub fn parse(data: &[u8]) -> Result<(Self, usize)> {
         if data.len() < 4 {
-            return Err(WirelessError::InvalidFrame("Radiotap header too short".into()));
+            return Err(WirelessError::InvalidFrame(
+                "Radiotap header too short".into(),
+            ));
         }
-        
+
         // Check version
         if data[0] != 0 {
-            return Err(WirelessError::InvalidFrame(
-                format!("Unknown radiotap version: {}", data[0])
-            ));
+            return Err(WirelessError::InvalidFrame(format!(
+                "Unknown radiotap version: {}",
+                data[0]
+            )));
         }
-        
+
         // Get header length
         let len = LittleEndian::read_u16(&data[2..4]) as usize;
-        
+
         if data.len() < len {
-            return Err(WirelessError::InvalidFrame(
-                format!("Radiotap header length {} exceeds data length {}", len, data.len())
-            ));
+            return Err(WirelessError::InvalidFrame(format!(
+                "Radiotap header length {} exceeds data length {}",
+                len,
+                data.len()
+            )));
         }
-        
+
         Ok((
-            Self { data: data[..len].to_vec() },
+            Self {
+                data: data[..len].to_vec(),
+            },
             len,
         ))
     }
@@ -249,21 +261,21 @@ impl RadiotapInfo {
         if data.len() < 8 {
             return Self::default();
         }
-        
+
         let present = LittleEndian::read_u32(&data[4..8]);
         let mut info = Self::default();
         let mut offset = 8usize;
-        
+
         // Parse fields in order based on present flags
         // This is simplified - full implementation would handle alignment
-        
+
         if present & (1 << RadiotapField::Rate as u32) != 0 {
             if offset < data.len() {
                 info.rate = Some(data[offset]);
                 offset += 1;
             }
         }
-        
+
         if present & (1 << RadiotapField::Channel as u32) != 0 {
             // Align to 2 bytes
             offset = (offset + 1) & !1;
@@ -274,27 +286,27 @@ impl RadiotapInfo {
                 offset += 4; // frequency + flags
             }
         }
-        
+
         if present & (1 << RadiotapField::AntennaSignal as u32) != 0 {
             if offset < data.len() {
                 info.signal_dbm = Some(data[offset] as i8);
                 offset += 1;
             }
         }
-        
+
         if present & (1 << RadiotapField::AntennaNoise as u32) != 0 {
             if offset < data.len() {
                 info.noise_dbm = Some(data[offset] as i8);
                 offset += 1;
             }
         }
-        
+
         if present & (1 << RadiotapField::Antenna as u32) != 0 {
             if offset < data.len() {
                 info.antenna = Some(data[offset]);
             }
         }
-        
+
         info
     }
 }
@@ -302,7 +314,7 @@ impl RadiotapInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_minimal_header() {
         let header = RadiotapHeader::minimal();
@@ -310,7 +322,7 @@ mod tests {
         assert_eq!(header.as_bytes()[0], 0x00); // Version
         assert_eq!(header.as_bytes()[2], 0x08); // Length low byte
     }
-    
+
     #[test]
     fn test_channel_frequency() {
         assert_eq!(channel_to_frequency(1), 2412);
@@ -318,7 +330,7 @@ mod tests {
         assert_eq!(channel_to_frequency(11), 2462);
         assert_eq!(channel_to_frequency(36), 5180);
     }
-    
+
     #[test]
     fn test_frequency_channel() {
         assert_eq!(frequency_to_channel(2412), 1);

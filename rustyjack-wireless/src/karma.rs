@@ -1,13 +1,16 @@
 //! Karma Attack Module
-//! 
+//!
 //! Responds to ALL probe requests with matching responses,
 //! capturing devices looking for known networks.
-//! 
+//!
 //! This is highly effective against devices with saved networks.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, Mutex,
+};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Karma attack configuration
@@ -139,30 +142,32 @@ impl KarmaAttack {
             stats: Arc::new(Mutex::new(KarmaStats::default())),
         }
     }
-    
+
     /// Generate a random BSSID for a fake AP
     fn generate_bssid() -> String {
         use std::time::{SystemTime, UNIX_EPOCH};
-        
+
         let seed = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos() as u64;
-        
+
         let mut state = seed;
         let mut bytes = [0u8; 6];
         for i in 0..6 {
             state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
             bytes[i] = (state >> 33) as u8;
         }
-        
+
         // Set locally administered bit, clear multicast
         bytes[0] = (bytes[0] | 0x02) & 0xFE;
-        
-        format!("{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
-            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5])
+
+        format!(
+            "{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
+            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5]
+        )
     }
-    
+
     /// Get or create a BSSID for an SSID
     fn get_bssid_for_ssid(&self, ssid: &str) -> String {
         let mut map = self.ssid_to_bssid.lock().unwrap();
@@ -170,41 +175,45 @@ impl KarmaAttack {
             .or_insert_with(Self::generate_bssid)
             .clone()
     }
-    
+
     /// Check if we should respond to this probe
     fn should_respond(&self, ssid: &str, client_mac: &str) -> bool {
         // Check blacklist
         if self.config.ssid_blacklist.contains(&ssid.to_string()) {
             return false;
         }
-        
+
         // Check whitelist (if not empty)
         if !self.config.ssid_whitelist.is_empty() {
             if !self.config.ssid_whitelist.contains(&ssid.to_string()) {
                 return false;
             }
         }
-        
+
         // Check target clients (if specified)
         if !self.config.target_clients.is_empty() {
-            if !self.config.target_clients.iter().any(|c| 
-                c.eq_ignore_ascii_case(client_mac)) {
+            if !self
+                .config
+                .target_clients
+                .iter()
+                .any(|c| c.eq_ignore_ascii_case(client_mac))
+            {
                 return false;
             }
         }
-        
+
         true
     }
-    
+
     /// Handle a probe request
     pub fn handle_probe(&self, client_mac: &str, ssid: &str, signal_dbm: i32) {
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs();
-        
+
         let should_respond = self.should_respond(ssid, client_mac);
-        
+
         // Record probe
         let probe = CapturedProbe {
             client_mac: client_mac.to_string(),
@@ -213,11 +222,11 @@ impl KarmaAttack {
             timestamp,
             responded: should_respond,
         };
-        
+
         if self.config.log_probes {
             self.probes.lock().unwrap().push(probe);
         }
-        
+
         // Update stats
         {
             let mut stats = self.stats.lock().unwrap();
@@ -226,32 +235,35 @@ impl KarmaAttack {
                 stats.probes_responded += 1;
             }
         }
-        
+
         // Respond if appropriate
         if should_respond && !ssid.is_empty() {
             // In real implementation, this would inject the probe response
             // self.inject_probe_response(ssid, client_mac);
         }
     }
-    
+
     /// Record a victim connection
     pub fn record_victim(&self, client_mac: &str, ssid: &str, handshake_file: Option<PathBuf>) {
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs();
-        
+
         // Get probes from this client for fingerprinting
-        let probes: Vec<String> = self.probes.lock().unwrap()
+        let probes: Vec<String> = self
+            .probes
+            .lock()
+            .unwrap()
             .iter()
             .filter(|p| p.client_mac == client_mac)
             .map(|p| p.ssid.clone())
             .collect();
-        
+
         let device_type = self.fingerprint_device(client_mac, &probes);
-        
+
         let handshake_captured = handshake_file.is_some();
-        
+
         let victim = KarmaVictim {
             client_mac: client_mac.to_string(),
             ssid: ssid.to_string(),
@@ -261,32 +273,29 @@ impl KarmaAttack {
             handshake_file,
             device_type,
         };
-        
+
         self.victims.lock().unwrap().push(victim);
-        
+
         let mut stats = self.stats.lock().unwrap();
         stats.victims += 1;
         if handshake_captured {
             stats.handshakes += 1;
         }
     }
-    
+
     /// Get current statistics
     pub fn get_stats(&self) -> KarmaStats {
         let mut stats = self.stats.lock().unwrap().clone();
-        
+
         // Update unique counts
         let probes = self.probes.lock().unwrap();
-        let unique_ssids: std::collections::HashSet<_> = probes.iter()
-            .map(|p| &p.ssid)
-            .collect();
-        let unique_clients: std::collections::HashSet<_> = probes.iter()
-            .map(|p| &p.client_mac)
-            .collect();
-        
+        let unique_ssids: std::collections::HashSet<_> = probes.iter().map(|p| &p.ssid).collect();
+        let unique_clients: std::collections::HashSet<_> =
+            probes.iter().map(|p| &p.client_mac).collect();
+
         stats.unique_ssids = unique_ssids.len();
         stats.unique_clients = unique_clients.len();
-        
+
         stats
     }
 
@@ -303,7 +312,11 @@ impl KarmaAttack {
 
         let probe_count = probes.len();
         let device_type = if vendor == "Apple" {
-            if probe_count > 10 { "iPhone" } else { "MacBook/iPad" }
+            if probe_count > 10 {
+                "iPhone"
+            } else {
+                "MacBook/iPad"
+            }
         } else if vendor == "Samsung" {
             "Android (Samsung)"
         } else if vendor == "Google" {
@@ -314,19 +327,18 @@ impl KarmaAttack {
 
         Some(device_type.to_string())
     }
-    
+
     /// Get result summary
     pub fn get_result(&self) -> KarmaResult {
         let probes = self.probes.lock().unwrap().clone();
         let victims = self.victims.lock().unwrap().clone();
-        
+
         let ssids_seen: Vec<String> = {
-            let ssids: std::collections::HashSet<String> = probes.iter()
-                .map(|p| p.ssid.clone())
-                .collect();
+            let ssids: std::collections::HashSet<String> =
+                probes.iter().map(|p| p.ssid.clone()).collect();
             ssids.into_iter().collect()
         };
-        
+
         KarmaResult {
             stats: self.get_stats(),
             probes,
@@ -335,12 +347,12 @@ impl KarmaAttack {
             log_file: self.config.output_dir.join("karma_log.txt"),
         }
     }
-    
+
     /// Check if attack is running
     pub fn is_running(&self) -> bool {
         self.running.load(Ordering::SeqCst)
     }
-    
+
     /// Stop the attack
     pub fn stop(&self) {
         self.running.store(false, Ordering::SeqCst);
@@ -378,36 +390,36 @@ pub fn common_target_ssids() -> Vec<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_bssid_generation() {
         let bssid = KarmaAttack::generate_bssid();
         assert_eq!(bssid.len(), 17);
         assert_eq!(bssid.matches(':').count(), 5);
-        
+
         // Check locally administered bit
         let first_byte = u8::from_str_radix(&bssid[0..2], 16).unwrap();
         assert!(first_byte & 0x02 != 0);
     }
-    
+
     #[test]
     fn test_should_respond_blacklist() {
         let mut config = KarmaConfig::default();
         config.ssid_blacklist.push("BlockedNetwork".to_string());
-        
+
         let attack = KarmaAttack::new(config);
-        
+
         assert!(!attack.should_respond("BlockedNetwork", "AA:BB:CC:DD:EE:FF"));
         assert!(attack.should_respond("AllowedNetwork", "AA:BB:CC:DD:EE:FF"));
     }
-    
+
     #[test]
     fn test_should_respond_whitelist() {
         let mut config = KarmaConfig::default();
         config.ssid_whitelist.push("TargetNetwork".to_string());
-        
+
         let attack = KarmaAttack::new(config);
-        
+
         assert!(attack.should_respond("TargetNetwork", "AA:BB:CC:DD:EE:FF"));
         assert!(!attack.should_respond("OtherNetwork", "AA:BB:CC:DD:EE:FF"));
     }

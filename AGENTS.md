@@ -31,6 +31,7 @@ Project structure (selected):
 - `rustyjack-ethernet/` — Rust-only Ethernet recon (ICMP sweep + TCP port scan) used by the UI Ethernet menu.
 - Loot storage: wireless captures are grouped per target under `loot/Wireless/<target>/` (target = SSID, else BSSID); reuse that when saving handshakes, PMKIDs, logs.
 - MAC randomization: `rustyjack-evasion::MacManager` sets locally administered, unicast MACs with CSPRNG; vendor-match OUI from the current interface when available.
+- UI dialogs/windows must require explicit user confirmation before advancing; do not auto-dismiss after a timeout or hide errors without acknowledgment.
 
 Style guard:
 - Don't add any emojis and remove emojis if found in the code.

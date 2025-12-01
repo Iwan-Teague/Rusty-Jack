@@ -20,9 +20,9 @@
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
+use crate::capture::{CaptureFilter, CapturedPacket, PacketCapture};
 use crate::error::Result;
-use crate::frames::{MacAddress, FrameType, FrameSubtype};
-use crate::capture::{PacketCapture, CaptureFilter, CapturedPacket};
+use crate::frames::{FrameSubtype, FrameType, MacAddress};
 use crate::interface::WirelessInterface;
 
 /// A probe request from a client device
@@ -73,7 +73,7 @@ impl ProbedNetwork {
             last_seen: now,
         }
     }
-    
+
     fn add_probe(&mut self, client: MacAddress) {
         self.clients.insert(client);
         self.probe_count += 1;
@@ -114,7 +114,7 @@ impl ClientStats {
             mac_randomized: randomized,
         }
     }
-    
+
     fn add_probe(&mut self, ssid: Option<&str>, signal: Option<i8>) {
         if let Some(ssid) = ssid {
             if !ssid.is_empty() {
@@ -123,7 +123,7 @@ impl ClientStats {
         }
         self.probe_count += 1;
         self.last_seen = Instant::now();
-        
+
         if let Some(sig) = signal {
             match self.best_signal {
                 Some(best) if sig > best => self.best_signal = Some(sig),
@@ -155,7 +155,7 @@ impl ProbeSniffer {
             clients: HashMap::new(),
         })
     }
-    
+
     /// Create from interface name
     pub fn from_name(name: &str) -> Result<Self> {
         Ok(Self {
@@ -165,13 +165,13 @@ impl ProbeSniffer {
             clients: HashMap::new(),
         })
     }
-    
+
     /// Sniff probe requests for a duration
     pub fn sniff(&mut self, duration: Duration) -> Result<SniffResult> {
         log::info!("Starting probe sniffing for {:?}", duration);
-        
+
         let mut capture = PacketCapture::new(&self.interface_name)?;
-        
+
         // Filter for probe requests (management frames, subtype 4)
         let filter = CaptureFilter {
             frame_types: Some(vec![FrameType::Management]),
@@ -179,10 +179,10 @@ impl ProbeSniffer {
             ..Default::default()
         };
         capture.set_filter(filter);
-        
+
         let start = Instant::now();
         let mut total_probes = 0u32;
-        
+
         while start.elapsed() < duration {
             if let Some(packet) = capture.next_packet()? {
                 if let Some(probe) = self.parse_probe_request(&packet) {
@@ -192,7 +192,7 @@ impl ProbeSniffer {
                 }
             }
         }
-        
+
         let result = SniffResult {
             duration: start.elapsed(),
             total_probes,
@@ -201,17 +201,17 @@ impl ProbeSniffer {
             top_networks: self.top_networks(10).into_iter().cloned().collect(),
             active_clients: self.active_clients(10).into_iter().cloned().collect(),
         };
-        
+
         log::info!(
             "Probe sniffing complete: {} probes, {} clients, {} networks",
             total_probes,
             self.clients.len(),
             self.networks.len()
         );
-        
+
         Ok(result)
     }
-    
+
     /// Channel hopping sniff (requires channel control)
     pub fn sniff_with_hopping(
         &mut self,
@@ -224,7 +224,7 @@ impl ProbeSniffer {
             "Starting probe sniffing with channel hopping ({} channels)",
             channels.len()
         );
-        
+
         let mut capture = PacketCapture::new(&self.interface_name)?;
         let filter = CaptureFilter {
             frame_types: Some(vec![FrameType::Management]),
@@ -232,12 +232,12 @@ impl ProbeSniffer {
             ..Default::default()
         };
         capture.set_filter(filter);
-        
+
         let start = Instant::now();
         let mut channel_idx = 0;
         let mut last_hop = Instant::now();
         let mut total_probes = 0u32;
-        
+
         while start.elapsed() < duration {
             // Hop channel if needed
             if last_hop.elapsed() >= hop_interval {
@@ -248,7 +248,7 @@ impl ProbeSniffer {
                 channel_idx += 1;
                 last_hop = Instant::now();
             }
-            
+
             if let Some(packet) = capture.next_packet()? {
                 if let Some(probe) = self.parse_probe_request(&packet) {
                     self.process_probe(&probe);
@@ -257,7 +257,7 @@ impl ProbeSniffer {
                 }
             }
         }
-        
+
         Ok(SniffResult {
             duration: start.elapsed(),
             total_probes,
@@ -267,21 +267,21 @@ impl ProbeSniffer {
             active_clients: self.active_clients(10).into_iter().cloned().collect(),
         })
     }
-    
+
     /// Parse probe request from captured packet
     fn parse_probe_request(&self, packet: &CapturedPacket) -> Option<ProbeRequest> {
         let frame = &packet.frame;
-        
+
         // Verify it's a probe request
-        if frame.frame_type() != FrameType::Management 
-            || frame.subtype() != FrameSubtype::ProbeRequest 
+        if frame.frame_type() != FrameType::Management
+            || frame.subtype() != FrameSubtype::ProbeRequest
         {
             return None;
         }
-        
+
         let client_mac = frame.source()?;
         let ssid = self.extract_ssid(frame.raw());
-        
+
         Some(ProbeRequest {
             client_mac,
             ssid,
@@ -290,78 +290,80 @@ impl ProbeSniffer {
             mac_randomized: client_mac.is_locally_administered(),
         })
     }
-    
+
     /// Extract SSID from probe request frame
     fn extract_ssid(&self, raw: &[u8]) -> Option<String> {
         // Skip 802.11 header (24 bytes for management frame)
         if raw.len() < 26 {
             return None;
         }
-        
+
         let body = &raw[24..];
-        
+
         // First tagged parameter should be SSID (tag 0)
         if body.len() < 2 || body[0] != 0 {
             return None;
         }
-        
+
         let ssid_len = body[1] as usize;
         if ssid_len == 0 || body.len() < 2 + ssid_len {
             return None; // Broadcast probe or truncated
         }
-        
+
         let ssid_bytes = &body[2..2 + ssid_len];
         String::from_utf8(ssid_bytes.to_vec()).ok()
     }
-    
+
     /// Process a probe request and update statistics
     fn process_probe(&mut self, probe: &ProbeRequest) {
         // Update client stats
-        let client = self.clients
+        let client = self
+            .clients
             .entry(probe.client_mac)
             .or_insert_with(|| ClientStats::new(probe.client_mac));
         client.add_probe(probe.ssid.as_deref(), probe.signal_dbm);
-        
+
         // Update network stats
         if let Some(ref ssid) = probe.ssid {
             if !ssid.is_empty() {
-                let network = self.networks
+                let network = self
+                    .networks
                     .entry(ssid.clone())
                     .or_insert_with(|| ProbedNetwork::new(ssid.clone()));
                 network.add_probe(probe.client_mac);
             }
         }
     }
-    
+
     /// Get top N networks by probe count
     pub fn top_networks(&self, n: usize) -> Vec<&ProbedNetwork> {
         let mut networks: Vec<_> = self.networks.values().collect();
         networks.sort_by(|a, b| b.probe_count.cmp(&a.probe_count));
         networks.into_iter().take(n).collect()
     }
-    
+
     /// Get most active clients
     pub fn active_clients(&self, n: usize) -> Vec<&ClientStats> {
         let mut clients: Vec<_> = self.clients.values().collect();
         clients.sort_by(|a, b| b.probe_count.cmp(&a.probe_count));
         clients.into_iter().take(n).collect()
     }
-    
+
     /// Get all captured probes
     pub fn probes(&self) -> &[ProbeRequest] {
         &self.probes
     }
-    
+
     /// Get all networks
     pub fn networks(&self) -> &HashMap<String, ProbedNetwork> {
         &self.networks
     }
-    
+
     /// Get all clients
     pub fn clients(&self) -> &HashMap<MacAddress, ClientStats> {
         &self.clients
     }
-    
+
     /// Find clients probing for a specific network
     pub fn clients_for_network(&self, ssid: &str) -> Vec<MacAddress> {
         self.networks
@@ -369,7 +371,7 @@ impl ProbeSniffer {
             .map(|n| n.clients.iter().cloned().collect())
             .unwrap_or_default()
     }
-    
+
     /// Find networks a specific client is probing for
     pub fn networks_for_client(&self, mac: MacAddress) -> Vec<String> {
         self.clients
@@ -377,7 +379,7 @@ impl ProbeSniffer {
             .map(|c| c.probed_networks.iter().cloned().collect())
             .unwrap_or_default()
     }
-    
+
     /// Clear all data
     pub fn clear(&mut self) {
         self.probes.clear();
@@ -421,7 +423,7 @@ impl MacAddress {
     pub fn is_locally_administered(&self) -> bool {
         (self.0[0] & 0x02) != 0
     }
-    
+
     /// Get OUI (first 3 bytes) for vendor lookup
     pub fn oui(&self) -> [u8; 3] {
         [self.0[0], self.0[1], self.0[2]]
@@ -429,38 +431,34 @@ impl MacAddress {
 }
 
 /// Quick probe sniff function
-pub fn quick_probe_sniff(
-    interface: &str,
-    channel: u8,
-    duration_secs: u64,
-) -> Result<SniffResult> {
+pub fn quick_probe_sniff(interface: &str, channel: u8, duration_secs: u64) -> Result<SniffResult> {
     let mut iface = WirelessInterface::new(interface)?;
     iface.set_monitor_mode()?;
     iface.set_channel(channel)?;
-    
+
     let mut sniffer = ProbeSniffer::new(&iface)?;
     let result = sniffer.sniff(Duration::from_secs(duration_secs))?;
-    
+
     iface.set_managed_mode()?;
-    
+
     Ok(result)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_mac_randomized() {
         // Randomized MAC (local bit set)
         let random: MacAddress = "02:00:00:00:00:00".parse().unwrap();
         assert!(random.is_locally_administered());
-        
-        // Real MAC (local bit not set)  
+
+        // Real MAC (local bit not set)
         let real: MacAddress = "00:11:22:33:44:55".parse().unwrap();
         assert!(!real.is_locally_administered());
     }
-    
+
     #[test]
     fn test_probe_request() {
         let probe = ProbeRequest {
@@ -470,9 +468,9 @@ mod tests {
             timestamp: Instant::now(),
             mac_randomized: false,
         };
-        
+
         assert!(!probe.is_broadcast());
-        
+
         let broadcast = ProbeRequest {
             ssid: None,
             ..probe.clone()

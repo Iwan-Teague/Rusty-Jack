@@ -51,32 +51,32 @@
 #![allow(clippy::module_name_repetitions)]
 
 // Core modules
+pub mod config;
 pub mod error;
 pub mod mac;
-pub mod txpower;
 pub mod passive;
-pub mod config;
 pub mod state;
+pub mod txpower;
 pub mod vendor;
 
 // Re-exports for convenience
-pub use error::{EvasionError, Result};
-pub use mac::{MacManager, MacAddress, MacState, MacGenerationStrategy};
-pub use txpower::{TxPowerManager, TxPowerLevel};
-pub use passive::{PassiveManager, PassiveConfig, PassiveResult};
 pub use config::{EvasionConfig, EvasionSettings};
-pub use state::{StateManager, InterfaceState};
+pub use error::{EvasionError, Result};
+pub use mac::{MacAddress, MacGenerationStrategy, MacManager, MacState};
+pub use passive::{PassiveConfig, PassiveManager, PassiveResult};
+pub use state::{InterfaceState, StateManager};
+pub use txpower::{TxPowerLevel, TxPowerManager};
 pub use vendor::{VendorOui, VENDOR_DATABASE};
 
 /// Library version
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Check if running with sufficient privileges
-/// 
+///
 /// Most evasion operations require root or `CAP_NET_ADMIN` capability.
-/// 
+///
 /// # Returns
-/// 
+///
 /// `true` if running as root (euid == 0)
 #[must_use]
 pub fn check_privileges() -> bool {
@@ -84,73 +84,72 @@ pub fn check_privileges() -> bool {
     unsafe {
         libc::geteuid() == 0
     }
-    
+
     #[cfg(not(target_os = "linux"))]
     false
 }
 
 /// Check if an interface exists
-/// 
+///
 /// # Arguments
-/// 
+///
 /// * `interface` - Network interface name (e.g., "wlan0")
-/// 
+///
 /// # Returns
-/// 
+///
 /// `true` if the interface exists in `/sys/class/net/`
 #[must_use]
 pub fn interface_exists(interface: &str) -> bool {
     if interface.is_empty() || interface.contains('/') || interface.contains('\0') {
         return false;
     }
-    
+
     let path = format!("/sys/class/net/{}", interface);
     std::path::Path::new(&path).exists()
 }
 
 /// Check if an interface is wireless
-/// 
+///
 /// # Arguments
-/// 
+///
 /// * `interface` - Network interface name
-/// 
+///
 /// # Returns
-/// 
+///
 /// `true` if the interface has wireless capabilities
 #[must_use]
 pub fn is_wireless(interface: &str) -> bool {
     if !interface_exists(interface) {
         return false;
     }
-    
+
     let wireless_path = format!("/sys/class/net/{}/wireless", interface);
     let phy_path = format!("/sys/class/net/{}/phy80211", interface);
-    
-    std::path::Path::new(&wireless_path).exists() || 
-    std::path::Path::new(&phy_path).exists()
+
+    std::path::Path::new(&wireless_path).exists() || std::path::Path::new(&phy_path).exists()
 }
 
 /// List all network interfaces
-/// 
+///
 /// # Errors
-/// 
+///
 /// Returns an error if `/sys/class/net` cannot be read
 pub fn list_interfaces() -> Result<Vec<String>> {
     let net_dir = std::fs::read_dir("/sys/class/net")
         .map_err(|e| EvasionError::System(format!("Failed to read /sys/class/net: {}", e)))?;
-    
+
     let interfaces: Vec<String> = net_dir
         .filter_map(|entry| entry.ok())
         .map(|entry| entry.file_name().to_string_lossy().to_string())
         .collect();
-    
+
     Ok(interfaces)
 }
 
 /// List all wireless interfaces
-/// 
+///
 /// # Errors
-/// 
+///
 /// Returns an error if interface enumeration fails
 pub fn list_wireless_interfaces() -> Result<Vec<String>> {
     let all = list_interfaces()?;
@@ -158,23 +157,23 @@ pub fn list_wireless_interfaces() -> Result<Vec<String>> {
 }
 
 /// Convenience function to quickly randomize a MAC address
-/// 
+///
 /// This is a stateless operation - the original MAC is not saved.
 /// For operations requiring restoration, use [`MacManager`] instead.
-/// 
+///
 /// # Arguments
-/// 
+///
 /// * `interface` - Network interface name
-/// 
+///
 /// # Errors
-/// 
+///
 /// Returns an error if MAC randomization fails
-/// 
+///
 /// # Example
-/// 
+///
 /// ```no_run
 /// use rustyjack_evasion::quick_randomize_mac;
-/// 
+///
 /// if let Ok(new_mac) = quick_randomize_mac("wlan0") {
 ///     println!("New MAC: {}", new_mac);
 /// }
@@ -186,13 +185,13 @@ pub fn quick_randomize_mac(interface: &str) -> Result<String> {
 }
 
 /// Convenience function to set TX power to stealth level
-/// 
+///
 /// # Arguments
-/// 
+///
 /// * `interface` - Wireless interface name
-/// 
+///
 /// # Errors
-/// 
+///
 /// Returns an error if TX power cannot be set
 pub fn set_stealth_power(interface: &str) -> Result<()> {
     let mut manager = TxPowerManager::new();
@@ -200,13 +199,13 @@ pub fn set_stealth_power(interface: &str) -> Result<()> {
 }
 
 /// Convenience function to set TX power to maximum
-/// 
+///
 /// # Arguments
-/// 
+///
 /// * `interface` - Wireless interface name
-/// 
+///
 /// # Errors
-/// 
+///
 /// Returns an error if TX power cannot be set
 pub fn set_max_power(interface: &str) -> Result<()> {
     let mut manager = TxPowerManager::new();
@@ -216,7 +215,7 @@ pub fn set_max_power(interface: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_interface_exists_validation() {
         // Invalid interface names should return false
@@ -225,7 +224,7 @@ mod tests {
         assert!(!interface_exists("wlan0\0"));
         assert!(!interface_exists("a/b"));
     }
-    
+
     #[test]
     fn test_list_interfaces() {
         // Should not panic on any system
@@ -235,7 +234,7 @@ mod tests {
             assert!(result.is_ok());
         }
     }
-    
+
     #[test]
     fn test_privilege_check() {
         // Should not panic

@@ -3,26 +3,27 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
     process::Command,
-    sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
     thread,
     time::Duration,
 };
 
-use anyhow::{Result, bail, Context};
+use anyhow::{bail, Context, Result};
 use rustyjack_core::cli::{
-    Commands, DiscordCommand, DiscordSendArgs,
-    HardwareCommand, LootCommand, LootKind, LootListArgs, 
-    LootReadArgs, NotifyCommand, SystemUpdateArgs,
-    WifiCommand, WifiDeauthArgs, WifiScanArgs, 
-    WifiProfileCommand, WifiProfileConnectArgs, WifiProfileDeleteArgs,
-    EthernetCommand, EthernetDiscoverArgs, EthernetPortScanArgs,
+    Commands, DiscordCommand, DiscordSendArgs, EthernetCommand, EthernetDiscoverArgs,
+    EthernetPortScanArgs, HardwareCommand, LootCommand, LootKind, LootListArgs, LootReadArgs,
+    NotifyCommand, SystemUpdateArgs, WifiCommand, WifiDeauthArgs, WifiProfileCommand,
+    WifiProfileConnectArgs, WifiProfileDeleteArgs, WifiScanArgs,
 };
-use rustyjack_evasion::{MacManager, MacGenerationStrategy, VendorOui};
+use rustyjack_evasion::{MacGenerationStrategy, MacManager, VendorOui};
 use serde::Deserialize;
 use serde_json::{self, Value};
 use tempfile::{NamedTempFile, TempPath};
 use walkdir::WalkDir;
-use zip::{CompressionMethod, ZipWriter, write::FileOptions};
+use zip::{write::FileOptions, CompressionMethod, ZipWriter};
 
 #[cfg(target_os = "linux")]
 use linux_embedded_hal::gpio_cdev::{Chip, LineHandle, LineRequestFlags};
@@ -30,9 +31,12 @@ use linux_embedded_hal::gpio_cdev::{Chip, LineHandle, LineRequestFlags};
 use crate::{
     config::GuiConfig,
     core::CoreBridge,
-    display::{Display, DashboardView},
+    display::{DashboardView, Display},
     input::{Button, ButtonPad},
-    menu::{ColorTarget, LootSection, MenuAction, MenuEntry, MenuTree, PipelineType, TxPowerSetting, menu_title},
+    menu::{
+        menu_title, ColorTarget, LootSection, MenuAction, MenuEntry, MenuTree, PipelineType,
+        TxPowerSetting,
+    },
     stats::StatsSampler,
 };
 
@@ -97,11 +101,14 @@ impl App {
     /// Prevent concurrent offensive/recon operations. If busy, inform user and reject.
     fn guard_operation(&mut self, name: &str) -> Result<Option<OperationGuard>> {
         if let Some(current) = self.active_operation.clone() {
-            self.show_message("Busy", [
-                "An operation is already running",
-                &format!("Current: {}", current),
-                "Wait for it to finish",
-            ])?;
+            self.show_message(
+                "Busy",
+                [
+                    "An operation is already running",
+                    &format!("Current: {}", current),
+                    "Wait for it to finish",
+                ],
+            )?;
             return Ok(None);
         }
         self.active_operation = Some(name.to_string());
@@ -157,10 +164,15 @@ impl App {
                             }
                         }
                         if !has_monitor {
-                            issues.push("Adapter lacks monitor mode (needs injection-capable WiFi)".to_string());
+                            issues.push(
+                                "Adapter lacks monitor mode (needs injection-capable WiFi)"
+                                    .to_string(),
+                            );
                         }
                     }
-                    _ => issues.push("Cannot determine monitor support (iw list failed)".to_string()),
+                    _ => {
+                        issues.push("Cannot determine monitor support (iw list failed)".to_string())
+                    }
                 }
             }
         }
@@ -316,11 +328,7 @@ impl ActivityLed {
 
         let mut chip = Chip::new("/dev/gpiochip0")?;
         let line = chip.get_line(pin)?;
-        let handle = line.request(
-            LineRequestFlags::OUTPUT,
-            0,
-            "rustyjack-ui-activity-led",
-        )?;
+        let handle = line.request(LineRequestFlags::OUTPUT, 0, "rustyjack-ui-activity-led")?;
 
         Ok(Some(Self {
             handle: Arc::new(Mutex::new(handle)),
@@ -376,7 +384,7 @@ impl ActivityLed {
     fn new(_: u32) -> Result<Option<Self>> {
         Ok(None)
     }
-    
+
     fn blink(&self) -> LedBlinker {
         LedBlinker
     }
@@ -417,14 +425,14 @@ impl App {
             config.pins.status_led_pin
         };
         let activity_led = ActivityLed::new(led_pin)?;
-        
+
         // Show splash screen during initialization
         let splash_path = root.join("img").join("rustyjack.png");
         let _ = display.show_splash_screen(&splash_path);
-        
+
         // Let splash show while stats sampler starts up
         let stats = StatsSampler::spawn(core.clone());
-        
+
         // Give splash screen time to be visible (1.5 seconds)
         thread::sleep(Duration::from_millis(1500));
 
@@ -449,7 +457,7 @@ impl App {
                 // Dashboard mode
                 let status = self.stats.snapshot();
                 self.display.draw_dashboard(view, &status)?;
-                
+
                 let button = self.buttons.wait_for_press()?;
                 match self.map_button(button) {
                     ButtonAction::Back => {
@@ -502,20 +510,32 @@ impl App {
 
     fn render_menu(&mut self) -> Result<Vec<MenuEntry>> {
         let mut entries = self.menu.entries(self.menu_state.current_id())?;
-        
+
         // Dynamic label updates based on current settings
         for entry in &mut entries {
             match &entry.action {
                 MenuAction::ToggleDiscord => {
-                    let state = if self.config.settings.discord_enabled { "ON" } else { "OFF" };
+                    let state = if self.config.settings.discord_enabled {
+                        "ON"
+                    } else {
+                        "OFF"
+                    };
                     entry.label = format!("Discord [{}]", state);
                 }
                 MenuAction::ToggleMacRandomization => {
-                    let state = if self.config.settings.mac_randomization_enabled { "ON" } else { "OFF" };
+                    let state = if self.config.settings.mac_randomization_enabled {
+                        "ON"
+                    } else {
+                        "OFF"
+                    };
                     entry.label = format!("Auto MAC [{}]", state);
                 }
                 MenuAction::TogglePassiveMode => {
-                    let state = if self.config.settings.passive_mode_enabled { "ON" } else { "OFF" };
+                    let state = if self.config.settings.passive_mode_enabled {
+                        "ON"
+                    } else {
+                        "OFF"
+                    };
                     entry.label = format!("Passive [{}]", state);
                 }
                 _ => {}
@@ -556,7 +576,11 @@ impl App {
             .collect();
 
         // selected index relative to the slice
-        let displayed_selected = if total == 0 { 0 } else { self.menu_state.selection.saturating_sub(start) };
+        let displayed_selected = if total == 0 {
+            0
+        } else {
+            self.menu_state.selection.saturating_sub(start)
+        };
 
         self.display.draw_menu(
             menu_title(self.menu_state.current_id()),
@@ -592,7 +616,9 @@ impl App {
             MenuAction::PmkidCapture => self.launch_pmkid_capture()?,
             MenuAction::CrackHandshake => self.launch_crack_handshake()?,
             MenuAction::KarmaAttack => self.launch_karma_attack()?,
-            MenuAction::AttackPipeline(pipeline_type) => self.launch_attack_pipeline(pipeline_type)?,
+            MenuAction::AttackPipeline(pipeline_type) => {
+                self.launch_attack_pipeline(pipeline_type)?
+            }
             MenuAction::ToggleMacRandomization => self.toggle_mac_randomization()?,
             MenuAction::RandomizeMacNow => self.randomize_mac_now()?,
             MenuAction::RestoreMac => self.restore_mac()?,
@@ -640,7 +666,7 @@ impl App {
         }
         Ok(())
     }
-    
+
     #[allow(dead_code)]
     fn show_progress<I, S>(&mut self, title: &str, lines: I) -> Result<()>
     where
@@ -742,19 +768,22 @@ impl App {
                 labels.push(display);
             }
         }
-        
+
         // Interactive file browser - keeps looping until user backs out
         loop {
             let Some(index) = self.choose_from_menu("Loot files", &labels)? else {
                 return Ok(());
             };
-            let path = paths.get(index).cloned().unwrap_or_else(|| paths.first().cloned().unwrap());
-            
+            let path = paths
+                .get(index)
+                .cloned()
+                .unwrap_or_else(|| paths.first().cloned().unwrap());
+
             // Open the selected file in scrollable viewer
             self.view_loot_file(&path)?;
         }
     }
-    
+
     fn view_loot_file(&mut self, path: &str) -> Result<()> {
         // Read the file with a high line limit
         let read_args = LootReadArgs {
@@ -764,7 +793,7 @@ impl App {
         let (_, data) = self
             .core
             .dispatch(Commands::Loot(LootCommand::Read(read_args)))?;
-        
+
         let lines = data
             .get("lines")
             .and_then(Value::as_array)
@@ -775,51 +804,54 @@ impl App {
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
-        
+
         let truncated = data
             .get("truncated")
             .and_then(Value::as_bool)
             .unwrap_or(false);
-        
+
         if lines.is_empty() {
             return self.show_message("Loot", ["File is empty"]);
         }
-        
+
         let filename = Path::new(path)
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("file")
             .to_string();
-        
+
         // Scrollable file viewer
         self.scrollable_text_viewer(&filename, &lines, truncated)
     }
-    
-    fn scrollable_text_viewer(&mut self, title: &str, lines: &[String], truncated: bool) -> Result<()> {
+
+    fn scrollable_text_viewer(
+        &mut self,
+        title: &str,
+        lines: &[String],
+        truncated: bool,
+    ) -> Result<()> {
         const LINES_PER_PAGE: usize = 9;
         let total_lines = lines.len();
         let mut offset = 0;
-        
+
         loop {
             let overlay = self.stats.snapshot();
             let end = (offset + LINES_PER_PAGE).min(total_lines);
             let visible_lines: Vec<String> = lines[offset..end].to_vec();
-            
+
             // Build display content with navigation hints
-            let mut content = vec![
-                format!("{} ({}/{})", title, offset + 1, total_lines),
-            ];
+            let mut content = vec![format!("{} ({}/{})", title, offset + 1, total_lines)];
             content.extend(visible_lines);
-            
+
             // Add navigation hint
             if offset + LINES_PER_PAGE < total_lines {
                 content.push("-- More below --".to_string());
             } else if truncated {
                 content.push("[File truncated]".to_string());
             }
-            
+
             self.display.draw_dialog(&content, &overlay)?;
-            
+
             let button = self.buttons.wait_for_press()?;
             match self.map_button(button) {
                 ButtonAction::Down => {
@@ -837,7 +869,8 @@ impl App {
                 ButtonAction::Select => {
                     // Page down
                     if offset + LINES_PER_PAGE < total_lines {
-                        offset = (offset + LINES_PER_PAGE).min(total_lines.saturating_sub(LINES_PER_PAGE));
+                        offset = (offset + LINES_PER_PAGE)
+                            .min(total_lines.saturating_sub(LINES_PER_PAGE));
                     }
                 }
                 ButtonAction::Back => {
@@ -859,9 +892,7 @@ impl App {
     }
 
     fn restart_system(&mut self) -> Result<()> {
-        Command::new("reboot")
-            .status()
-            .ok();
+        Command::new("reboot").status().ok();
         Ok(())
     }
 
@@ -923,18 +954,28 @@ impl App {
             let slice: Vec<String> = items.iter().skip(offset).take(VISIBLE).cloned().collect();
             // Display menu with selected relative index
             let displayed_selected = index.saturating_sub(offset);
-            self.display.draw_menu(title, &slice, displayed_selected, &overlay)?;
+            self.display
+                .draw_menu(title, &slice, displayed_selected, &overlay)?;
 
             let button = self.buttons.wait_for_press()?;
             match self.map_button(button) {
                 ButtonAction::Up => {
-                    if index == 0 { index = total - 1; } else { index -= 1; }
+                    if index == 0 {
+                        index = total - 1;
+                    } else {
+                        index -= 1;
+                    }
                 }
                 ButtonAction::Down => index = (index + 1) % total,
                 ButtonAction::Select => return Ok(Some(index)),
                 ButtonAction::Back => return Ok(None),
-                ButtonAction::MainMenu => { self.menu_state.home(); return Ok(None); }
-                ButtonAction::Reboot => { self.confirm_reboot()?; }
+                ButtonAction::MainMenu => {
+                    self.menu_state.home();
+                    return Ok(None);
+                }
+                ButtonAction::Reboot => {
+                    self.confirm_reboot()?;
+                }
                 _ => {}
             }
         }
@@ -1005,7 +1046,10 @@ impl App {
         let ssid = network.ssid.as_deref().unwrap_or("").to_string();
 
         if ssid.is_empty() {
-            self.show_message("Target Error", ["No SSID available", "Cannot set as target"])?;
+            self.show_message(
+                "Target Error",
+                ["No SSID available", "Cannot set as target"],
+            )?;
             return Ok(());
         }
 
@@ -1018,21 +1062,27 @@ impl App {
             self.show_message("Error", [format!("Failed to save: {}", e)])?;
         } else {
             if self.config.settings.target_bssid.is_empty() {
-                self.show_message("Target Set", [
-                    &format!("SSID: {}", ssid),
-                    "BSSID: (none)",
-                    &format!("Channel: {}", self.config.settings.target_channel),
-                    "",
-                    "Note: target has no BSSID. Deauth requires a BSSID",
-                ])?;
+                self.show_message(
+                    "Target Set",
+                    [
+                        &format!("SSID: {}", ssid),
+                        "BSSID: (none)",
+                        &format!("Channel: {}", self.config.settings.target_channel),
+                        "",
+                        "Note: target has no BSSID. Deauth requires a BSSID",
+                    ],
+                )?;
             } else {
-                self.show_message("Target Set", [
-                    &format!("SSID: {}", ssid),
-                    &format!("BSSID: {}", self.config.settings.target_bssid),
-                    &format!("Channel: {}", self.config.settings.target_channel),
-                    "",
-                    "Ready for Deauth Attack",
-                ])?;
+                self.show_message(
+                    "Target Set",
+                    [
+                        &format!("SSID: {}", ssid),
+                        &format!("BSSID: {}", self.config.settings.target_bssid),
+                        &format!("Channel: {}", self.config.settings.target_channel),
+                        "",
+                        "Ready for Deauth Attack",
+                    ],
+                )?;
             }
         }
 
@@ -1086,7 +1136,7 @@ impl App {
 
     fn connect_named_profile(&mut self, ssid: &str) -> Result<()> {
         self.show_progress("Wi-Fi", ["Connecting...", ssid, "Please wait"])?;
-        
+
         let args = WifiProfileConnectArgs {
             profile: Some(ssid.to_string()),
             ssid: None,
@@ -1094,7 +1144,7 @@ impl App {
             interface: None,
             remember: false,
         };
-        
+
         match self.core.dispatch(Commands::Wifi(WifiCommand::Profile(
             WifiProfileCommand::Connect(args),
         ))) {
@@ -1159,18 +1209,21 @@ impl App {
         let usb_path = match self.find_usb_mount() {
             Ok(path) => path,
             Err(_e) => {
-                self.show_message("USB Transfer Error", [
-                    "No USB drive detected",
-                    "Please insert a USB drive",
-                    "and try again"
-                ])?;
+                self.show_message(
+                    "USB Transfer Error",
+                    [
+                        "No USB drive detected",
+                        "Please insert a USB drive",
+                        "and try again",
+                    ],
+                )?;
                 return Ok(());
             }
         };
-        
+
         let loot_dir = self.root.join("loot");
         let responder_logs = self.root.join("Responder").join("logs");
-        
+
         if !loot_dir.exists() && !responder_logs.exists() {
             self.show_message("USB Transfer", ["No loot to transfer"])?;
             return Ok(());
@@ -1206,17 +1259,14 @@ impl App {
         // Transfer files with progress
         for (idx, file_path) in files.iter().enumerate() {
             let progress = ((idx + 1) as f32 / total_files as f32) * 100.0;
-            
-            let filename = file_path.file_name()
+
+            let filename = file_path
+                .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or("file");
-            
-            self.display.draw_progress_dialog(
-                "USB Transfer",
-                filename,
-                progress,
-                &status
-            )?;
+
+            self.display
+                .draw_progress_dialog("USB Transfer", filename, progress, &status)?;
 
             // Determine destination path
             let dest = if file_path.starts_with(&loot_dir) {
@@ -1224,7 +1274,10 @@ impl App {
                 usb_path.join("Rustyjack_Loot").join("loot").join(rel)
             } else if file_path.starts_with(&responder_logs) {
                 let rel = file_path.strip_prefix(&responder_logs).unwrap_or(file_path);
-                usb_path.join("Rustyjack_Loot").join("ResponderLogs").join(rel)
+                usb_path
+                    .join("Rustyjack_Loot")
+                    .join("ResponderLogs")
+                    .join(rel)
             } else {
                 continue;
             };
@@ -1238,25 +1291,28 @@ impl App {
             fs::copy(file_path, &dest)?;
         }
 
-        self.show_message("USB Transfer", [
-            &format!("Transferred {} files", total_files),
-            "to USB drive"
-        ])?;
-        
+        self.show_message(
+            "USB Transfer",
+            [
+                &format!("Transferred {} files", total_files),
+                "to USB drive",
+            ],
+        )?;
+
         Ok(())
     }
 
     fn find_usb_mount(&self) -> Result<PathBuf> {
         // First, find USB block devices by checking /sys/block/
         let usb_devices = self.find_usb_block_devices();
-        
+
         if usb_devices.is_empty() {
             bail!("No USB storage device detected. Please insert a USB drive.");
         }
-        
+
         // Now find mount points for these USB devices
         let mounts = self.read_mount_points()?;
-        
+
         for usb_dev in &usb_devices {
             // Check for partitions (e.g., sda1, sdb1) or the device itself
             for (device, mount_point) in &mounts {
@@ -1271,13 +1327,9 @@ impl App {
                 }
             }
         }
-        
+
         // Fallback: check common mount points but be more selective
-        let mount_points = [
-            "/media",
-            "/mnt",
-            "/run/media",
-        ];
+        let mount_points = ["/media", "/mnt", "/run/media"];
 
         for base in &mount_points {
             let base_path = Path::new(base);
@@ -1310,31 +1362,32 @@ impl App {
 
         bail!("No USB storage drive found. Please insert a USB drive.")
     }
-    
+
     /// Find USB block devices by checking /sys/block/ for removable USB devices
     fn find_usb_block_devices(&self) -> Vec<String> {
         let mut usb_devices = Vec::new();
-        
+
         let sys_block = Path::new("/sys/block");
         if !sys_block.exists() {
             return usb_devices;
         }
-        
+
         if let Ok(entries) = fs::read_dir(sys_block) {
             for entry in entries.flatten() {
                 let name = entry.file_name().to_string_lossy().to_string();
-                
+
                 // Skip loop devices, ram disks, and mmcblk (SD cards - usually the boot drive)
-                if name.starts_with("loop") || name.starts_with("ram") || name.starts_with("mmcblk") {
+                if name.starts_with("loop") || name.starts_with("ram") || name.starts_with("mmcblk")
+                {
                     continue;
                 }
-                
+
                 // Check if it's a removable device
                 let removable_path = entry.path().join("removable");
                 let is_removable = fs::read_to_string(&removable_path)
                     .map(|s| s.trim() == "1")
                     .unwrap_or(false);
-                
+
                 // Check if it's a USB device by looking at the device path
                 let device_path = entry.path().join("device");
                 let is_usb = if device_path.exists() {
@@ -1345,63 +1398,62 @@ impl App {
                 } else {
                     false
                 };
-                
+
                 // Also check uevent for DRIVER=usb-storage
                 let uevent_path = entry.path().join("device").join("uevent");
                 let is_usb_storage = fs::read_to_string(&uevent_path)
                     .map(|s| s.contains("usb-storage") || s.contains("usb"))
                     .unwrap_or(false);
-                
+
                 if is_removable || is_usb || is_usb_storage {
                     // Make sure it has a size > 0 (actually a storage device)
                     let size_path = entry.path().join("size");
                     let has_size = fs::read_to_string(&size_path)
                         .map(|s| s.trim().parse::<u64>().unwrap_or(0) > 0)
                         .unwrap_or(false);
-                    
+
                     if has_size {
                         usb_devices.push(name);
                     }
                 }
             }
         }
-        
+
         usb_devices
     }
-    
+
     /// Read mount points from /proc/mounts
     fn read_mount_points(&self) -> Result<Vec<(String, String)>> {
-        let contents = fs::read_to_string("/proc/mounts")
-            .context("Failed to read /proc/mounts")?;
-        
+        let contents = fs::read_to_string("/proc/mounts").context("Failed to read /proc/mounts")?;
+
         let mut mounts = Vec::new();
         for line in contents.lines() {
             let parts: Vec<&str> = line.split_whitespace().collect();
             if parts.len() >= 2 {
                 let device = parts[0].to_string();
                 let mount_point = parts[1].to_string();
-                
+
                 // Only consider actual device mounts (not tmpfs, proc, etc.)
                 if device.starts_with("/dev/") {
                     mounts.push((device, mount_point));
                 }
             }
         }
-        
+
         Ok(mounts)
     }
-    
+
     /// Check if a path is likely a USB storage mount (not a WiFi dongle, etc.)
     fn is_usb_storage_mount(&self, path: &Path) -> bool {
         // Must be writable
         if !self.is_writable_mount(path) {
             return false;
         }
-        
+
         // Check filesystem type - USB storage typically uses vfat, exfat, ntfs, ext4
         // This helps exclude pseudo-filesystems and network mounts
         let mount_path_str = path.to_string_lossy();
-        
+
         if let Ok(contents) = fs::read_to_string("/proc/mounts") {
             for line in contents.lines() {
                 if line.contains(&*mount_path_str) {
@@ -1409,14 +1461,24 @@ impl App {
                     if parts.len() >= 3 {
                         let fs_type = parts[2];
                         // Common USB storage filesystems
-                        if matches!(fs_type, "vfat" | "exfat" | "ntfs" | "ntfs3" | "ext4" | "ext3" | "ext2" | "fuseblk") {
+                        if matches!(
+                            fs_type,
+                            "vfat"
+                                | "exfat"
+                                | "ntfs"
+                                | "ntfs3"
+                                | "ext4"
+                                | "ext3"
+                                | "ext2"
+                                | "fuseblk"
+                        ) {
                             return true;
                         }
                     }
                 }
             }
         }
-        
+
         false
     }
 
@@ -1527,25 +1589,42 @@ impl App {
         // No message needed as the menu label will update immediately
         Ok(())
     }
-    
+
     fn show_hardware_detect(&mut self) -> Result<()> {
         self.show_progress("Hardware Scan", ["Detecting interfaces...", "Please wait"])?;
-        
-        match self.core.dispatch(Commands::Hardware(HardwareCommand::Detect)) {
+
+        match self
+            .core
+            .dispatch(Commands::Hardware(HardwareCommand::Detect))
+        {
             Ok((_, data)) => {
-                let eth_count = data.get("ethernet_count").and_then(|v| v.as_u64()).unwrap_or(0);
+                let eth_count = data
+                    .get("ethernet_count")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
                 let wifi_count = data.get("wifi_count").and_then(|v| v.as_u64()).unwrap_or(0);
-                let other_count = data.get("other_count").and_then(|v| v.as_u64()).unwrap_or(0);
-                
-                let ethernet_ports = data.get("ethernet_ports").and_then(|v| v.as_array()).cloned().unwrap_or_default();
-                let wifi_modules = data.get("wifi_modules").and_then(|v| v.as_array()).cloned().unwrap_or_default();
-                
+                let other_count = data
+                    .get("other_count")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+
+                let ethernet_ports = data
+                    .get("ethernet_ports")
+                    .and_then(|v| v.as_array())
+                    .cloned()
+                    .unwrap_or_default();
+                let wifi_modules = data
+                    .get("wifi_modules")
+                    .and_then(|v| v.as_array())
+                    .cloned()
+                    .unwrap_or_default();
+
                 // Build list of detected interfaces (clickable)
                 let mut all_interfaces = Vec::new();
                 let mut labels = Vec::new();
 
                 let active_interface = self.config.settings.active_network_interface.clone();
-                
+
                 for port in &ethernet_ports {
                     if let Some(name) = port.get("name").and_then(|v| v.as_str()) {
                         let label = if name == active_interface {
@@ -1568,7 +1647,7 @@ impl App {
                         all_interfaces.push(module.clone());
                     }
                 }
-                
+
                 // If nothing to show, just present summary
                 if all_interfaces.is_empty() {
                     let summary_lines = vec![
@@ -1576,52 +1655,93 @@ impl App {
                         format!("WiFi: {}", wifi_count),
                         format!("Other: {}", other_count),
                     ];
-                    self.show_message("Hardware Detected", summary_lines.iter().map(|s| s.as_str()))?;
+                    self.show_message(
+                        "Hardware Detected",
+                        summary_lines.iter().map(|s| s.as_str()),
+                    )?;
                 } else {
                     // Present clickable list and show details on selection
                     loop {
-                        let Some(idx) = self.choose_from_menu("Detected interfaces", &labels)? else { break; };
-                        
+                        let Some(idx) = self.choose_from_menu("Detected interfaces", &labels)?
+                        else {
+                            break;
+                        };
+
                         let info = &all_interfaces[idx];
-                        let interface_name = info.get("name").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
-                        
+                        let interface_name = info
+                            .get("name")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("unknown")
+                            .to_string();
+
                         // Build detail lines
                         let mut details = Vec::new();
                         details.push(format!("Name: {}", interface_name));
-                        if let Some(kind) = info.get("kind").and_then(|v| v.as_str()) { details.push(format!("Kind: {}", kind)); }
-                        if let Some(state) = info.get("oper_state").and_then(|v| v.as_str()) { details.push(format!("State: {}", state)); }
-                        if let Some(ip) = info.get("ip").and_then(|v| v.as_str()) { details.push(format!("IP: {}", ip)); }
+                        if let Some(kind) = info.get("kind").and_then(|v| v.as_str()) {
+                            details.push(format!("Kind: {}", kind));
+                        }
+                        if let Some(state) = info.get("oper_state").and_then(|v| v.as_str()) {
+                            details.push(format!("State: {}", state));
+                        }
+                        if let Some(ip) = info.get("ip").and_then(|v| v.as_str()) {
+                            details.push(format!("IP: {}", ip));
+                        }
                         details.push("".to_string());
                         details.push("[OK] Set Active".to_string());
-                        
-                        self.display.draw_menu("Interface details", &details, usize::MAX, &self.stats.snapshot())?;
+
+                        self.display.draw_menu(
+                            "Interface details",
+                            &details,
+                            usize::MAX,
+                            &self.stats.snapshot(),
+                        )?;
                         // Wait for action
                         loop {
                             let btn = self.buttons.wait_for_press()?;
                             match self.map_button(btn) {
                                 ButtonAction::Select => {
                                     // Set this interface as active
-                                    self.config.settings.active_network_interface = interface_name.clone();
+                                    self.config.settings.active_network_interface =
+                                        interface_name.clone();
                                     let config_path = self.root.join("gui_conf.json");
                                     if let Err(e) = self.config.save(&config_path) {
-                                        self.show_message("Error", [format!("Failed to save: {}", e)])?;
+                                        self.show_message(
+                                            "Error",
+                                            [format!("Failed to save: {}", e)],
+                                        )?;
                                     } else {
-                                        self.show_message("Active Interface", [format!("Set to: {}", interface_name)])?;
+                                        self.show_message(
+                                            "Active Interface",
+                                            [format!("Set to: {}", interface_name)],
+                                        )?;
                                     }
                                     // Refresh the labels to show new active indicator
                                     labels.clear();
                                     all_interfaces.clear();
-                                    let active = self.config.settings.active_network_interface.clone();
+                                    let active =
+                                        self.config.settings.active_network_interface.clone();
                                     for port in &ethernet_ports {
-                                        if let Some(name) = port.get("name").and_then(|v| v.as_str()) {
-                                            let label = if name == active { format!("{} *", name) } else { name.to_string() };
+                                        if let Some(name) =
+                                            port.get("name").and_then(|v| v.as_str())
+                                        {
+                                            let label = if name == active {
+                                                format!("{} *", name)
+                                            } else {
+                                                name.to_string()
+                                            };
                                             labels.push(label);
                                             all_interfaces.push(port.clone());
                                         }
                                     }
                                     for module in &wifi_modules {
-                                        if let Some(name) = module.get("name").and_then(|v| v.as_str()) {
-                                            let label = if name == active { format!("{} *", name) } else { name.to_string() };
+                                        if let Some(name) =
+                                            module.get("name").and_then(|v| v.as_str())
+                                        {
+                                            let label = if name == active {
+                                                format!("{} *", name)
+                                            } else {
+                                                name.to_string()
+                                            };
                                             labels.push(label);
                                             all_interfaces.push(module.clone());
                                         }
@@ -1629,8 +1749,13 @@ impl App {
                                     break;
                                 }
                                 ButtonAction::Back => break,
-                                ButtonAction::MainMenu => { self.menu_state.home(); break; }
-                                ButtonAction::Reboot => { self.confirm_reboot()?; }
+                                ButtonAction::MainMenu => {
+                                    self.menu_state.home();
+                                    break;
+                                }
+                                ButtonAction::Reboot => {
+                                    self.confirm_reboot()?;
+                                }
                                 _ => {}
                             }
                         }
@@ -1644,18 +1769,18 @@ impl App {
         }
         Ok(())
     }
-    
+
     fn scan_wifi_networks(&mut self) -> Result<()> {
         self.show_progress("WiFi Scan", ["Scanning for networks...", "Please wait"])?;
-        
+
         let scan_result = self.fetch_wifi_scan();
-        
+
         match scan_result {
             Ok(response) => {
                 if response.networks.is_empty() {
                     return self.show_message("WiFi Scan", ["No networks found"]);
                 }
-                
+
                 // Build list of networks for selection — only show SSID in the
                 // primary scan list for clarity. Additional metadata is shown
                 // in the details view.
@@ -1691,7 +1816,7 @@ impl App {
                     }
                     labels.push(label);
                 }
-                
+
                 // Interactive network list - loop until user backs out
                 loop {
                     let choice = self.choose_from_menu("Select Network", &labels)?;
@@ -1710,10 +1835,10 @@ impl App {
                 self.show_message("WiFi Scan Error", [format!("{}", e)])?;
             }
         }
-        
+
         Ok(())
     }
-    
+
     fn launch_deauth_attack(&mut self) -> Result<()> {
         let _op = match self.guard_operation("Deauth Attack")? {
             Some(g) => g,
@@ -1728,43 +1853,59 @@ impl App {
         let target_network = self.config.settings.target_network.clone();
         let target_bssid = self.config.settings.target_bssid.clone();
         let target_channel = self.config.settings.target_channel;
-        
+
         // Validate we have all required target info
         if target_bssid.is_empty() {
-            return self.show_message("Deauth Attack", [
-                "No target BSSID set",
-                "Scan networks first",
-                "and select a target"
-            ]);
+            return self.show_message(
+                "Deauth Attack",
+                [
+                    "No target BSSID set",
+                    "Scan networks first",
+                    "and select a target",
+                ],
+            );
         }
-        
+
         if target_channel == 0 {
-            return self.show_message("Deauth Attack", [
-                "No target channel set",
-                "Scan networks first",
-                "and select a target"
-            ]);
+            return self.show_message(
+                "Deauth Attack",
+                [
+                    "No target channel set",
+                    "Scan networks first",
+                    "and select a target",
+                ],
+            );
         }
-        
+
         if active_interface.is_empty() {
-            return self.show_message("Deauth Attack", [
-                "No active interface",
-                "Set in Hardware Detect"
-            ]);
+            return self.show_message(
+                "Deauth Attack",
+                ["No active interface", "Set in Hardware Detect"],
+            );
         }
-        
+
         // Show attack configuration
-        self.show_message("Deauth Attack", [
-            &format!("Target: {}", if target_network.is_empty() { &target_bssid } else { &target_network }),
-            &format!("BSSID: {}", target_bssid),
-            &format!("Channel: {}", target_channel),
-            &format!("Interface: {}", active_interface),
-            "Duration: 120s",
-            "Press SELECT to start"
-        ])?;
-        
+        self.show_message(
+            "Deauth Attack",
+            [
+                &format!(
+                    "Target: {}",
+                    if target_network.is_empty() {
+                        &target_bssid
+                    } else {
+                        &target_network
+                    }
+                ),
+                &format!("BSSID: {}", target_bssid),
+                &format!("Channel: {}", target_channel),
+                &format!("Interface: {}", active_interface),
+                "Duration: 120s",
+                "Press SELECT to start",
+            ],
+        )?;
+
         let _activity = self.blink_activity();
-        
+
         // Show progress stages for 120 second attack
         let progress_stages = vec![
             (0, "Killing processes..."),
@@ -1782,28 +1923,42 @@ impl App {
             (110, "Finalizing capture..."),
             (115, "Stopping monitor mode"),
         ];
-        
+
         // Show initial message
-        self.show_progress("Deauth Attack", [
-            &format!("Target: {}", if target_network.is_empty() { &target_bssid } else { &target_network }),
-            &format!("Channel: {} | {}", target_channel, active_interface),
-            "Preparing attack...",
-        ])?;
-        
+        self.show_progress(
+            "Deauth Attack",
+            [
+                &format!(
+                    "Target: {}",
+                    if target_network.is_empty() {
+                        &target_bssid
+                    } else {
+                        &target_network
+                    }
+                ),
+                &format!("Channel: {} | {}", target_channel, active_interface),
+                "Preparing attack...",
+            ],
+        )?;
+
         // Launch attack in background thread while showing progress
         use std::sync::{Arc, Mutex};
         use std::thread;
         use std::time::Duration;
-        
+
         let core = self.core.clone();
         let bssid = target_bssid.clone();
-        let ssid = if target_network.is_empty() { None } else { Some(target_network.clone()) };
+        let ssid = if target_network.is_empty() {
+            None
+        } else {
+            Some(target_network.clone())
+        };
         let channel = target_channel;
         let iface = active_interface.clone();
-        
+
         let result = Arc::new(Mutex::new(None));
         let result_clone = Arc::clone(&result);
-        
+
         // Spawn attack thread
         thread::spawn(move || {
             let command = Commands::Wifi(WifiCommand::Deauth(WifiDeauthArgs {
@@ -1811,25 +1966,25 @@ impl App {
                 ssid,
                 interface: iface,
                 channel,
-                duration: 120,      // 2 minutes for better handshake capture
-                packets: 64,        // More packets per burst
-                client: None,       // Broadcast to all clients
-                continuous: true,   // Keep sending deauth throughout
-                interval: 1,        // 1 second between bursts
+                duration: 120,    // 2 minutes for better handshake capture
+                packets: 64,      // More packets per burst
+                client: None,     // Broadcast to all clients
+                continuous: true, // Keep sending deauth throughout
+                interval: 1,      // 1 second between bursts
             }));
-            
+
             let r = core.dispatch(command);
             *result_clone.lock().unwrap() = Some(r);
         });
-        
+
         // Show progress updates while attack runs (120 seconds)
         let attack_duration = 120u64;
         let start = std::time::Instant::now();
         let mut stage_idx = 0;
-        
+
         loop {
             let elapsed = start.elapsed().as_secs();
-            
+
             // Update stage
             while stage_idx < progress_stages.len() && elapsed >= progress_stages[stage_idx].0 {
                 let overlay = self.stats.snapshot();
@@ -1841,12 +1996,12 @@ impl App {
                 )?;
                 stage_idx += 1;
             }
-            
+
             // Check if attack completed
             if result.lock().unwrap().is_some() {
                 break;
             }
-            
+
             // Update display periodically
             if elapsed % 5 == 0 {
                 let overlay = self.stats.snapshot();
@@ -1862,65 +2017,74 @@ impl App {
                     &overlay,
                 )?;
             }
-            
+
             thread::sleep(Duration::from_millis(500));
         }
-        
+
         // Get result
         let attack_result = result.lock().unwrap().take().unwrap();
-        
+
         match attack_result {
             Ok((msg, data)) => {
                 let mut result_lines = vec![msg];
-                
+
                 if let Some(captured) = data.get("handshake_captured").and_then(|v| v.as_bool()) {
                     if captured {
                         result_lines.push("HANDSHAKE CAPTURED!".to_string());
                         if let Some(hf) = data.get("handshake_file").and_then(|v| v.as_str()) {
-                            result_lines.push(format!("File: {}", Path::new(hf).file_name().unwrap().to_str().unwrap()));
+                            result_lines.push(format!(
+                                "File: {}",
+                                Path::new(hf).file_name().unwrap().to_str().unwrap()
+                            ));
                         }
                     } else {
                         result_lines.push("No handshake detected".to_string());
                     }
                 }
-                
+
                 if let Some(packets) = data.get("total_packets_sent").and_then(|v| v.as_u64()) {
                     result_lines.push(format!("Packets: {}", packets));
                 }
-                
+
                 if let Some(bursts) = data.get("deauth_bursts").and_then(|v| v.as_u64()) {
                     result_lines.push(format!("Bursts: {}", bursts));
                 }
-                
+
                 if let Some(log) = data.get("log_file").and_then(|v| v.as_str()) {
-                    result_lines.push(format!("Log: {}", Path::new(log).file_name().unwrap().to_str().unwrap()));
+                    result_lines.push(format!(
+                        "Log: {}",
+                        Path::new(log).file_name().unwrap().to_str().unwrap()
+                    ));
                 }
-                
+
                 result_lines.push("Check Loot > Wireless".to_string());
-                
+
                 self.show_message("Deauth Complete", result_lines.iter().map(|s| s.as_str()))?;
             }
             Err(e) => {
                 self.show_message("Deauth Error", [format!("{}", e)])?;
             }
         }
-        
+
         Ok(())
     }
-    
+
     fn connect_known_network(&mut self) -> Result<()> {
         // For now, show message that user should use WiFi Manager or CLI
         // A full text input UI would require keyboard support
-        self.show_message("Connect Network", [
-            "Use WiFi Manager to",
-            "connect to networks",
-            "",
-            "Or use command line:",
-            "rustyjack-core wifi",
-            "profile connect",
-        ])
+        self.show_message(
+            "Connect Network",
+            [
+                "Use WiFi Manager to",
+                "connect to networks",
+                "",
+                "Or use command line:",
+                "rustyjack-core wifi",
+                "profile connect",
+            ],
+        )
     }
-    
+
     fn launch_evil_twin(&mut self) -> Result<()> {
         let _op = match self.guard_operation("Evil Twin Attack")? {
             Some(g) => g,
@@ -1936,57 +2100,69 @@ impl App {
         let target_bssid = self.config.settings.target_bssid.clone();
         let target_channel = self.config.settings.target_channel;
         let active_interface = self.config.settings.active_network_interface.clone();
-        
+
         if target_network.is_empty() || target_bssid.is_empty() {
-            return self.show_message("Evil Twin", [
-                "No target network set",
-                "",
-                "First scan networks and",
-                "select 'Set as Target'"
-            ]);
+            return self.show_message(
+                "Evil Twin",
+                [
+                    "No target network set",
+                    "",
+                    "First scan networks and",
+                    "select 'Set as Target'",
+                ],
+            );
         }
-        
+
         if active_interface.is_empty() {
-            return self.show_message("Evil Twin", [
-                "No WiFi interface set",
-                "",
-                "Run Hardware Detect",
-                "to configure interface"
-            ]);
+            return self.show_message(
+                "Evil Twin",
+                [
+                    "No WiFi interface set",
+                    "",
+                    "Run Hardware Detect",
+                    "to configure interface",
+                ],
+            );
         }
-        
+
         // Show attack configuration
-        self.show_message("Evil Twin Attack", [
-            &format!("SSID: {}", target_network),
-            &format!("Channel: {}", target_channel),
-            &format!("Interface: {}", active_interface),
-            "",
-            "Creates fake AP with",
-            "same SSID to capture",
-            "client connections",
-            "",
-            "Press SELECT to start"
-        ])?;
-        
+        self.show_message(
+            "Evil Twin Attack",
+            [
+                &format!("SSID: {}", target_network),
+                &format!("Channel: {}", target_channel),
+                &format!("Interface: {}", active_interface),
+                "",
+                "Creates fake AP with",
+                "same SSID to capture",
+                "client connections",
+                "",
+                "Press SELECT to start",
+            ],
+        )?;
+
         // Confirm start
         let options = vec!["Start Attack".to_string(), "Cancel".to_string()];
         let choice = self.choose_from_list("Confirm", &options)?;
-        
+
         if choice != Some(0) {
             return Ok(());
         }
-        
+
         let _activity = self.blink_activity();
-        
+
         // Show progress - in background start evil twin
-        self.show_progress("Evil Twin", [
-            &format!("Creating fake: {}", target_network),
-            "Starting hostapd...",
-        ])?;
-        
+        self.show_progress(
+            "Evil Twin",
+            [
+                &format!("Creating fake: {}", target_network),
+                "Starting hostapd...",
+            ],
+        )?;
+
         // Execute evil twin via core
         use rustyjack_core::{Commands, WifiCommand, WifiEvilTwinArgs};
-        
+
         let cmd = Commands::Wifi(WifiCommand::EvilTwin(WifiEvilTwinArgs {
             ssid: target_network.clone(),
             target_bssid: Some(target_bssid),
@@ -1995,7 +2171,7 @@ impl App {
             duration: 300, // 5 minutes
             open: true,
         }));
-        
+
         match self.core.dispatch(cmd) {
             Ok((msg, data)) => {
                 let mut lines = vec![msg];
@@ -2011,10 +2187,10 @@ impl App {
                 self.show_message("Evil Twin Error", [format!("{}", e)])?;
             }
         }
-        
+
         Ok(())
     }
-    
+
     fn launch_probe_sniff(&mut self) -> Result<()> {
         let _op = match self.guard_operation("Probe Sniff")? {
             Some(g) => g,
@@ -2026,16 +2202,19 @@ impl App {
         }
 
         let active_interface = self.config.settings.active_network_interface.clone();
-        
+
         if active_interface.is_empty() {
-            return self.show_message("Probe Sniff", [
-                "No WiFi interface set",
-                "",
-                "Run Hardware Detect",
-                "to configure interface"
-            ]);
+            return self.show_message(
+                "Probe Sniff",
+                [
+                    "No WiFi interface set",
+                    "",
+                    "Run Hardware Detect",
+                    "to configure interface",
+                ],
+            );
         }
-        
+
         // Duration selection
         let durations = vec![
             "30 seconds".to_string(),
@@ -2043,33 +2222,33 @@ impl App {
             "5 minutes".to_string(),
         ];
         let dur_choice = self.choose_from_list("Sniff Duration", &durations)?;
-        
+
         let duration_secs = match dur_choice {
             Some(0) => 30,
             Some(1) => 60,
             Some(2) => 300,
             _ => return Ok(()),
         };
-        
+
         let _activity = self.blink_activity();
-        
-        self.show_progress("Probe Sniff", [
-            "Capturing probe requests",
-            "from nearby devices...",
-        ])?;
-        
+
+        self.show_progress(
+            "Probe Sniff",
+            ["Capturing probe requests", "from nearby devices..."],
+        )?;
+
         use rustyjack_core::{Commands, WifiCommand, WifiProbeSniffArgs};
-        
+
         let cmd = Commands::Wifi(WifiCommand::ProbeSniff(WifiProbeSniffArgs {
             interface: active_interface,
             duration: duration_secs,
             channel: 0, // hop channels
         }));
-        
+
         match self.core.dispatch(cmd) {
             Ok((msg, data)) => {
                 let mut lines = vec![msg];
-                
+
                 if let Some(probes) = data.get("total_probes").and_then(|v| v.as_u64()) {
                     lines.push(format!("Probes: {}", probes));
                 }
@@ -2079,29 +2258,30 @@ impl App {
                 if let Some(networks) = data.get("unique_networks").and_then(|v| v.as_u64()) {
                     lines.push(format!("Networks: {}", networks));
                 }
-                
+
                 // Show top probed networks
                 if let Some(top) = data.get("top_networks").and_then(|v| v.as_array()) {
                     lines.push("".to_string());
                     lines.push("Top Networks:".to_string());
                     for net in top.iter().take(3) {
                         if let Some(ssid) = net.get("ssid").and_then(|v| v.as_str()) {
-                            let count = net.get("probe_count").and_then(|v| v.as_u64()).unwrap_or(0);
+                            let count =
+                                net.get("probe_count").and_then(|v| v.as_u64()).unwrap_or(0);
                             lines.push(format!("  {} ({})", ssid, count));
                         }
                     }
                 }
-                
+
                 self.show_message("Probe Sniff Done", lines.iter().map(|s| s.as_str()))?;
             }
             Err(e) => {
                 self.show_message("Probe Error", [format!("{}", e)])?;
             }
         }
-        
+
         Ok(())
     }
-    
+
     fn launch_pmkid_capture(&mut self) -> Result<()> {
         let _op = match self.guard_operation("PMKID Capture")? {
             Some(g) => g,
@@ -2116,15 +2296,14 @@ impl App {
         let target_bssid = self.config.settings.target_bssid.clone();
         let target_channel = self.config.settings.target_channel;
         let active_interface = self.config.settings.active_network_interface.clone();
-        
+
         if active_interface.is_empty() {
-            return self.show_message("PMKID Capture", [
-                "No WiFi interface set",
-                "",
-                "Run Hardware Detect first"
-            ]);
+            return self.show_message(
+                "PMKID Capture",
+                ["No WiFi interface set", "", "Run Hardware Detect first"],
+            );
         }
-        
+
         // Option to target specific network or passive capture
         let options = vec![
             if target_network.is_empty() {
@@ -2135,44 +2314,56 @@ impl App {
             "Passive (any network)".to_string(),
             "Cancel".to_string(),
         ];
-        
+
         let choice = self.choose_from_list("PMKID Mode", &options)?;
-        
+
         let (use_target, duration) = match choice {
             Some(0) if !target_network.is_empty() => (true, 30),
             Some(1) | Some(0) => (false, 60),
             _ => return Ok(()),
         };
-        
+
         let _activity = self.blink_activity();
-        
-        self.show_progress("PMKID Capture", [
-            if use_target { "Targeting network..." } else { "Passive capture..." },
-            "No deauth needed!",
-        ])?;
-        
+
+        self.show_progress(
+            "PMKID Capture",
+            [
+                if use_target {
+                    "Targeting network..."
+                } else {
+                    "Passive capture..."
+                },
+                "No deauth needed!",
+            ],
+        )?;
+
         use rustyjack_core::{Commands, WifiCommand, WifiPmkidArgs};
-        
+
         let cmd = Commands::Wifi(WifiCommand::PmkidCapture(WifiPmkidArgs {
             interface: active_interface,
             bssid: if use_target { Some(target_bssid) } else { None },
-            ssid: if use_target { Some(target_network) } else { None },
+            ssid: if use_target {
+                Some(target_network)
+            } else {
+                None
+            },
             channel: if use_target { target_channel } else { 0 },
             duration,
         }));
-        
+
         match self.core.dispatch(cmd) {
             Ok((msg, data)) => {
                 let mut lines = vec![msg];
-                
+
                 if let Some(count) = data.get("pmkids_captured").and_then(|v| v.as_u64()) {
                     if count > 0 {
                         lines.push(format!("Captured: {} PMKIDs", count));
                         lines.push("".to_string());
                         lines.push("Auto-cracking...".to_string());
-                        
+
                         // If PMKID was captured, trigger auto-crack
-                        if let Some(_hashcat) = data.get("hashcat_format").and_then(|v| v.as_str()) {
+                        if let Some(_hashcat) = data.get("hashcat_format").and_then(|v| v.as_str())
+                        {
                             lines.push(format!("Hash saved for cracking"));
                         }
                     } else {
@@ -2180,31 +2371,34 @@ impl App {
                         lines.push("Try different network".to_string());
                     }
                 }
-                
+
                 self.show_message("PMKID Result", lines.iter().map(|s| s.as_str()))?;
             }
             Err(e) => {
                 self.show_message("PMKID Error", [format!("{}", e)])?;
             }
         }
-        
+
         Ok(())
     }
-    
+
     fn launch_crack_handshake(&mut self) -> Result<()> {
         // Look for captured handshakes in loot directory
         let loot_dir = self.root.join("loot/Wireless");
-        
+
         if !loot_dir.exists() {
-            return self.show_message("Crack", [
-                "No handshakes found",
-                "",
-                "Capture a handshake",
-                "using Deauth Attack",
-                "or PMKID Capture first"
-            ]);
+            return self.show_message(
+                "Crack",
+                [
+                    "No handshakes found",
+                    "",
+                    "Capture a handshake",
+                    "using Deauth Attack",
+                    "or PMKID Capture first",
+                ],
+            );
         }
-        
+
         // Find .hc22000 or .cap files
         let mut handshake_files = Vec::new();
         if let Ok(entries) = std::fs::read_dir(&loot_dir) {
@@ -2219,60 +2413,66 @@ impl App {
                 }
             }
         }
-        
+
         if handshake_files.is_empty() {
-            return self.show_message("Crack", [
-                "No handshakes found",
-                "in loot/Wireless",
-                "",
-                "Capture one first"
-            ]);
+            return self.show_message(
+                "Crack",
+                [
+                    "No handshakes found",
+                    "in loot/Wireless",
+                    "",
+                    "Capture one first",
+                ],
+            );
         }
-        
+
         // Let user select which to crack
         let choice = self.choose_from_menu("Select Handshake", &handshake_files)?;
-        
+
         let Some(idx) = choice else {
             return Ok(());
         };
-        
+
         let selected_file = &handshake_files[idx];
         let file_path = loot_dir.join(selected_file);
-        
+
         // Crack method selection
         let methods = vec![
             "Quick (common)".to_string(),
             "8-digit PINs".to_string(),
             "SSID patterns".to_string(),
         ];
-        
+
         let method = self.choose_from_list("Crack Method", &methods)?;
-        
+
         let crack_mode = match method {
             Some(0) => "quick",
             Some(1) => "pins",
             Some(2) => "ssid",
             _ => return Ok(()),
         };
-        
-        self.show_progress("Cracking", [
-            &format!("File: {}", selected_file),
-            "This may take a while...",
-        ])?;
-        
+
+        self.show_progress(
+            "Cracking",
+            [
+                &format!("File: {}", selected_file),
+                "This may take a while...",
+            ],
+        )?;
+
         use rustyjack_core::{Commands, WifiCommand, WifiCrackArgs};
-        
+
         let cmd = Commands::Wifi(WifiCommand::Crack(WifiCrackArgs {
             file: file_path.to_string_lossy().to_string(),
             mode: crack_mode.to_string(),
             ssid: None,
             wordlist: None,
         }));
-        
+
         match self.core.dispatch(cmd) {
             Ok((msg, data)) => {
                 let mut lines = vec![msg];
-                
+
                 if let Some(password) = data.get("password").and_then(|v| v.as_str()) {
                     lines.push("".to_string());
                     lines.push("PASSWORD FOUND!".to_string());
@@ -2284,107 +2484,115 @@ impl App {
                     lines.push("No match found".to_string());
                     lines.push("Try different method".to_string());
                 }
-                
+
                 self.show_message("Crack Result", lines.iter().map(|s| s.as_str()))?;
             }
             Err(e) => {
                 self.show_message("Crack Error", [format!("{}", e)])?;
             }
         }
-        
+
         Ok(())
     }
-    
+
     /// Install WiFi drivers for USB dongles
     /// Keeps user on screen until installation completes or fails
     fn install_wifi_drivers(&mut self) -> Result<()> {
         use std::fs;
         use std::process::{Command, Stdio};
-        
+
         // Status file used by the driver installer script
         let status_file = Path::new("/tmp/rustyjack_wifi_status");
         let result_file = Path::new("/tmp/rustyjack_wifi_result.json");
         let script_path = self.root.join("scripts/wifi_driver_installer.sh");
-        
+
         // Check if script exists
         if !script_path.exists() {
-            return self.show_message("Driver Install", [
-                "Installer script not found",
-                "",
-                "Missing:",
-                "scripts/wifi_driver_installer.sh",
-                "",
-                "Please reinstall RustyJack"
-            ]);
+            return self.show_message(
+                "Driver Install",
+                [
+                    "Installer script not found",
+                    "",
+                    "Missing:",
+                    "scripts/wifi_driver_installer.sh",
+                    "",
+                    "Please reinstall RustyJack",
+                ],
+            );
         }
-        
+
         // Initial screen - explain what we're doing
-        self.show_message("WiFi Driver Install", [
-            "This will scan for USB WiFi",
-            "adapters and install any",
-            "required drivers.",
-            "",
-            "Internet required for",
-            "driver downloads.",
-            "",
-            "Press SELECT to continue"
-        ])?;
-        
+        self.show_message(
+            "WiFi Driver Install",
+            [
+                "This will scan for USB WiFi",
+                "adapters and install any",
+                "required drivers.",
+                "",
+                "Internet required for",
+                "driver downloads.",
+                "",
+                "Press SELECT to continue",
+            ],
+        )?;
+
         // Confirm
         let options = vec!["Start Scan".to_string(), "Cancel".to_string()];
         let choice = self.choose_from_list("Install Drivers?", &options)?;
-        
+
         if choice != Some(0) {
             return Ok(());
         }
-        
+
         // Clear old status files
         let _ = fs::remove_file(status_file);
         let _ = fs::remove_file(result_file);
-        
+
         // Show initial scanning message
         self.show_progress("WiFi Driver", ["Scanning for USB WiFi...", "Please wait"])?;
-        
+
         // Run the installer script
         let mut child = match Command::new("bash")
             .arg(&script_path)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .spawn() {
-                Ok(c) => c,
-                Err(e) => {
-                    return self.show_message("Driver Error", [
-                        "Failed to start installer",
-                        "",
-                        &format!("{}", e)
-                    ]);
-                }
-            };
-        
+            .spawn()
+        {
+            Ok(c) => c,
+            Err(e) => {
+                return self.show_message(
+                    "Driver Error",
+                    ["Failed to start installer", "", &format!("{}", e)],
+                );
+            }
+        };
+
         // Monitor progress
         let mut last_status = String::new();
         let mut ticks = 0;
-        
+
         loop {
             // Check if process finished
             match child.try_wait() {
                 Ok(Some(status)) => {
                     // Process finished - check result
                     let exit_code = status.code().unwrap_or(-1);
-                    
+
                     // Read final result
                     if let Ok(result_json) = fs::read_to_string(result_file) {
                         if let Ok(result) = serde_json::from_str::<Value>(&result_json) {
-                            let status = result.get("status").and_then(|v| v.as_str()).unwrap_or("UNKNOWN");
-                            let details = result.get("details").and_then(|v| v.as_str()).unwrap_or("");
+                            let status = result
+                                .get("status")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("UNKNOWN");
+                            let details =
+                                result.get("details").and_then(|v| v.as_str()).unwrap_or("");
                             let interfaces = result.get("interfaces").and_then(|v| v.as_array());
-                            
+
                             match status {
                                 "SUCCESS" => {
-                                    let mut lines = vec![
-                                        "Driver installed!".to_string(),
-                                        "".to_string(),
-                                    ];
+                                    let mut lines =
+                                        vec!["Driver installed!".to_string(), "".to_string()];
                                     if let Some(ifaces) = interfaces {
                                         lines.push("Available interfaces:".to_string());
                                         for iface in ifaces {
@@ -2395,74 +2603,92 @@ impl App {
                                     }
                                     lines.push("".to_string());
                                     lines.push("Ready to use!".to_string());
-                                    
-                                    return self.show_message("Driver Success", lines.iter().map(|s| s.as_str()));
+
+                                    return self.show_message(
+                                        "Driver Success",
+                                        lines.iter().map(|s| s.as_str()),
+                                    );
                                 }
                                 "REBOOT_REQUIRED" => {
-                                    return self.show_message("Reboot Required", [
-                                        "Driver installed but",
-                                        "reboot is required.",
-                                        "",
-                                        "Please restart the",
-                                        "device to complete",
-                                        "installation.",
-                                        "",
-                                        "Press KEY3 to reboot"
-                                    ]);
+                                    return self.show_message(
+                                        "Reboot Required",
+                                        [
+                                            "Driver installed but",
+                                            "reboot is required.",
+                                            "",
+                                            "Please restart the",
+                                            "device to complete",
+                                            "installation.",
+                                            "",
+                                            "Press KEY3 to reboot",
+                                        ],
+                                    );
                                 }
                                 "NO_DEVICES" => {
-                                    return self.show_message("No Devices", [
-                                        "No USB WiFi adapters",
-                                        "were detected.",
-                                        "",
-                                        "Please plug in a USB",
-                                        "WiFi adapter and try",
-                                        "again."
-                                    ]);
+                                    return self.show_message(
+                                        "No Devices",
+                                        [
+                                            "No USB WiFi adapters",
+                                            "were detected.",
+                                            "",
+                                            "Please plug in a USB",
+                                            "WiFi adapter and try",
+                                            "again.",
+                                        ],
+                                    );
                                 }
                                 "FAILED" => {
-                                    return self.show_message("Driver Failed", [
-                                        "Failed to install drivers",
-                                        "",
-                                        details,
-                                        "",
-                                        "Check internet connection",
-                                        "and try again.",
-                                        "",
-                                        "Some adapters may not",
-                                        "be supported."
-                                    ]);
+                                    return self.show_message(
+                                        "Driver Failed",
+                                        [
+                                            "Failed to install drivers",
+                                            "",
+                                            details,
+                                            "",
+                                            "Check internet connection",
+                                            "and try again.",
+                                            "",
+                                            "Some adapters may not",
+                                            "be supported.",
+                                        ],
+                                    );
                                 }
                                 _ => {
-                                    return self.show_message("Unknown Result", [
-                                        &format!("Status: {}", status),
-                                        details
-                                    ]);
+                                    return self.show_message(
+                                        "Unknown Result",
+                                        [&format!("Status: {}", status), details],
+                                    );
                                 }
                             }
                         }
                     }
-                    
+
                     // No result file - use exit code
                     if exit_code == 0 {
                         return self.show_message("Driver Install", ["Installation completed"]);
                     } else if exit_code == 2 {
-                        return self.show_message("Reboot Required", [
-                            "Driver installed.",
-                            "Reboot required to",
-                            "complete setup.",
-                            "",
-                            "Press KEY3 to reboot"
-                        ]);
+                        return self.show_message(
+                            "Reboot Required",
+                            [
+                                "Driver installed.",
+                                "Reboot required to",
+                                "complete setup.",
+                                "",
+                                "Press KEY3 to reboot",
+                            ],
+                        );
                     } else {
-                        return self.show_message("Driver Failed", [
-                            "Installation failed",
-                            "",
-                            &format!("Exit code: {}", exit_code),
-                            "",
-                            "Check logs at:",
-                            "/var/log/rustyjack_wifi_driver.log"
-                        ]);
+                        return self.show_message(
+                            "Driver Failed",
+                            [
+                                "Installation failed",
+                                "",
+                                &format!("Exit code: {}", exit_code),
+                                "",
+                                "Check logs at:",
+                                "/var/log/rustyjack_wifi_driver.log",
+                            ],
+                        );
                     }
                 }
                 Ok(None) => {
@@ -2471,42 +2697,46 @@ impl App {
                         let status = status.trim();
                         if status != last_status {
                             last_status = status.to_string();
-                            
+
                             // Parse status and show appropriate message
                             let (title, messages) = self.parse_driver_status(&last_status, ticks);
-                            self.display.draw_menu(&title, &messages, usize::MAX, &self.stats.snapshot())?;
+                            self.display.draw_menu(
+                                &title,
+                                &messages,
+                                usize::MAX,
+                                &self.stats.snapshot(),
+                            )?;
                         }
                     }
-                    
+
                     // Animate waiting indicator
                     ticks += 1;
                     thread::sleep(Duration::from_millis(500));
-                    
+
                     // Check for user cancel (back button)
                     if let Ok(Some(btn)) = self.buttons.try_read() {
                         if matches!(self.map_button(btn), ButtonAction::Back) {
                             // User cancelled - try to kill process
                             let _ = child.kill();
-                            return self.show_message("Cancelled", ["Installation cancelled by user"]);
+                            return self
+                                .show_message("Cancelled", ["Installation cancelled by user"]);
                         }
                     }
                 }
                 Err(e) => {
-                    return self.show_message("Error", [
-                        "Failed to check process",
-                        &format!("{}", e)
-                    ]);
+                    return self
+                        .show_message("Error", ["Failed to check process", &format!("{}", e)]);
                 }
             }
         }
     }
-    
+
     /// Parse driver installer status into display messages
     fn parse_driver_status(&self, status: &str, ticks: u32) -> (String, Vec<String>) {
         let spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"][(ticks as usize) % 10];
-        
+
         let parts: Vec<&str> = status.split(':').collect();
-        
+
         match parts.get(0).map(|s| *s) {
             Some("SCANNING") => (
                 "WiFi Driver".to_string(),
@@ -2515,7 +2745,7 @@ impl App {
                     "".to_string(),
                     "Looking for WiFi".to_string(),
                     "adapters...".to_string(),
-                ]
+                ],
             ),
             Some("DETECTED") => {
                 let chipset = parts.get(1).unwrap_or(&"Unknown");
@@ -2525,7 +2755,7 @@ impl App {
                         format!("Chipset: {}", chipset),
                         "".to_string(),
                         format!("{} Preparing driver...", spinner),
-                    ]
+                    ],
                 )
             }
             Some("INSTALLING_PREREQUISITES") => (
@@ -2535,7 +2765,7 @@ impl App {
                     "".to_string(),
                     "This may take a few".to_string(),
                     "minutes...".to_string(),
-                ]
+                ],
             ),
             Some("INSTALLING_DRIVER") => {
                 let package = parts.get(1).unwrap_or(&"driver");
@@ -2548,7 +2778,7 @@ impl App {
                         "".to_string(),
                         "This may take 5-10".to_string(),
                         "minutes on Pi Zero".to_string(),
-                    ]
+                    ],
                 )
             }
             Some("VERIFYING") => {
@@ -2560,7 +2790,7 @@ impl App {
                         "".to_string(),
                         format!("Interface: {}", iface),
                         "Checking functionality...".to_string(),
-                    ]
+                    ],
                 )
             }
             Some("BUILTIN") => {
@@ -2571,7 +2801,7 @@ impl App {
                         format!("Chipset: {}", chipset),
                         "".to_string(),
                         format!("{} Loading firmware...", spinner),
-                    ]
+                    ],
                 )
             }
             Some("UNKNOWN") => {
@@ -2583,7 +2813,7 @@ impl App {
                         "".to_string(),
                         "No driver available".to_string(),
                         "for this device.".to_string(),
-                    ]
+                    ],
                 )
             }
             _ => (
@@ -2592,11 +2822,11 @@ impl App {
                     format!("{} Working...", spinner),
                     "".to_string(),
                     status.to_string(),
-                ]
+                ],
             ),
         }
     }
-    
+
     /// Launch Karma attack
     fn launch_karma_attack(&mut self) -> Result<()> {
         let _op = match self.guard_operation("Karma Attack")? {
@@ -2609,30 +2839,36 @@ impl App {
         }
 
         let active_interface = self.config.settings.active_network_interface.clone();
-        
+
         if active_interface.is_empty() {
-            return self.show_message("Karma Attack", [
-                "No WiFi interface set",
-                "",
-                "Run Hardware Detect",
-                "to configure interface"
-            ]);
+            return self.show_message(
+                "Karma Attack",
+                [
+                    "No WiFi interface set",
+                    "",
+                    "Run Hardware Detect",
+                    "to configure interface",
+                ],
+            );
         }
-        
+
         // Explain what Karma does
-        self.show_message("Karma Attack", [
-            "Responds to ALL probe",
-            "requests from devices.",
-            "",
-            "Captures clients looking",
-            "for known networks.",
-            "",
-            "Very effective against",
-            "phones and laptops!",
-            "",
-            "Press SELECT to start"
-        ])?;
-        
+        self.show_message(
+            "Karma Attack",
+            [
+                "Responds to ALL probe",
+                "requests from devices.",
+                "",
+                "Captures clients looking",
+                "for known networks.",
+                "",
+                "Very effective against",
+                "phones and laptops!",
+                "",
+                "Press SELECT to start",
+            ],
+        )?;
+
         // Duration selection
         let durations = vec![
             "2 minutes".to_string(),
@@ -2640,36 +2876,38 @@ impl App {
             "10 minutes".to_string(),
         ];
         let dur_choice = self.choose_from_list("Karma Duration", &durations)?;
-        
+
         let duration = match dur_choice {
             Some(0) => 120,
             Some(1) => 300,
             Some(2) => 600,
             _ => return Ok(()),
         };
-        
+
         let _activity = self.blink_activity();
-        
-        self.show_progress("Karma Attack", [
-            "Listening for probes...",
-            "",
-            "Responding to all SSIDs",
-        ])?;
-        
+
+        self.show_progress(
+            "Karma Attack",
+            ["Listening for probes...", "", "Responding to all SSIDs"],
+        )?;
+
         // Execute via core (placeholder - would call actual karma)
-        self.show_message("Karma Active", [
-            &format!("Interface: {}", active_interface),
-            &format!("Duration: {} sec", duration),
-            "",
-            "Capturing probe requests",
-            "and responding to all.",
-            "",
-            "Press BACK to stop"
-        ])?;
-        
+        self.show_message(
+            "Karma Active",
+            [
+                &format!("Interface: {}", active_interface),
+                &format!("Duration: {} sec", duration),
+                "",
+                "Capturing probe requests",
+                "and responding to all.",
+                "",
+                "Press BACK to stop",
+            ],
+        )?;
+
         Ok(())
     }
-    
+
     /// Launch an attack pipeline
     fn launch_attack_pipeline(&mut self, pipeline_type: PipelineType) -> Result<()> {
         let _op = match self.guard_operation("Attack Pipeline")? {
@@ -2682,76 +2920,64 @@ impl App {
         }
 
         let active_interface = self.config.settings.active_network_interface.clone();
-        
+
         if active_interface.is_empty() {
-            return self.show_message("Attack Pipeline", [
-                "No WiFi interface set",
-                "",
-                "Run Hardware Detect",
-                "to configure interface"
-            ]);
+            return self.show_message(
+                "Attack Pipeline",
+                [
+                    "No WiFi interface set",
+                    "",
+                    "Run Hardware Detect",
+                    "to configure interface",
+                ],
+            );
         }
-        
+
         let (title, description, steps) = match pipeline_type {
             PipelineType::GetPassword => (
                 "Get WiFi Password",
-                vec![
-                    "Automated sequence to",
-                    "obtain target password:",
-                ],
+                vec!["Automated sequence to", "obtain target password:"],
                 vec![
                     "1. Scan networks",
                     "2. PMKID capture",
                     "3. Deauth attack",
                     "4. Capture handshake",
                     "5. Quick crack",
-                ]
+                ],
             ),
             PipelineType::MassCapture => (
                 "Mass Capture",
-                vec![
-                    "Capture handshakes from",
-                    "all visible networks:",
-                ],
+                vec!["Capture handshakes from", "all visible networks:"],
                 vec![
                     "1. Scan all networks",
                     "2. Channel hopping",
                     "3. Multi-target deauth",
                     "4. Continuous capture",
-                ]
+                ],
             ),
             PipelineType::StealthRecon => (
                 "Stealth Recon",
-                vec![
-                    "Passive reconnaissance",
-                    "NO transmission:",
-                ],
+                vec!["Passive reconnaissance", "NO transmission:"],
                 vec![
                     "1. Randomize MAC",
                     "2. Minimum TX power",
                     "3. Passive scan only",
                     "4. Probe sniffing",
-                ]
+                ],
             ),
             PipelineType::CredentialHarvest => (
                 "Credential Harvest",
-                vec![
-                    "Capture login creds",
-                    "via fake networks:",
-                ],
+                vec!["Capture login creds", "via fake networks:"],
                 vec![
                     "1. Probe sniff",
                     "2. Karma attack",
                     "3. Evil Twin APs",
                     "4. Captive portal",
-                ]
+                ],
             ),
             PipelineType::FullPentest => (
                 "Full Pentest",
-                vec![
-                    "Complete automated",
-                    "wireless audit:",
-                ],
+                vec!["Complete automated", "wireless audit:"],
                 vec![
                     "1. Stealth recon",
                     "2. Network mapping",
@@ -2759,10 +2985,10 @@ impl App {
                     "4. Deauth attacks",
                     "5. Evil Twin/Karma",
                     "6. Crack passwords",
-                ]
+                ],
             ),
         };
-        
+
         // Show pipeline description
         let mut all_lines: Vec<String> = Vec::new();
         for line in description {
@@ -2774,50 +3000,57 @@ impl App {
         }
         all_lines.push("".to_string());
         all_lines.push("Press SELECT to start".to_string());
-        
+
         self.show_message(title, all_lines.iter().map(|s| s.as_str()))?;
-        
+
         // Confirm
         let options = vec!["Start Pipeline".to_string(), "Cancel".to_string()];
         let choice = self.choose_from_list("Confirm", &options)?;
-        
+
         if choice != Some(0) {
             return Ok(());
         }
-        
+
         // If target needed and not set, prompt for network selection
-        let needs_target = matches!(pipeline_type, 
-            PipelineType::GetPassword | PipelineType::CredentialHarvest);
-        
+        let needs_target = matches!(
+            pipeline_type,
+            PipelineType::GetPassword | PipelineType::CredentialHarvest
+        );
+
         if needs_target && self.config.settings.target_network.is_empty() {
-            self.show_message("Select Target", [
-                "No target network set",
-                "",
-                "Scanning for networks...",
-            ])?;
-            
+            self.show_message(
+                "Select Target",
+                ["No target network set", "", "Scanning for networks..."],
+            )?;
+
             // Scan and let user pick target
             self.scan_wifi_networks()?;
         }
-        
+
         let _activity = self.blink_activity();
-        
+
         // Execute pipeline
-        self.show_progress(title, [
-            "Pipeline running...",
-            "",
-            "This is automated.",
-            "Please wait.",
-        ])?;
-        
+        self.show_progress(
+            title,
+            [
+                "Pipeline running...",
+                "",
+                "This is automated.",
+                "Please wait.",
+            ],
+        )?;
+
         // Placeholder - actual execution would happen here
-        self.show_message("Pipeline Complete", [
-            "Automated attack finished",
-            "",
-            "Check Loot folder for",
-            "captured data.",
-        ])?;
-        
+        self.show_message(
+            "Pipeline Complete",
+            [
+                "Automated attack finished",
+                "",
+                "Check Loot folder for",
+                "captured data.",
+            ],
+        )?;
+
         Ok(())
     }
 
@@ -2839,12 +3072,15 @@ impl App {
             timeout_ms: 500,
         };
 
-        self.show_progress("Ethernet", [
-            "Running LAN discovery...",
-            &format!("Interface: {}", iface),
-        ])?;
+        self.show_progress(
+            "Ethernet",
+            ["Running LAN discovery...", &format!("Interface: {}", iface)],
+        )?;
 
-        match self.core.dispatch(Commands::Ethernet(EthernetCommand::Discover(args))) {
+        match self
+            .core
+            .dispatch(Commands::Ethernet(EthernetCommand::Discover(args)))
+        {
             Ok((msg, data)) => {
                 let loot = data
                     .get("loot_path")
@@ -2855,11 +3091,10 @@ impl App {
                     .and_then(Value::as_array)
                     .map(|a| a.len())
                     .unwrap_or(0);
-                self.show_message("Ethernet", [
-                    msg,
-                    format!("Hosts: {}", count),
-                    format!("Loot: {}", loot),
-                ])?;
+                self.show_message(
+                    "Ethernet",
+                    [msg, format!("Hosts: {}", count), format!("Loot: {}", loot)],
+                )?;
             }
             Err(e) => {
                 self.show_message("Ethernet Error", [format!("{}", e)])?;
@@ -2888,12 +3123,15 @@ impl App {
             timeout_ms: 500,
         };
 
-        self.show_progress("Ethernet", [
-            "Quick port scan...",
-            &format!("Interface: {}", iface),
-        ])?;
+        self.show_progress(
+            "Ethernet",
+            ["Quick port scan...", &format!("Interface: {}", iface)],
+        )?;
 
-        match self.core.dispatch(Commands::Ethernet(EthernetCommand::PortScan(args))) {
+        match self
+            .core
+            .dispatch(Commands::Ethernet(EthernetCommand::PortScan(args)))
+        {
             Ok((msg, data)) => {
                 let loot = data
                     .get("loot_path")
@@ -2904,11 +3142,14 @@ impl App {
                     .and_then(Value::as_array)
                     .map(|a| a.len())
                     .unwrap_or(0);
-                self.show_message("Ethernet", [
-                    msg,
-                    format!("Open ports: {}", open),
-                    format!("Loot: {}", loot),
-                ])?;
+                self.show_message(
+                    "Ethernet",
+                    [
+                        msg,
+                        format!("Open ports: {}", open),
+                        format!("Loot: {}", loot),
+                    ],
+                )?;
             }
             Err(e) => {
                 self.show_message("Ethernet Error", [format!("{}", e)])?;
@@ -2917,63 +3158,70 @@ impl App {
 
         Ok(())
     }
-    
+
     /// Toggle MAC randomization auto-enable setting
     fn toggle_mac_randomization(&mut self) -> Result<()> {
-        self.config.settings.mac_randomization_enabled = !self.config.settings.mac_randomization_enabled;
+        self.config.settings.mac_randomization_enabled =
+            !self.config.settings.mac_randomization_enabled;
         let enabled = self.config.settings.mac_randomization_enabled;
-        
+
         // Save config
         let config_path = self.root.join("gui_conf.json");
         if let Err(e) = self.config.save(&config_path) {
             return self.show_message("Config Error", [format!("Failed to save: {}", e)]);
         }
-        
+
         let status = if enabled { "ENABLED" } else { "DISABLED" };
-        self.show_message("MAC Randomization", [
-            format!("Auto-randomize: {}", status),
-            "".to_string(),
-            if enabled {
-                "MAC will be randomized".to_string()
-            } else {
-                "MAC will NOT be changed".to_string()
-            },
-            if enabled {
-                "before each attack.".to_string()
-            } else {
-                "before attacks.".to_string()
-            },
-        ])
+        self.show_message(
+            "MAC Randomization",
+            [
+                format!("Auto-randomize: {}", status),
+                "".to_string(),
+                if enabled {
+                    "MAC will be randomized".to_string()
+                } else {
+                    "MAC will NOT be changed".to_string()
+                },
+                if enabled {
+                    "before each attack.".to_string()
+                } else {
+                    "before attacks.".to_string()
+                },
+            ],
+        )
     }
-    
+
     /// Toggle passive mode setting
     fn toggle_passive_mode(&mut self) -> Result<()> {
         self.config.settings.passive_mode_enabled = !self.config.settings.passive_mode_enabled;
         let enabled = self.config.settings.passive_mode_enabled;
-        
+
         // Save config
         let config_path = self.root.join("gui_conf.json");
         if let Err(e) = self.config.save(&config_path) {
             return self.show_message("Config Error", [format!("Failed to save: {}", e)]);
         }
-        
+
         let status = if enabled { "ENABLED" } else { "DISABLED" };
-        self.show_message("Passive Mode", [
-            format!("Passive mode: {}", status),
-            "".to_string(),
-            if enabled {
-                "Recon will use RX-only".to_string()
-            } else {
-                "Normal TX/RX mode".to_string()
-            },
-            if enabled {
-                "No transmissions.".to_string()
-            } else {
-                "will be used.".to_string()
-            },
-        ])
+        self.show_message(
+            "Passive Mode",
+            [
+                format!("Passive mode: {}", status),
+                "".to_string(),
+                if enabled {
+                    "Recon will use RX-only".to_string()
+                } else {
+                    "Normal TX/RX mode".to_string()
+                },
+                if enabled {
+                    "No transmissions.".to_string()
+                } else {
+                    "will be used.".to_string()
+                },
+            ],
+        )
     }
-    
+
     /// Launch passive reconnaissance mode
     fn launch_passive_recon(&mut self) -> Result<()> {
         let _op = match self.guard_operation("Passive Recon")? {
@@ -2986,16 +3234,19 @@ impl App {
         }
 
         let active_interface = self.config.settings.active_network_interface.clone();
-        
+
         if active_interface.is_empty() {
-            return self.show_message("Passive Recon", [
-                "No interface selected",
-                "",
-                "Run Hardware Detect",
-                "to select an interface."
-            ]);
+            return self.show_message(
+                "Passive Recon",
+                [
+                    "No interface selected",
+                    "",
+                    "Run Hardware Detect",
+                    "to select an interface.",
+                ],
+            );
         }
-        
+
         // Duration selection
         let durations = vec![
             "30 seconds".to_string(),
@@ -3004,7 +3255,7 @@ impl App {
             "10 minutes".to_string(),
         ];
         let dur_choice = self.choose_from_list("Recon Duration", &durations)?;
-        
+
         let duration_secs = match dur_choice {
             Some(0) => 30,
             Some(1) => 60,
@@ -3012,57 +3263,64 @@ impl App {
             Some(3) => 600,
             _ => return Ok(()),
         };
-        
+
         let _activity = self.blink_activity();
-        
-        self.show_progress("Passive Recon", [
-            "Starting passive mode...",
-            "",
-            "NO transmissions!",
-            "Listening only.",
-        ])?;
-        
+
+        self.show_progress(
+            "Passive Recon",
+            [
+                "Starting passive mode...",
+                "",
+                "NO transmissions!",
+                "Listening only.",
+            ],
+        )?;
+
         // In real implementation, this would call rustyjack-wireless passive mode
         // For now, show what it would do
-        self.show_message("Passive Recon", [
-            &format!("Interface: {}", active_interface),
-            &format!("Duration: {} sec", duration_secs),
-            "",
-            "Passive mode captures:",
-            "- Beacon frames",
-            "- Probe requests",
-            "- Data (handshakes)",
-            "",
-            "Zero transmission mode"
-        ])
+        self.show_message(
+            "Passive Recon",
+            [
+                &format!("Interface: {}", active_interface),
+                &format!("Duration: {} sec", duration_secs),
+                "",
+                "Passive mode captures:",
+                "- Beacon frames",
+                "- Probe requests",
+                "- Data (handshakes)",
+                "",
+                "Zero transmission mode",
+            ],
+        )
     }
-    
+
     /// Randomize MAC address immediately
     fn randomize_mac_now(&mut self) -> Result<()> {
         let active_interface = self.config.settings.active_network_interface.clone();
-        
+
         if active_interface.is_empty() {
-            return self.show_message("Randomize MAC", [
-                "No interface selected"
-            ]);
+            return self.show_message("Randomize MAC", ["No interface selected"]);
         }
-        
+
         let mut mac_manager = MacManager::new()?;
         mac_manager.set_auto_restore(false);
-        
+
         // First, save the original MAC if we haven't already
         if self.config.settings.original_mac.is_empty() {
             if let Ok(mac) = mac_manager.get_mac(&active_interface) {
                 self.config.settings.original_mac = mac.to_string();
             }
         }
-        
-        self.show_progress("Randomize MAC", [
-            &format!("Interface: {}", active_interface),
-            "",
-            "Generating new MAC...",
-        ])?;
-        
+
+        self.show_progress(
+            "Randomize MAC",
+            [
+                &format!("Interface: {}", active_interface),
+                "",
+                "Generating new MAC...",
+            ],
+        )?;
+
         let vendor_choice = vendor_from_interface(&mac_manager, &active_interface);
         let (state, strategy_label) = match vendor_choice {
             Some(vendor) => match mac_manager.set_with_strategy(
@@ -3070,25 +3328,31 @@ impl App {
                 MacGenerationStrategy::Vendor(vendor.name),
             ) {
                 Ok(state) => (state, format!("Vendor: {}", vendor.name)),
-                Err(_) => (mac_manager.randomize(&active_interface)?, "Random local-admin".to_string()),
+                Err(_) => (
+                    mac_manager.randomize(&active_interface)?,
+                    "Random local-admin".to_string(),
+                ),
             },
-            None => (mac_manager.randomize(&active_interface)?, "Random local-admin".to_string()),
+            None => (
+                mac_manager.randomize(&active_interface)?,
+                "Random local-admin".to_string(),
+            ),
         };
-        
+
         let original_mac = if self.config.settings.original_mac.is_empty() {
             state.original_mac.to_string()
         } else {
             self.config.settings.original_mac.clone()
         };
-        
+
         self.config.settings.original_mac = original_mac.clone();
         self.config.settings.current_mac = state.current_mac.to_string();
         let config_path = self.root.join("gui_conf.json");
         let _ = self.config.save(&config_path);
-        
+
         let dhcp_refreshed = renew_dhcp(&active_interface);
         let wifi_reconnected = trigger_wifi_reconnect(&active_interface);
-        
+
         let lines = vec![
             format!("Interface: {}", active_interface),
             "".to_string(),
@@ -3108,20 +3372,18 @@ impl App {
             "".to_string(),
             format!("Original saved: {}", original_mac),
         ];
-        
+
         self.show_message("MAC Randomized", lines)
     }
-    
+
     /// Restore original MAC address
     fn restore_mac(&mut self) -> Result<()> {
         let active_interface = self.config.settings.active_network_interface.clone();
-        
+
         if active_interface.is_empty() {
-            return self.show_message("Restore MAC", [
-                "No interface selected"
-            ]);
+            return self.show_message("Restore MAC", ["No interface selected"]);
         }
-        
+
         // Check if we have a saved original MAC
         let original_mac = if !self.config.settings.original_mac.is_empty() {
             self.config.settings.original_mac.clone()
@@ -3131,76 +3393,78 @@ impl App {
             match std::fs::read_to_string(&perm_path) {
                 Ok(mac) => mac.trim().to_uppercase(),
                 Err(_) => {
-                    return self.show_message("Restore MAC", [
-                        "No original MAC saved",
-                        "",
-                        "MAC was not changed by",
-                        "RustyJack, or original",
-                        "was not recorded."
-                    ]);
+                    return self.show_message(
+                        "Restore MAC",
+                        [
+                            "No original MAC saved",
+                            "",
+                            "MAC was not changed by",
+                            "RustyJack, or original",
+                            "was not recorded.",
+                        ],
+                    );
                 }
             }
         };
-        
-        self.show_progress("Restore MAC", [
-            &format!("Restoring: {}", original_mac),
-        ])?;
-        
+
+        self.show_progress("Restore MAC", [&format!("Restoring: {}", original_mac)])?;
+
         // Bring interface down
         let _ = Command::new("ip")
             .args(["link", "set", &active_interface, "down"])
             .output();
-        
+
         // Set original MAC
         let result = Command::new("ip")
             .args(["link", "set", &active_interface, "address", &original_mac])
             .output();
-        
+
         // Bring interface back up
         let _ = Command::new("ip")
             .args(["link", "set", &active_interface, "up"])
             .output();
-        
+
         if let Ok(output) = result {
             if output.status.success() {
                 // Clear the saved MACs
                 self.config.settings.current_mac.clear();
                 let config_path = self.root.join("gui_conf.json");
                 let _ = self.config.save(&config_path);
-                
-                self.show_message("MAC Restored", [
-                    &format!("Interface: {}", active_interface),
-                    "",
-                    &format!("MAC: {}", original_mac),
-                    "",
-                    "Original MAC restored."
-                ])
+
+                self.show_message(
+                    "MAC Restored",
+                    [
+                        &format!("Interface: {}", active_interface),
+                        "",
+                        &format!("MAC: {}", original_mac),
+                        "",
+                        "Original MAC restored.",
+                    ],
+                )
             } else {
-                self.show_message("Restore Error", [
-                    "Failed to restore MAC",
-                    "",
-                    "Try rebooting to reset",
-                    "the interface."
-                ])
+                self.show_message(
+                    "Restore Error",
+                    [
+                        "Failed to restore MAC",
+                        "",
+                        "Try rebooting to reset",
+                        "the interface.",
+                    ],
+                )
             }
         } else {
-            self.show_message("Restore Error", [
-                "Failed to execute",
-                "restore command."
-            ])
+            self.show_message("Restore Error", ["Failed to execute", "restore command."])
         }
     }
-    
+
     /// Set TX power level
     fn set_tx_power(&mut self, level: TxPowerSetting) -> Result<()> {
         let active_interface = self.config.settings.active_network_interface.clone();
-        
+
         if active_interface.is_empty() {
-            return self.show_message("TX Power", [
-                "No interface selected"
-            ]);
+            return self.show_message("TX Power", ["No interface selected"]);
         }
-        
+
         let (dbm, label) = match level {
             TxPowerSetting::Stealth => (1, "Stealth (1 dBm)"),
             TxPowerSetting::Low => (5, "Low (5 dBm)"),
@@ -3208,16 +3472,21 @@ impl App {
             TxPowerSetting::High => (18, "High (18 dBm)"),
             TxPowerSetting::Maximum => (30, "Maximum"),
         };
-        
-        self.show_progress("TX Power", [
-            &format!("Setting to: {}", label),
-        ])?;
-        
+
+        self.show_progress("TX Power", [&format!("Setting to: {}", label)])?;
+
         // Try iw first (uses mBm)
         let result = Command::new("iw")
-            .args(["dev", &active_interface, "set", "txpower", "fixed", &format!("{}00", dbm)])
+            .args([
+                "dev",
+                &active_interface,
+                "set",
+                "txpower",
+                "fixed",
+                &format!("{}00", dbm),
+            ])
             .output();
-        
+
         let success = if let Ok(out) = result {
             out.status.success()
         } else {
@@ -3227,45 +3496,48 @@ impl App {
                 .output();
             result2.map(|o| o.status.success()).unwrap_or(false)
         };
-        
+
         if success {
-            self.show_message("TX Power Set", [
-                format!("Interface: {}", active_interface),
-                format!("Power: {}", label),
-                "".to_string(),
-                match level {
-                    TxPowerSetting::Stealth => "Minimal range - stealth mode".to_string(),
-                    TxPowerSetting::Low => "Short range operations".to_string(),
-                    TxPowerSetting::Medium => "Balanced range/stealth".to_string(),
-                    TxPowerSetting::High => "Normal operation range".to_string(),
-                    TxPowerSetting::Maximum => "Maximum range".to_string(),
-                }
-            ])
+            self.show_message(
+                "TX Power Set",
+                [
+                    format!("Interface: {}", active_interface),
+                    format!("Power: {}", label),
+                    "".to_string(),
+                    match level {
+                        TxPowerSetting::Stealth => "Minimal range - stealth mode".to_string(),
+                        TxPowerSetting::Low => "Short range operations".to_string(),
+                        TxPowerSetting::Medium => "Balanced range/stealth".to_string(),
+                        TxPowerSetting::High => "Normal operation range".to_string(),
+                        TxPowerSetting::Maximum => "Maximum range".to_string(),
+                    },
+                ],
+            )
         } else {
-            self.show_message("TX Power Error", [
-                "Failed to set power.".to_string(),
-                "".to_string(),
-                "Interface may not".to_string(),
-                "support TX power control.".to_string(),
-            ])
+            self.show_message(
+                "TX Power Error",
+                [
+                    "Failed to set power.".to_string(),
+                    "".to_string(),
+                    "Interface may not".to_string(),
+                    "support TX power control.".to_string(),
+                ],
+            )
         }
     }
 }
 
 fn vendor_from_interface(mac_manager: &MacManager, interface: &str) -> Option<&'static VendorOui> {
-    mac_manager
-        .get_mac(interface)
-        .ok()
-        .and_then(|mac| {
-            let bytes = mac.as_bytes();
-            VendorOui::from_oui([bytes[0], bytes[1], bytes[2]])
-        })
+    mac_manager.get_mac(interface).ok().and_then(|mac| {
+        let bytes = mac.as_bytes();
+        VendorOui::from_oui([bytes[0], bytes[1], bytes[2]])
+    })
 }
 
 fn renew_dhcp(interface: &str) -> bool {
     let release = Command::new("dhclient").args(["-r", interface]).output();
     let request = Command::new("dhclient").args([interface]).output();
-    
+
     release.map(|o| o.status.success()).unwrap_or(false)
         || request.map(|o| o.status.success()).unwrap_or(false)
 }
@@ -3277,7 +3549,7 @@ fn trigger_wifi_reconnect(interface: &str) -> bool {
     let nmcli = Command::new("nmcli")
         .args(["device", "reconnect", interface])
         .output();
-    
+
     wpa.map(|o| o.status.success()).unwrap_or(false)
         || nmcli.map(|o| o.status.success()).unwrap_or(false)
 }

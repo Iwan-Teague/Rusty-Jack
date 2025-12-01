@@ -1,4 +1,7 @@
-use std::{thread, time::{Duration, Instant}};
+use std::{
+    thread,
+    time::{Duration, Instant},
+};
 
 use anyhow::Result;
 
@@ -20,7 +23,7 @@ pub enum Button {
 #[cfg(target_os = "linux")]
 mod platform {
     use super::*;
-    use anyhow::{Context, anyhow};
+    use anyhow::{anyhow, Context};
     use linux_embedded_hal::gpio_cdev::{Chip, LineHandle, LineRequestFlags};
 
     struct ButtonInput {
@@ -38,11 +41,7 @@ mod platform {
             // which the installer sets automatically. The default value of 1 represents
             // the normal unpressed state (pulled high).
             let handle = line
-                .request(
-                    LineRequestFlags::INPUT,
-                    1,
-                    "rustyjack-ui",
-                )
+                .request(LineRequestFlags::INPUT, 1, "rustyjack-ui")
                 .with_context(|| format!("configuring GPIO line {}", pin))?;
             Ok(Self { kind, handle })
         }
@@ -104,7 +103,7 @@ mod platform {
                 thread::sleep(Duration::from_millis(20));
             }
         }
-        
+
         /// Non-blocking button check - returns immediately with Some(Button) if pressed, None otherwise
         pub fn try_read(&mut self) -> Result<Option<Button>> {
             if let Some(kind) = self.poll()? {
@@ -158,7 +157,7 @@ mod platform {
             thread::sleep(Duration::from_millis(250));
             Ok(Button::Select)
         }
-        
+
         pub fn try_read(&mut self) -> Result<Option<Button>> {
             Ok(None)
         }

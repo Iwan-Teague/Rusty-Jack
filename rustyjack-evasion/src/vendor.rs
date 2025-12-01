@@ -23,20 +23,20 @@
 use serde::{Deserialize, Serialize};
 
 /// A vendor's OUI (first 3 bytes of MAC address)
-/// 
+///
 /// Note: This struct uses static references for efficiency in the
 /// built-in database. For serialization, use [`VendorOuiOwned`].
 #[derive(Debug, Clone, Copy)]
 pub struct VendorOui {
     /// Vendor name
     pub name: &'static str,
-    
+
     /// Common aliases for this vendor
     pub aliases: &'static [&'static str],
-    
+
     /// The 3-byte OUI
     pub oui: [u8; 3],
-    
+
     /// Description or common devices
     pub description: &'static str,
 }
@@ -64,48 +64,53 @@ impl From<&VendorOui> for VendorOuiOwned {
 
 impl VendorOui {
     /// Look up a vendor by name or alias
-    /// 
+    ///
     /// Case-insensitive matching.
     #[must_use]
     pub fn from_name(name: &str) -> Option<&'static VendorOui> {
         let name_lower = name.to_lowercase();
-        
+
         VENDOR_DATABASE.iter().find(|v| {
             v.name.to_lowercase() == name_lower
                 || v.aliases.iter().any(|a| a.to_lowercase() == name_lower)
         })
     }
-    
+
     /// Look up a vendor by its OUI bytes
     #[must_use]
     pub fn from_oui(oui: [u8; 3]) -> Option<&'static VendorOui> {
         VENDOR_DATABASE.iter().find(|v| v.oui == oui)
     }
-    
+
     /// Get all vendors matching a partial name
     #[must_use]
     pub fn search(query: &str) -> Vec<&'static VendorOui> {
         let query_lower = query.to_lowercase();
-        
+
         VENDOR_DATABASE
             .iter()
             .filter(|v| {
                 v.name.to_lowercase().contains(&query_lower)
                     || v.description.to_lowercase().contains(&query_lower)
-                    || v.aliases.iter().any(|a| a.to_lowercase().contains(&query_lower))
+                    || v.aliases
+                        .iter()
+                        .any(|a| a.to_lowercase().contains(&query_lower))
             })
             .collect()
     }
-    
+
     /// Format OUI as colon-separated string
     #[must_use]
     pub fn oui_string(&self) -> String {
-        format!("{:02X}:{:02X}:{:02X}", self.oui[0], self.oui[1], self.oui[2])
+        format!(
+            "{:02X}:{:02X}:{:02X}",
+            self.oui[0], self.oui[1], self.oui[2]
+        )
     }
 }
 
 /// Database of common vendor OUIs
-/// 
+///
 /// Includes major smartphone, laptop, and network equipment vendors.
 pub static VENDOR_DATABASE: &[VendorOui] = &[
     // Mobile devices - common targets
@@ -163,7 +168,6 @@ pub static VENDOR_DATABASE: &[VendorOui] = &[
         oui: [0x64, 0xCC, 0x2E],
         description: "Xiaomi/Redmi phones",
     },
-    
     // Laptops and PCs
     VendorOui {
         name: "Intel",
@@ -195,7 +199,6 @@ pub static VENDOR_DATABASE: &[VendorOui] = &[
         oui: [0x00, 0x1E, 0x4C],
         description: "Lenovo/ThinkPad computers",
     },
-    
     // Network equipment
     VendorOui {
         name: "Cisco",
@@ -233,7 +236,6 @@ pub static VENDOR_DATABASE: &[VendorOui] = &[
         oui: [0xFC, 0xEC, 0xDA],
         description: "Ubiquiti/UniFi equipment",
     },
-    
     // WiFi chipset manufacturers
     VendorOui {
         name: "Realtek",
@@ -259,7 +261,6 @@ pub static VENDOR_DATABASE: &[VendorOui] = &[
         oui: [0x00, 0x0C, 0xE7],
         description: "MediaTek/Ralink WiFi",
     },
-    
     // IoT and smart devices
     VendorOui {
         name: "Amazon",
@@ -291,7 +292,6 @@ pub static VENDOR_DATABASE: &[VendorOui] = &[
         oui: [0x00, 0x17, 0x88],
         description: "Philips Hue/smart devices",
     },
-    
     // Generic/locally administered
     VendorOui {
         name: "Local",
@@ -318,49 +318,49 @@ pub fn random_vendor() -> &'static VendorOui {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_vendor_lookup() {
         let apple = VendorOui::from_name("apple").unwrap();
         assert_eq!(apple.oui, [0xF4, 0x0F, 0x24]);
-        
+
         // Test alias
         let iphone = VendorOui::from_name("iphone").unwrap();
         assert_eq!(iphone.name, "Apple");
     }
-    
+
     #[test]
     fn test_case_insensitive() {
         assert!(VendorOui::from_name("APPLE").is_some());
         assert!(VendorOui::from_name("Apple").is_some());
         assert!(VendorOui::from_name("apple").is_some());
     }
-    
+
     #[test]
     fn test_vendor_search() {
         let results = VendorOui::search("phone");
         assert!(!results.is_empty());
     }
-    
+
     #[test]
     fn test_oui_string() {
         let apple = VendorOui::from_name("apple").unwrap();
         assert_eq!(apple.oui_string(), "F4:0F:24");
     }
-    
+
     #[test]
     fn test_lookup_by_oui() {
         let apple = VendorOui::from_name("apple").unwrap();
         assert_eq!(VendorOui::from_oui(apple.oui).unwrap().name, apple.name);
     }
-    
+
     #[test]
     fn test_all_vendors() {
         let names = all_vendor_names();
         assert!(!names.is_empty());
         assert!(names.contains(&"Apple"));
     }
-    
+
     #[test]
     fn test_random_vendor() {
         // Just ensure it doesn't panic

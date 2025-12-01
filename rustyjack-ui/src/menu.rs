@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 
 #[derive(Clone)]
 pub enum MenuAction {
@@ -109,7 +109,7 @@ impl MenuTree {
         nodes.insert("aw", MenuNode::Static(wifi_menu));
         nodes.insert("as", MenuNode::Static(settings_menu));
         nodes.insert("ap", MenuNode::Static(pipeline_menu));
-        nodes.insert("ao", MenuNode::Static(obfuscation_menu));  // Obfuscation & Evasion
+        nodes.insert("ao", MenuNode::Static(obfuscation_menu)); // Obfuscation & Evasion
         nodes.insert("atx", MenuNode::Static(tx_power_menu));
         nodes.insert("aeth", MenuNode::Static(ethernet_menu));
         Self { nodes }
@@ -176,11 +176,26 @@ fn ethernet_menu() -> Vec<MenuEntry> {
 
 fn pipeline_menu() -> Vec<MenuEntry> {
     vec![
-        MenuEntry::new("Get WiFi Password", MenuAction::AttackPipeline(PipelineType::GetPassword)),
-        MenuEntry::new("Mass Capture", MenuAction::AttackPipeline(PipelineType::MassCapture)),
-        MenuEntry::new("Stealth Recon", MenuAction::AttackPipeline(PipelineType::StealthRecon)),
-        MenuEntry::new("Harvest Creds", MenuAction::AttackPipeline(PipelineType::CredentialHarvest)),
-        MenuEntry::new("Full Pentest", MenuAction::AttackPipeline(PipelineType::FullPentest)),
+        MenuEntry::new(
+            "Get WiFi Password",
+            MenuAction::AttackPipeline(PipelineType::GetPassword),
+        ),
+        MenuEntry::new(
+            "Mass Capture",
+            MenuAction::AttackPipeline(PipelineType::MassCapture),
+        ),
+        MenuEntry::new(
+            "Stealth Recon",
+            MenuAction::AttackPipeline(PipelineType::StealthRecon),
+        ),
+        MenuEntry::new(
+            "Harvest Creds",
+            MenuAction::AttackPipeline(PipelineType::CredentialHarvest),
+        ),
+        MenuEntry::new(
+            "Full Pentest",
+            MenuAction::AttackPipeline(PipelineType::FullPentest),
+        ),
     ]
 }
 
@@ -210,9 +225,15 @@ fn obfuscation_menu() -> Vec<MenuEntry> {
 
 fn tx_power_menu() -> Vec<MenuEntry> {
     vec![
-        MenuEntry::new("Stealth (1dBm)", MenuAction::SetTxPower(TxPowerSetting::Stealth)),
+        MenuEntry::new(
+            "Stealth (1dBm)",
+            MenuAction::SetTxPower(TxPowerSetting::Stealth),
+        ),
         MenuEntry::new("Low (5dBm)", MenuAction::SetTxPower(TxPowerSetting::Low)),
-        MenuEntry::new("Medium (12dBm)", MenuAction::SetTxPower(TxPowerSetting::Medium)),
+        MenuEntry::new(
+            "Medium (12dBm)",
+            MenuAction::SetTxPower(TxPowerSetting::Medium),
+        ),
         MenuEntry::new("High (18dBm)", MenuAction::SetTxPower(TxPowerSetting::High)),
         MenuEntry::new("Maximum", MenuAction::SetTxPower(TxPowerSetting::Maximum)),
     ]

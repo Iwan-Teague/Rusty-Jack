@@ -7,20 +7,19 @@ compile_error!(
 	"rustyjack-core is intended to be built on Linux only. Build with a Linux target (e.g. target_os = \"linux\") or develop on a Linux machine."
 );
 
+pub mod autopilot;
 pub mod cli;
 pub mod operations;
 pub mod system;
-pub mod autopilot;
 pub mod wireless_native;
 
 pub use cli::{
-    Cli, Commands, OutputFormat,
-    WifiCommand, WifiEvilTwinArgs, WifiProbeSniffArgs, WifiPmkidArgs, WifiCrackArgs,
+    Cli, Commands, OutputFormat, WifiCommand, WifiCrackArgs, WifiEvilTwinArgs, WifiPmkidArgs,
+    WifiProbeSniffArgs,
 };
-pub use operations::{HandlerResult, dispatch_command};
+pub use operations::{dispatch_command, HandlerResult};
 pub use system::{resolve_root, InterfaceSummary};
 pub use wireless_native::{
+    check_capabilities, execute_deauth_attack, is_wireless_interface, native_available,
     DeauthConfig, DeauthResult, WirelessCapabilities,
-    check_capabilities, execute_deauth_attack, native_available,
-    is_wireless_interface,
 };

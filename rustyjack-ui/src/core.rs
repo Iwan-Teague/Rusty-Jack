@@ -1,9 +1,9 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
-use rustyjack_core::{Commands, HandlerResult, dispatch_command, resolve_root};
 use rustyjack_core::cli::{ScanRunArgs, SystemUpdateArgs};
 use rustyjack_core::operations::{run_scan_with_progress, run_system_update_with_progress};
+use rustyjack_core::{dispatch_command, resolve_root, Commands, HandlerResult};
 
 #[derive(Clone)]
 pub struct CoreBridge {
@@ -24,7 +24,11 @@ impl CoreBridge {
         dispatch_command(&self.root, command)
     }
 
-    pub fn run_scan_with_progress<F>(&self, args: ScanRunArgs, on_progress: F) -> Result<HandlerResult>
+    pub fn run_scan_with_progress<F>(
+        &self,
+        args: ScanRunArgs,
+        on_progress: F,
+    ) -> Result<HandlerResult>
     where
         F: FnMut(f32, &str),
     {
@@ -32,7 +36,11 @@ impl CoreBridge {
         run_scan_with_progress(&self.root, args, on_progress)
     }
 
-    pub fn run_system_update_with_progress<F>(&self, args: SystemUpdateArgs, on_progress: F) -> Result<HandlerResult>
+    pub fn run_system_update_with_progress<F>(
+        &self,
+        args: SystemUpdateArgs,
+        on_progress: F,
+    ) -> Result<HandlerResult>
     where
         F: FnMut(f32, &str),
     {

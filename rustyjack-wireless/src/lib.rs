@@ -49,62 +49,61 @@
 #![warn(clippy::all)]
 
 // Module declarations
-pub mod error;
-pub mod frames;
-pub mod radiotap;
-pub mod interface;
-pub mod inject;
 pub mod capture;
-pub mod deauth;
-pub mod handshake;
 pub mod channel;
+pub mod crack;
+pub mod deauth;
+pub mod error;
+pub mod evil_twin;
+pub mod frames;
+pub mod handshake;
+pub mod inject;
+pub mod interface;
+pub mod karma;
 pub mod nl80211;
+pub mod pipeline;
 pub mod pmkid;
 pub mod probe;
-pub mod crack;
-pub mod evil_twin;
-pub mod karma;
-pub mod pipeline;
+pub mod radiotap;
 
 // Re-export evasion crate for convenience (stealth functionality now in separate crate)
 pub use rustyjack_evasion as evasion;
 pub use rustyjack_evasion::{
-    MacManager, MacAddress as EvasionMacAddress, MacState, MacGenerationStrategy,
-    TxPowerManager, TxPowerLevel,
-    PassiveManager, PassiveConfig, PassiveResult,
-    EvasionConfig, EvasionSettings,
+    EvasionConfig, EvasionSettings, MacAddress as EvasionMacAddress, MacGenerationStrategy,
+    MacManager, MacState, PassiveConfig, PassiveManager, PassiveResult, TxPowerLevel,
+    TxPowerManager,
 };
 
 // Legacy stealth module re-export for backwards compatibility
 pub mod stealth {
     //! Stealth and evasion functionality
-    //! 
+    //!
     //! This module is now provided by the `rustyjack-evasion` crate.
     //! It is re-exported here for backwards compatibility.
-    
+
     pub use rustyjack_evasion::{
-        MacManager as StealthManager,
-        MacState,
+        MacManager as StealthManager, MacState, PassiveConfig as PassiveModeConfig, PassiveResult,
         TxPowerLevel,
-        PassiveConfig as PassiveModeConfig,
-        PassiveResult,
     };
 }
 
 // Re-exports for convenience
-pub use error::{WirelessError, Result};
-pub use interface::WirelessInterface;
-pub use frames::{Ieee80211Frame, FrameType, FrameSubtype, MacAddress, DeauthReason, DeauthFrame};
-pub use deauth::{DeauthAttacker, DeauthConfig, DeauthStats};
-pub use capture::{PacketCapture, CaptureFilter, CapturedPacket};
-pub use handshake::{HandshakeCapture, HandshakeMessage, HandshakeState, HandshakeExport};
+pub use capture::{CaptureFilter, CapturedPacket, PacketCapture};
 pub use channel::ChannelInfo;
-pub use pmkid::{PmkidCapture, PmkidCapturer};
-pub use probe::{ProbeSniffer, ProbeRequest, ProbedNetwork, ClientStats};
-pub use crack::{WpaCracker, CrackerConfig, CrackResult};
+pub use crack::{CrackResult, CrackerConfig, WpaCracker};
+pub use deauth::{DeauthAttacker, DeauthConfig, DeauthStats};
+pub use error::{Result, WirelessError};
 pub use evil_twin::{EvilTwin, EvilTwinConfig, EvilTwinStats};
-pub use karma::{KarmaAttack, KarmaConfig, KarmaStats, KarmaResult, CapturedProbe, KarmaVictim};
-pub use pipeline::{AttackPipeline, PipelineConfig, PipelineObjective, PipelineStage, PipelineResult, AttackTechnique};
+pub use frames::{DeauthFrame, DeauthReason, FrameSubtype, FrameType, Ieee80211Frame, MacAddress};
+pub use handshake::{HandshakeCapture, HandshakeExport, HandshakeMessage, HandshakeState};
+pub use interface::WirelessInterface;
+pub use karma::{CapturedProbe, KarmaAttack, KarmaConfig, KarmaResult, KarmaStats, KarmaVictim};
+pub use pipeline::{
+    AttackPipeline, AttackTechnique, PipelineConfig, PipelineObjective, PipelineResult,
+    PipelineStage,
+};
+pub use pmkid::{PmkidCapture, PmkidCapturer};
+pub use probe::{ClientStats, ProbeRequest, ProbeSniffer, ProbedNetwork};
 
 /// Library version
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -124,31 +123,31 @@ pub fn is_wireless_interface(name: &str) -> bool {
 /// List all wireless interfaces on the system
 pub fn list_wireless_interfaces() -> Result<Vec<String>> {
     let mut interfaces = Vec::new();
-    
+
     let net_dir = std::fs::read_dir("/sys/class/net")
         .map_err(|e| WirelessError::System(format!("Failed to read /sys/class/net: {}", e)))?;
-    
+
     for entry in net_dir.flatten() {
         let name = entry.file_name().to_string_lossy().to_string();
         if is_wireless_interface(&name) {
             interfaces.push(name);
         }
     }
-    
+
     Ok(interfaces)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_list_interfaces() {
         // This will work on any Linux system
         let result = list_wireless_interfaces();
         assert!(result.is_ok());
     }
-    
+
     #[test]
     fn test_privilege_check() {
         // Just ensure it doesn't panic

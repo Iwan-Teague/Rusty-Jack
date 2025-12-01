@@ -297,6 +297,25 @@ impl WirelessCapabilities {
     }
 }
 
+#[cfg(target_os = "linux")]
+fn interface_wiphy(interface: &str) -> Option<String> {
+    let output = std::process::Command::new("iw")
+        .args(["dev", interface, "info"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for line in stdout.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("wiphy ") {
+            return Some(rest.trim().to_string());
+        }
+    }
+    None
+}
+
 /// Check system wireless capabilities for a given interface
 #[cfg(target_os = "linux")]
 pub fn check_capabilities(interface: &str) -> WirelessCapabilities {
@@ -304,12 +323,25 @@ pub fn check_capabilities(interface: &str) -> WirelessCapabilities {
     let interface_exists = std::path::Path::new(&format!("/sys/class/net/{}", interface)).exists();
     let interface_is_wireless = is_wireless_interface(interface);
 
-    // Check monitor mode support via iw
-    let supports_monitor = std::process::Command::new("iw")
-        .args(["phy", "phy0", "info"])
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).contains("monitor"))
-        .unwrap_or(false);
+    // Check monitor mode support via iw for the specific phy of this interface
+    let mut supports_monitor = false;
+    if interface_exists && interface_is_wireless {
+        if let Some(phy) = interface_wiphy(interface) {
+            supports_monitor = std::process::Command::new("iw")
+                .args(["phy", &format!("phy{}", phy), "info"])
+                .output()
+                .map(|o| String::from_utf8_lossy(&o.stdout).contains("monitor"))
+                .unwrap_or(false);
+        }
+        // Fallback: scan iw list if phy lookup failed
+        if !supports_monitor {
+            supports_monitor = std::process::Command::new("iw")
+                .arg("list")
+                .output()
+                .map(|o| String::from_utf8_lossy(&o.stdout).contains("monitor"))
+                .unwrap_or(false);
+        }
+    }
 
     WirelessCapabilities {
         native_available: true,

@@ -11,6 +11,7 @@ use ipnet::Ipv4Net;
 use regex::Regex;
 use rustyjack_ethernet::{discover_hosts, quick_port_scan};
 use serde_json::{json, Value};
+use walkdir::WalkDir;
 
 use crate::cli::{
     AutopilotCommand, AutopilotStartArgs, BridgeCommand, BridgeStartArgs, BridgeStopArgs, Commands,
@@ -475,23 +476,25 @@ fn handle_loot_list(root: &Path, args: LootListArgs) -> Result<HandlerResult> {
     let mut entries = Vec::new();
 
     if dir.exists() {
-        for entry in fs::read_dir(&dir).with_context(|| format!("listing {}", dir.display()))? {
-            let entry = entry?;
-            let metadata = entry.metadata()?;
-            if !metadata.is_file() {
+        for entry in WalkDir::new(&dir).into_iter().filter_map(Result::ok) {
+            if !entry.file_type().is_file() {
                 continue;
             }
+            let path = entry.into_path();
+            let metadata = path.metadata()?;
             let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
             let modified_ts = modified
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or(Duration::ZERO)
                 .as_secs();
-            let file_name = entry.file_name();
-            let path = entry.path();
+            let file_name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| "unknown".to_string());
             entries.push((
                 modified,
                 json!({
-                    "name": file_name.to_string_lossy(),
+                    "name": file_name,
                     "path": path.to_string_lossy(),
                     "size": metadata.len(),
                     "modified": modified_ts,
@@ -1536,6 +1539,7 @@ fn loot_directory(root: &Path, kind: LootKind) -> PathBuf {
         LootKind::Nmap => root.join("loot").join("Nmap"),
         LootKind::Responder => root.join("Responder").join("logs"),
         LootKind::Dnsspoof => root.join("DNSSpoof").join("captures"),
+        LootKind::Ethernet => root.join("loot").join("Ethernet"),
         LootKind::Wireless => root.join("loot").join("Wireless"),
     }
 }

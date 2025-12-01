@@ -756,6 +756,7 @@ impl App {
     fn show_loot(&mut self, section: LootSection) -> Result<()> {
         let kind = match section {
             LootSection::Wireless => LootKind::Wireless,
+            LootSection::Ethernet => LootKind::Ethernet,
         };
         let (_, data) = self
             .core
@@ -772,10 +773,11 @@ impl App {
         let mut labels = Vec::new();
         for entry in &files {
             if let Some(path) = entry.get("path").and_then(Value::as_str) {
-                let display = Path::new(path)
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or(path)
+                let display_path = Path::new(path);
+                let display = display_path
+                    .strip_prefix(&self.root)
+                    .unwrap_or(display_path)
+                    .to_string_lossy()
                     .to_string();
                 paths.push(path.to_string());
                 labels.push(display);

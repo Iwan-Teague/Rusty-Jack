@@ -488,6 +488,7 @@ pub enum LootKind {
     Nmap,
     Responder,
     Dnsspoof,
+    Ethernet,
     /// Wireless attack captures (deauth, handshakes, etc.)
     Wireless,
 }

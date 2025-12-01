@@ -144,7 +144,6 @@ pub enum LootSection {
 fn main_menu() -> Vec<MenuEntry> {
     vec![
         MenuEntry::new("Hardware Detect", MenuAction::HardwareDetect),
-        MenuEntry::new("Install WiFi Drv", MenuAction::InstallWifiDrivers),
         MenuEntry::new("WiFi Attacks", MenuAction::Submenu("aw")),
         MenuEntry::new("Ethernet Recon", MenuAction::Submenu("aeth")),
         MenuEntry::new("Obfuscation", MenuAction::Submenu("ao")),
@@ -246,6 +245,7 @@ fn settings_menu() -> Vec<MenuEntry> {
         MenuEntry::new("Upload to Discord", MenuAction::DiscordUpload),
         MenuEntry::new("Options", MenuAction::Submenu("ae")),
         MenuEntry::new("System", MenuAction::Submenu("af")),
+        MenuEntry::new("WiFi Drivers", MenuAction::InstallWifiDrivers),
     ]
 }
 

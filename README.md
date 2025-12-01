@@ -69,16 +69,18 @@ A high-level, current view of the project's structure. Rustyjack is split into t
 │ rustyjack-ui │     rustyjack-core      │
 │ (LCD + GPIO) │     (Orchestration)     │
 │ - Menu / UX  │ - Task runner / CLI     │
-│ - Display    │ - Autopilot & tasks     │
-│ - Button I/O │ - Loot management       │
-│              │ - System actions        │
+│ - Display    │ - Loot management       │
+│ - Button I/O │ - System actions        │
 └──────────────┴─────────────────────────┘
 
 UI → dispatches commands to → Core → interacts with OS and filesystem
 
 Notes:
-- The UI process (rustyjack-ui) owns the display, button handling and menu presentation.
-- The core process (rustyjack-core) executes longer-running actions, maintains loot, and performs system operations.
+- The UI process (`rustyjack-ui`) owns the display, button handling and menu presentation.
+- The core process (`rustyjack-core`) executes longer-running actions, maintains loot, and performs system operations. It calls:
+  - `rustyjack-wireless` for nl80211/monitor/injection/handshakes
+  - `rustyjack-evasion` for MAC randomization and TX power helpers
+  - `rustyjack-ethernet` for ICMP sweep + TCP port scan
 ```
 
 ---
@@ -89,10 +91,11 @@ Notes:
 ### Loot & Data
 
 **On-device loot viewer:**
-- Browse captured output and logs (Wireless and other supported outputs)
+- Browse captured output and logs (Wireless and Ethernet)
 - View device-generated logs and export files
 - Navigate and open files using LCD buttons
-- Wireless loot is grouped per target under `loot/Wireless/<target>/` (target = SSID, else BSSID). Handshakes, PMKIDs, and attack logs are saved inside that folder for easy export (USB/FAT/exFAT compatible).
+- Wireless loot is grouped per target under `loot/Wireless/<target>/` (target = SSID, else BSSID). Files are timestamped and prefixed by type (e.g., `handshake_<target>_<timestamp>.pcap`, `log_deauth_<target>_<timestamp>.txt`).
+- Ethernet loot lives under `loot/Ethernet/` (LAN discovery / port scans, timestamped).
 
 **Ethernet recon:**
 - LAN discovery (Rust ICMP sweep) using the active interface
@@ -145,8 +148,8 @@ Notes:
 | Component | GPIO Pin | Function |
 |-----------|----------|----------|
 | LCD Data/Command | GPIO 25 | DC (data/command select) |
-| LCD Reset | GPIO 24 | RST (hardware reset) |
-| LCD Backlight | GPIO 18 | BL (PWM control) |
+| LCD Reset | GPIO 27 | RST (hardware reset) |
+| LCD Backlight | GPIO 24 | BL (backlight control) |
 | LCD SPI | `/dev/spidev0.0` | Data transfer |
 | Joystick Up | GPIO 6 | Button input |
 | Joystick Down | GPIO 19 | Button input |
@@ -157,6 +160,8 @@ Notes:
 | Key 2 | GPIO 20 | Reserved |
 | Key 3 | GPIO 16 | Back button |
 | Activity LED | GPIO 23 | Flashes during offensive/recon tasks |
+
+**Wireless radios:** The built-in Pi Zero 2 W radio (CYW43436) supports managed/AP only (no monitor/injection). Deauth/handshake/evil twin/Karma require an external USB adapter that supports monitor + injection (e.g., AR9271/ath9k_htc, MT7612U, RTL8812AU with driver).
 
 **All pins configured in:** `/root/Rustyjack/gui_conf.json`
 
@@ -346,20 +351,33 @@ tar -czf ~/loot_backup_$(date +%Y%m%d).tar.gz loot/
 Main Menu
 │
 ├─ Hardware Detect
-├─ Crack Passwords
+├─ WiFi Attacks
+│  ├─ Scan Networks
+│  ├─ Attack Pipelines
+│  ├─ Deauth Attack
+│  ├─ Evil Twin AP
+│  ├─ Karma Attack
+│  ├─ PMKID Capture
+│  ├─ Probe Sniff
+│  ├─ Crack Handshake
+│  └─ Connect Network
+├─ Ethernet Recon
+│  ├─ LAN Discovery
+│  └─ Port Scan (quick)
+├─ Obfuscation & Evasion
+│  ├─ MAC Random toggle/now/restore
+│  ├─ Passive Mode
+│  └─ TX Power
 ├─ View Dashboards
-├─ Autopilot
-│  ├─ Start Standard
-+│  ├─ Start Aggressive
-+│  ├─ Stop Autopilot
-+│  └─ View Status
 ├─ Settings
-│  ├─ Options
-│  └─ System
-├─ Loot
-│  ├─ Transfer to USB
-│  └─ Wireless
-└─ (Other utilities)
+│  ├─ Toggle/Upload Discord
+│  ├─ Options (colors, config)
+│  ├─ System (update/restart)
+│  └─ WiFi Drivers
+└─ Loot
+   ├─ Transfer to USB
+   ├─ Wireless Captures
+   └─ Ethernet Loot
 ```
 
 ### Quick Start Examples
@@ -367,10 +385,11 @@ Main Menu
 Here are a few things you can do from the device's main menu (keeps the current trimmed feature set in mind):
 
 - Run hardware detection: Main Menu → Hardware Detect
-- Start password cracking workflows: Main Menu → Crack Passwords
+- Scan networks and set targets: Main Menu → WiFi Attacks → Scan Networks
+- Launch an attack pipeline: Main Menu → WiFi Attacks → Attack Pipelines
+- Deauth/handshake capture: Main Menu → WiFi Attacks → Deauth Attack
 - View dashboards for system and attack metrics: Main Menu → View Dashboards
-- Launch Autopilot to run automated sequences: Main Menu → Autopilot → Start ...
-- Browse loot captured from wireless attacks and transfer to USB: Main Menu → Loot → Transfer to USB
+- Browse wireless/ethernet loot or transfer to USB: Main Menu → Loot
 
 ---
 
@@ -378,11 +397,12 @@ Here are a few things you can do from the device's main menu (keeps the current 
 
 Rustyjack is now focused on providing a compact UI for the device and a core orchestration process. The following capabilities are maintained in the trimmed-down project:
 
-- UI / LCD-driven menu and controls (rustyjack-ui)
+- UI / LCD-driven menu and controls (`rustyjack-ui`)
 - Hardware detection (interface and peripheral detection)
-- Autopilot — automated sequences and task orchestration
-- Native wireless attacks (rustyjack-wireless - pure Rust, no external tools)
-- Loot viewer and transfer utilities (view and export wireless attack outputs)
+- Wireless attacks: deauth/handshake, PMKID, probe sniff, evil twin, karma, attack pipelines (via `rustyjack-wireless`)
+- Evasion: MAC randomization, passive mode toggle, TX power adjust (`rustyjack-evasion`)
+- Ethernet recon: ICMP sweep + quick port scan (`rustyjack-ethernet`)
+- Loot viewer and transfer utilities (wireless and ethernet captures)
 - Discord webhook integration for uploading loot and notifications
 - System management (configuration, updates, service control)
 
@@ -514,7 +534,7 @@ cd ../rustyjack-ui && cargo clean
 # Archive loot
 tar -czf ~/loot_$(date +%Y%m%d).tar.gz loot/
 rm -rf loot/*
-mkdir -p loot/Wireless
+mkdir -p loot/Wireless loot/Ethernet
 ```
 
 ---

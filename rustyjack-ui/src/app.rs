@@ -776,12 +776,11 @@ impl App {
                 let display_path = Path::new(path);
                 let display = match section {
                     LootSection::Wireless => {
-                        // Show path relative to loot/Wireless to highlight target folder
-                        let base = self.root.join("loot").join("Wireless");
+                        // Show only the filename; target folder is implied by navigation
                         display_path
-                            .strip_prefix(&base)
-                            .unwrap_or(display_path)
-                            .to_string_lossy()
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or(path)
                             .to_string()
                     }
                     LootSection::Ethernet => {
@@ -2412,7 +2411,7 @@ impl App {
     }
 
     fn launch_crack_handshake(&mut self) -> Result<()> {
-        // Look for captured handshakes in loot directory
+        // Look for captured handshakes in loot directory (recursively under per-target folders)
         let loot_dir = self.root.join("loot/Wireless");
 
         if !loot_dir.exists() {
@@ -2433,11 +2432,30 @@ impl App {
         if let Ok(entries) = std::fs::read_dir(&loot_dir) {
             for entry in entries.flatten() {
                 let path = entry.path();
-                if let Some(ext) = path.extension() {
-                    if ext == "hc22000" || ext == "cap" || ext == "pcap" {
-                        if let Some(name) = path.file_name() {
-                            handshake_files.push(name.to_string_lossy().to_string());
+                if path.is_dir() {
+                    if let Ok(subentries) = std::fs::read_dir(&path) {
+                        for sub in subentries.flatten() {
+                            let sub_path = sub.path();
+                            if let Some(ext) = sub_path.extension() {
+                                if ext == "hc22000" || ext == "cap" || ext == "pcap" {
+                                    let rel = sub_path
+                                        .strip_prefix(&loot_dir)
+                                        .unwrap_or(&sub_path)
+                                        .to_string_lossy()
+                                        .to_string();
+                                    handshake_files.push(rel);
+                                }
+                            }
                         }
+                    }
+                } else if let Some(ext) = path.extension() {
+                    if ext == "hc22000" || ext == "cap" || ext == "pcap" {
+                        let rel = path
+                            .strip_prefix(&loot_dir)
+                            .unwrap_or(&path)
+                            .to_string_lossy()
+                            .to_string();
+                        handshake_files.push(rel);
                     }
                 }
             }
@@ -2446,12 +2464,7 @@ impl App {
         if handshake_files.is_empty() {
             return self.show_message(
                 "Crack",
-                [
-                    "No handshakes found",
-                    "in loot/Wireless",
-                    "",
-                    "Capture one first",
-                ],
+                ["No handshakes found", "in loot/Wireless/*", "", "Capture one first"],
             );
         }
 

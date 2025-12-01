@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use crate::capture::{CaptureFilter, CapturedPacket, PacketCapture};
 use crate::error::{Result, WirelessError};
 use crate::frames::{DeauthFrame, DeauthReason, MacAddress};
-use crate::handshake::HandshakeCapture;
+use crate::handshake::{HandshakeCapture, HandshakeExport};
 use crate::inject::{InjectionStats, Injector};
 use crate::interface::WirelessInterface;
 

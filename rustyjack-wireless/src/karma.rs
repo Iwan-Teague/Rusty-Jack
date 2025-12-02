@@ -406,9 +406,9 @@ where
     F: Fn(&str) + Send + Sync + 'static,
 {
     // Create loot directory
-    let base = loot_base.unwrap_or("loot/Wireless");
+    let base = loot_base.unwrap_or("loot/Wireless/karma");
     let timestamp = Local::now().format("%Y%m%d_%H%M%S").to_string();
-    let loot_dir = PathBuf::from(base).join("karma").join(&timestamp);
+    let loot_dir = PathBuf::from(base).join(&timestamp);
 
     fs::create_dir_all(&loot_dir)
         .map_err(|e| WirelessError::System(format!("Failed to create loot dir: {}", e)))?;
@@ -601,9 +601,9 @@ pub fn execute_karma_with_ap<F>(
 where
     F: Fn(&str) + Send + Sync + 'static,
 {
-    let base = loot_base.unwrap_or("loot/Wireless");
+    let base = loot_base.unwrap_or("loot/Wireless/karma");
     let timestamp = Local::now().format("%Y%m%d_%H%M%S").to_string();
-    let loot_dir = PathBuf::from(base).join("karma").join(&timestamp);
+    let loot_dir = PathBuf::from(base).join(&timestamp);
 
     fs::create_dir_all(&loot_dir)
         .map_err(|e| WirelessError::System(format!("Failed to create loot dir: {}", e)))?;

@@ -274,7 +274,7 @@ impl ProbeSniffer {
     }
 
     /// Parse probe request from captured packet
-    fn parse_probe_request(&self, packet: &CapturedPacket) -> Option<ProbeRequest> {
+    pub fn parse_probe_request(&self, packet: &CapturedPacket) -> Option<ProbeRequest> {
         let frame = &packet.frame;
 
         // Verify it's a probe request
@@ -320,7 +320,7 @@ impl ProbeSniffer {
     }
 
     /// Process a probe request and update statistics
-    fn process_probe(&mut self, probe: &ProbeRequest) {
+    pub fn process_probe(&mut self, probe: &ProbeRequest) {
         // Update client stats
         let client = self
             .clients

@@ -21,6 +21,7 @@ use chrono::Local;
 
 use crate::capture::{CaptureFilter, PacketCapture};
 use crate::error::{Result, WirelessError};
+use crate::frames::{FrameSubtype, FrameType};
 use crate::interface::WirelessInterface;
 use crate::probe::ProbeSniffer;
 
@@ -439,7 +440,7 @@ where
     interface.set_monitor_mode()?;
 
     if config.channel > 0 {
-        if let Err(e) = interface.set_channel(config.channel as u32) {
+        if let Err(e) = interface.set_channel(config.channel) {
             progress(&format!("Warning: Failed to set channel: {}", e));
         }
     }
@@ -449,14 +450,16 @@ where
         config.interface, config.channel
     ));
 
-    // Create packet capture
+    // Create packet capture with probe request filter
+    let mut capture = PacketCapture::new(&config.interface)?;
     let filter = CaptureFilter {
-        probe_requests: true,
+        frame_types: Some(vec![FrameType::Management]),
+        subtypes: Some(vec![FrameSubtype::ProbeRequest]),
         ..Default::default()
     };
+    capture.set_filter(filter);
 
-    let mut capture = PacketCapture::new(&interface, filter)?;
-    let mut probe_sniffer = ProbeSniffer::new();
+    let mut probe_sniffer = ProbeSniffer::from_name(&config.interface)?;
 
     let attack_clone = Arc::clone(&attack);
     let probe_log = Arc::new(Mutex::new(probe_log));
@@ -465,10 +468,10 @@ where
     let duration = Duration::from_secs(config.duration as u64);
 
     // Channel hopping if configured
-    let hop_channels = if config.channel == 0 {
+    let hop_channels: Vec<u8> = if config.channel == 0 {
         vec![1, 6, 11, 2, 7, 12, 3, 8, 13, 4, 9, 5, 10]
     } else {
-        vec![config.channel as u32]
+        vec![config.channel]
     };
     let mut channel_index = 0;
     let mut last_hop = Instant::now();
@@ -490,34 +493,34 @@ where
         }
 
         // Capture packets
-        match capture.capture_packet(Duration::from_millis(100)) {
+        match capture.next_packet() {
             Ok(Some(packet)) => {
-                if let Some(probes) = probe_sniffer.process_packet(&packet) {
-                    for (client_mac, ssid, signal) in probes {
-                        // Handle the probe
-                        attack_clone.handle_probe(&client_mac, &ssid, signal);
+                if let Some(probe) = probe_sniffer.parse_probe_request(&packet) {
+                    // Handle the probe
+                    let signal = probe.signal_dbm.unwrap_or(-80);
+                    let ssid = probe.ssid.as_deref().unwrap_or("");
+                    attack_clone.handle_probe(&probe.client_mac.to_string(), ssid, signal.into());
 
-                        // Log to file
-                        if let Ok(mut log) = probe_log.lock() {
-                            writeln!(
-                                log,
-                                "{},{},{},{}",
-                                Local::now().format("%H:%M:%S"),
-                                client_mac,
-                                ssid,
-                                signal
-                            )
-                            .ok();
-                        }
+                    // Log to file
+                    if let Ok(mut log) = probe_log.lock() {
+                        writeln!(
+                            log,
+                            "{},{},{},{}",
+                            Local::now().format("%H:%M:%S"),
+                            probe.client_mac,
+                            ssid,
+                            signal
+                        )
+                        .ok();
+                    }
 
-                        // Progress update for new SSIDs
-                        let stats = attack_clone.get_stats();
-                        if stats.probes_seen % 10 == 0 {
-                            progress(&format!(
-                                "Karma: {} probes, {} SSIDs, {} clients",
-                                stats.probes_seen, stats.unique_ssids, stats.unique_clients
-                            ));
-                        }
+                    // Progress update for new SSIDs
+                    let stats = attack_clone.get_stats();
+                    if stats.probes_seen % 10 == 0 {
+                        progress(&format!(
+                            "Karma: {} probes, {} SSIDs, {} clients",
+                            stats.probes_seen, stats.unique_ssids, stats.unique_clients
+                        ));
                     }
                 }
             }

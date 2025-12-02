@@ -632,7 +632,7 @@ pub fn execute_evil_twin<F>(
     progress: F,
 ) -> Result<EvilTwinResult>
 where
-    F: Fn(&str) + Send + 'static,
+    F: Fn(&str) + Send + Sync + 'static,
 {
     // Check requirements first
     let missing = EvilTwin::check_requirements()?;
@@ -642,6 +642,9 @@ where
             missing.join(", ")
         )));
     }
+
+    // Wrap progress in Arc for sharing between threads
+    let progress = Arc::new(progress);
 
     // Create loot directory structure: loot/Wireless/<ssid>/evil_twin/
     let base = loot_base.unwrap_or("loot/Wireless");
@@ -697,12 +700,13 @@ where
     // Monitor thread for progress updates
     let stop_flag = Arc::clone(&attack.stop_flag);
     let progress_ssid = config.ssid.clone();
+    let progress_clone = Arc::clone(&progress);
     let progress_thread = thread::spawn(move || {
         let mut last_update = Instant::now();
         while !stop_flag.load(Ordering::Relaxed) {
             thread::sleep(Duration::from_secs(5));
             if last_update.elapsed() >= Duration::from_secs(10) {
-                progress(&format!(
+                progress_clone(&format!(
                     "Evil Twin '{}' running for {:?}...",
                     progress_ssid,
                     start.elapsed()

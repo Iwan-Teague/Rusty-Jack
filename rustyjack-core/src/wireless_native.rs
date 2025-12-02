@@ -406,6 +406,342 @@ pub const RECOMMENDED_ADAPTERS: &[(&str, &str)] = &[
     ("TP-Link TL-WN722N v1", "AR9271 - Budget option (v1 only!)"),
 ];
 
+/// Result of a PMKID capture operation
+#[derive(Debug, Clone)]
+pub struct PmkidResult {
+    pub interface: String,
+    pub duration_secs: u64,
+    pub pmkids_captured: usize,
+    pub networks_seen: usize,
+    pub loot_path: PathBuf,
+    pub hashcat_file: Option<PathBuf>,
+}
+
+/// Configuration for PMKID capture
+#[derive(Debug, Clone)]
+pub struct PmkidCaptureConfig {
+    pub interface: String,
+    pub channel: u8,
+    pub target_bssid: Option<String>,
+    pub duration_secs: u32,
+}
+
+/// Execute PMKID capture using native Rust implementation
+#[cfg(target_os = "linux")]
+pub fn execute_pmkid_capture(
+    loot_dir: &Path,
+    config: &PmkidCaptureConfig,
+    on_progress: impl Fn(f32, &str) + Send + 'static,
+) -> Result<PmkidResult> {
+    use rustyjack_wireless::{execute_pmkid_capture as native_pmkid, PmkidConfig};
+    use std::time::Duration;
+
+    log::info!("Starting native PMKID capture on {}", config.interface);
+    on_progress(0.05, "Initializing PMKID capture...");
+
+    // Validate interface
+    if !is_wireless_interface(&config.interface) {
+        bail!("Interface {} is not a wireless interface", config.interface);
+    }
+
+    // Build native config
+    let native_config = PmkidConfig {
+        interface: config.interface.clone(),
+        channel: if config.channel > 0 {
+            Some(config.channel as u32)
+        } else {
+            None
+        },
+        target_bssid: config.target_bssid.clone(),
+        duration: Duration::from_secs(config.duration_secs as u64),
+        channel_hop: config.channel == 0,
+        hop_interval: Duration::from_millis(500),
+    };
+
+    on_progress(0.10, "Starting capture...");
+
+    // Execute capture
+    let result = native_pmkid(native_config, Some(loot_dir.to_str().unwrap_or("loot/Wireless")), move |msg| {
+        on_progress(0.50, msg);
+    }).context("PMKID capture failed")?;
+
+    on_progress(1.0, "PMKID capture complete");
+
+    Ok(PmkidResult {
+        interface: config.interface.clone(),
+        duration_secs: config.duration_secs as u64,
+        pmkids_captured: result.pmkids.len(),
+        networks_seen: result.networks_seen,
+        loot_path: result.loot_path.clone(),
+        hashcat_file: result.hashcat_file,
+    })
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn execute_pmkid_capture(
+    _loot_dir: &Path,
+    _config: &PmkidCaptureConfig,
+    _on_progress: impl Fn(f32, &str),
+) -> Result<PmkidResult> {
+    bail!("PMKID capture requires Linux.")
+}
+
+/// Result of a probe sniff operation
+#[derive(Debug, Clone)]
+pub struct ProbeSniffResult {
+    pub interface: String,
+    pub duration_secs: u64,
+    pub probes_captured: usize,
+    pub unique_clients: usize,
+    pub unique_networks: usize,
+    pub loot_path: PathBuf,
+}
+
+/// Configuration for probe sniffing
+#[derive(Debug, Clone)]
+pub struct ProbeSniffConfig {
+    pub interface: String,
+    pub channel: u8,
+    pub duration_secs: u32,
+}
+
+/// Execute probe sniffing using native Rust implementation
+#[cfg(target_os = "linux")]
+pub fn execute_probe_sniff(
+    loot_dir: &Path,
+    config: &ProbeSniffConfig,
+    on_progress: impl Fn(f32, &str) + Send + 'static,
+) -> Result<ProbeSniffResult> {
+    use rustyjack_wireless::{execute_probe_sniff as native_probe, ProbeSniffConfig as NativeProbeConfig};
+    use std::time::Duration;
+
+    log::info!("Starting probe sniff on {}", config.interface);
+    on_progress(0.05, "Initializing probe sniffer...");
+
+    if !is_wireless_interface(&config.interface) {
+        bail!("Interface {} is not a wireless interface", config.interface);
+    }
+
+    let native_config = NativeProbeConfig {
+        interface: config.interface.clone(),
+        channel: if config.channel > 0 {
+            Some(config.channel as u32)
+        } else {
+            None
+        },
+        duration: Duration::from_secs(config.duration_secs as u64),
+        channel_hop: config.channel == 0,
+        hop_interval: Duration::from_millis(500),
+        filter_broadcast: false,
+    };
+
+    on_progress(0.10, "Starting probe capture...");
+
+    let result = native_probe(native_config, Some(loot_dir.to_str().unwrap_or("loot/Wireless")), move |msg| {
+        on_progress(0.50, msg);
+    }).context("Probe sniff failed")?;
+
+    on_progress(1.0, "Probe sniff complete");
+
+    Ok(ProbeSniffResult {
+        interface: config.interface.clone(),
+        duration_secs: config.duration_secs as u64,
+        probes_captured: result.total_probes,
+        unique_clients: result.unique_clients,
+        unique_networks: result.unique_networks,
+        loot_path: result.loot_path,
+    })
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn execute_probe_sniff(
+    _loot_dir: &Path,
+    _config: &ProbeSniffConfig,
+    _on_progress: impl Fn(f32, &str),
+) -> Result<ProbeSniffResult> {
+    bail!("Probe sniffing requires Linux.")
+}
+
+/// Result of an Evil Twin attack
+#[derive(Debug, Clone)]
+pub struct EvilTwinResult {
+    pub ssid: String,
+    pub channel: u8,
+    pub duration_secs: u64,
+    pub clients_connected: u32,
+    pub handshakes_captured: u32,
+    pub loot_path: PathBuf,
+}
+
+/// Configuration for Evil Twin attack
+#[derive(Debug, Clone)]
+pub struct EvilTwinAttackConfig {
+    pub ssid: String,
+    pub channel: u8,
+    pub ap_interface: String,
+    pub deauth_interface: Option<String>,
+    pub target_bssid: Option<String>,
+    pub duration_secs: u32,
+    pub open_network: bool,
+    pub wpa_password: Option<String>,
+}
+
+/// Execute Evil Twin attack using native Rust implementation
+#[cfg(target_os = "linux")]
+pub fn execute_evil_twin(
+    loot_dir: &Path,
+    config: &EvilTwinAttackConfig,
+    on_progress: impl Fn(f32, &str) + Send + 'static,
+) -> Result<EvilTwinResult> {
+    use rustyjack_wireless::{execute_evil_twin as native_evil_twin, EvilTwinConfig};
+    use std::time::Duration;
+
+    log::info!("Starting Evil Twin attack for SSID: {}", config.ssid);
+    on_progress(0.05, "Checking requirements...");
+
+    // Check for required tools
+    let missing = rustyjack_wireless::EvilTwin::check_requirements()
+        .context("Failed to check requirements")?;
+    if !missing.is_empty() {
+        bail!("Missing required tools: {}", missing.join(", "));
+    }
+
+    // Parse target BSSID if provided
+    let target_bssid = if let Some(ref bssid_str) = config.target_bssid {
+        Some(bssid_str.parse().context("Invalid target BSSID")?)
+    } else {
+        None
+    };
+
+    let native_config = EvilTwinConfig {
+        ssid: config.ssid.clone(),
+        channel: config.channel,
+        ap_interface: config.ap_interface.clone(),
+        deauth_interface: config.deauth_interface.clone(),
+        target_bssid,
+        simultaneous_deauth: config.deauth_interface.is_some(),
+        deauth_interval: Duration::from_secs(5),
+        duration: Duration::from_secs(config.duration_secs as u64),
+        open_network: config.open_network,
+        wpa_password: config.wpa_password.clone(),
+        capture_path: loot_dir.to_string_lossy().to_string(),
+    };
+
+    on_progress(0.10, "Starting Evil Twin AP...");
+
+    let result = native_evil_twin(native_config, Some(loot_dir.to_str().unwrap_or("loot/Wireless")), move |msg| {
+        on_progress(0.50, msg);
+    }).context("Evil Twin attack failed")?;
+
+    on_progress(1.0, "Evil Twin attack complete");
+
+    Ok(EvilTwinResult {
+        ssid: config.ssid.clone(),
+        channel: config.channel,
+        duration_secs: result.stats.duration.as_secs(),
+        clients_connected: result.stats.clients_connected,
+        handshakes_captured: result.stats.handshakes_captured,
+        loot_path: result.loot_path,
+    })
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn execute_evil_twin(
+    _loot_dir: &Path,
+    _config: &EvilTwinAttackConfig,
+    _on_progress: impl Fn(f32, &str),
+) -> Result<EvilTwinResult> {
+    bail!("Evil Twin attack requires Linux.")
+}
+
+/// Result of a Karma attack
+#[derive(Debug, Clone)]
+pub struct KarmaResult {
+    pub interface: String,
+    pub duration_secs: u64,
+    pub probes_seen: u64,
+    pub unique_ssids: usize,
+    pub unique_clients: usize,
+    pub victims: usize,
+    pub loot_path: PathBuf,
+}
+
+/// Configuration for Karma attack
+#[derive(Debug, Clone)]
+pub struct KarmaAttackConfig {
+    pub interface: String,
+    pub ap_interface: Option<String>,
+    pub channel: u8,
+    pub duration_secs: u32,
+    pub with_ap: bool,
+    pub ssid_whitelist: Vec<String>,
+    pub ssid_blacklist: Vec<String>,
+}
+
+/// Execute Karma attack using native Rust implementation
+#[cfg(target_os = "linux")]
+pub fn execute_karma(
+    loot_dir: &Path,
+    config: &KarmaAttackConfig,
+    on_progress: impl Fn(f32, &str) + Send + Sync + 'static,
+) -> Result<KarmaResult> {
+    use rustyjack_wireless::{execute_karma as native_karma, execute_karma_with_ap, KarmaConfig};
+
+    log::info!("Starting Karma attack on {}", config.interface);
+    on_progress(0.05, "Initializing Karma attack...");
+
+    if !is_wireless_interface(&config.interface) {
+        bail!("Interface {} is not a wireless interface", config.interface);
+    }
+
+    let native_config = KarmaConfig {
+        interface: config.interface.clone(),
+        duration: config.duration_secs,
+        channel: config.channel,
+        ssid_whitelist: config.ssid_whitelist.clone(),
+        ssid_blacklist: config.ssid_blacklist.clone(),
+        target_clients: Vec::new(),
+        capture_handshakes: true,
+        log_probes: true,
+        output_dir: loot_dir.to_path_buf(),
+        stealth_mac: false,
+    };
+
+    on_progress(0.10, "Starting Karma capture...");
+
+    let result = if config.with_ap {
+        let ap_iface = config.ap_interface.as_deref().unwrap_or(&config.interface);
+        execute_karma_with_ap(native_config, ap_iface, Some(loot_dir.to_str().unwrap_or("loot/Wireless")), move |msg| {
+            on_progress(0.50, msg);
+        }).context("Karma AP attack failed")?
+    } else {
+        native_karma(native_config, Some(loot_dir.to_str().unwrap_or("loot/Wireless")), move |msg| {
+            on_progress(0.50, msg);
+        }).context("Karma attack failed")?
+    };
+
+    on_progress(1.0, "Karma attack complete");
+
+    Ok(KarmaResult {
+        interface: config.interface.clone(),
+        duration_secs: config.duration_secs as u64,
+        probes_seen: result.result.stats.probes_seen,
+        unique_ssids: result.result.stats.unique_ssids,
+        unique_clients: result.result.stats.unique_clients,
+        victims: result.result.stats.victims,
+        loot_path: result.loot_path,
+    })
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn execute_karma(
+    _loot_dir: &Path,
+    _config: &KarmaAttackConfig,
+    _on_progress: impl Fn(f32, &str),
+) -> Result<KarmaResult> {
+    bail!("Karma attack requires Linux.")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

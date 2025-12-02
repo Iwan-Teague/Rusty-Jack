@@ -21,7 +21,7 @@ use crate::cli::{
     ProcessKillArgs, ProcessStatusArgs, ResponderArgs, ResponderCommand, ReverseCommand,
     ReverseLaunchArgs, ScanCommand, ScanRunArgs, StatusCommand, SystemCommand, SystemUpdateArgs,
     WifiBestArgs, WifiCommand, WifiCrackArgs, WifiDeauthArgs, WifiDisconnectArgs, WifiEvilTwinArgs,
-    WifiPmkidArgs, WifiProbeSniffArgs, WifiProfileCommand, WifiProfileConnectArgs,
+    WifiKarmaArgs, WifiPmkidArgs, WifiProbeSniffArgs, WifiProfileCommand, WifiProfileConnectArgs,
     WifiProfileDeleteArgs, WifiProfileSaveArgs, WifiRouteCommand, WifiRouteEnsureArgs,
     WifiRouteMetricArgs, WifiScanArgs, WifiStatusArgs, WifiSwitchArgs,
 };
@@ -87,6 +87,7 @@ pub fn dispatch_command(root: &Path, command: Commands) -> Result<HandlerResult>
             WifiCommand::PmkidCapture(args) => handle_wifi_pmkid(root, args),
             WifiCommand::ProbeSniff(args) => handle_wifi_probe_sniff(root, args),
             WifiCommand::Crack(args) => handle_wifi_crack(root, args),
+            WifiCommand::Karma(args) => handle_wifi_karma(root, args),
         },
         Commands::Loot(sub) => match sub {
             LootCommand::List(args) => handle_loot_list(root, args),
@@ -1288,6 +1289,87 @@ fn handle_wifi_probe_sniff(root: &Path, args: WifiProbeSniffArgs) -> Result<Hand
     });
 
     Ok(("Probe sniffing started".to_string(), data))
+}
+
+fn handle_wifi_karma(root: &Path, args: WifiKarmaArgs) -> Result<HandlerResult> {
+    use crate::wireless_native::{self, KarmaAttackConfig};
+
+    log::info!("Starting Karma attack on interface: {}", args.interface);
+
+    // Check privileges
+    if !wireless_native::native_available() {
+        bail!("Karma attack requires root privileges. Run with sudo.");
+    }
+
+    // Check if interface is wireless
+    if !wireless_native::is_wireless_interface(&args.interface) {
+        bail!("Interface {} is not a wireless interface", args.interface);
+    }
+
+    // Check capabilities
+    let caps = wireless_native::check_capabilities(&args.interface);
+    if !caps.supports_monitor_mode {
+        bail!(
+            "Interface {} does not support monitor mode (required for Karma)",
+            args.interface
+        );
+    }
+
+    // Parse whitelist/blacklist
+    let ssid_whitelist: Vec<String> = args
+        .ssid_whitelist
+        .as_ref()
+        .map(|s| s.split(',').map(|ss| ss.trim().to_string()).collect())
+        .unwrap_or_default();
+
+    let ssid_blacklist: Vec<String> = args
+        .ssid_blacklist
+        .as_ref()
+        .map(|s| s.split(',').map(|ss| ss.trim().to_string()).collect())
+        .unwrap_or_default();
+
+    // Create loot directory
+    let loot_dir = loot_directory(root, LootKind::Wireless).join("karma");
+    fs::create_dir_all(&loot_dir)?;
+
+    // Build config
+    let config = KarmaAttackConfig {
+        interface: args.interface.clone(),
+        ap_interface: args.ap_interface.clone(),
+        channel: args.channel,
+        duration_secs: args.duration,
+        with_ap: args.with_ap,
+        ssid_whitelist: ssid_whitelist.clone(),
+        ssid_blacklist: ssid_blacklist.clone(),
+    };
+
+    // Execute the Karma attack
+    let result = wireless_native::execute_karma(&loot_dir, &config, |progress, status| {
+        log::debug!("Karma progress: {:.0}% - {}", progress * 100.0, status);
+    })?;
+
+    let data = json!({
+        "interface": args.interface,
+        "ap_interface": args.ap_interface,
+        "channel": args.channel,
+        "duration": args.duration,
+        "with_ap": args.with_ap,
+        "ssid_whitelist": ssid_whitelist,
+        "ssid_blacklist": ssid_blacklist,
+        "probes_seen": result.probes_seen,
+        "unique_ssids": result.unique_ssids,
+        "unique_clients": result.unique_clients,
+        "victims": result.victims,
+        "loot_directory": result.loot_path.display().to_string(),
+    });
+
+    Ok((
+        format!(
+            "Karma complete: {} probes, {} SSIDs, {} clients, {} victims",
+            result.probes_seen, result.unique_ssids, result.unique_clients, result.victims
+        ),
+        data,
+    ))
 }
 
 fn handle_wifi_crack(root: &Path, args: WifiCrackArgs) -> Result<HandlerResult> {

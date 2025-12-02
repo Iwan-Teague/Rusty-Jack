@@ -18,10 +18,15 @@
 //! - Tracking: monitor device presence (privacy research)
 
 use std::collections::{HashMap, HashSet};
+use std::fs;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use chrono::Local;
+
 use crate::capture::{CaptureFilter, CapturedPacket, PacketCapture};
-use crate::error::Result;
+use crate::error::{Result, WirelessError};
 use crate::frames::{FrameSubtype, FrameType, MacAddress};
 use crate::interface::WirelessInterface;
 
@@ -442,6 +447,261 @@ pub fn quick_probe_sniff(interface: &str, channel: u8, duration_secs: u64) -> Re
     iface.set_managed_mode()?;
 
     Ok(result)
+}
+
+/// Configuration for probe sniffing
+#[derive(Debug, Clone)]
+pub struct ProbeSniffConfig {
+    /// Interface to use
+    pub interface: String,
+    /// Duration in seconds
+    pub duration: u32,
+    /// Channel to sniff on (0 = hop through common channels)
+    pub channel: u8,
+}
+
+/// Result of probe sniffing with loot paths
+#[derive(Debug, Clone)]
+pub struct ProbeSniffResult {
+    /// Total probes captured
+    pub total_probes: u32,
+    /// Unique client MACs seen
+    pub unique_clients: u32,
+    /// Unique networks probed for
+    pub unique_networks: u32,
+    /// Duration of capture
+    pub duration: Duration,
+    /// Top networks (SSID, probe count)
+    pub top_networks: Vec<(String, u32)>,
+    /// Top clients (MAC, probe count)
+    pub top_clients: Vec<(String, u32)>,
+    /// Global log file path
+    pub global_log: PathBuf,
+    /// Per-network log directory
+    pub network_logs_dir: PathBuf,
+}
+
+/// Execute probe sniffing with full loot output
+///
+/// Captures probe requests and writes:
+/// - Global log with all probes and statistics
+/// - Per-network logs for each SSID discovered
+pub fn execute_probe_sniff<F>(
+    loot_dir: &Path,
+    config: &ProbeSniffConfig,
+    on_progress: F,
+) -> Result<ProbeSniffResult>
+where
+    F: Fn(f32, &str),
+{
+    log::info!(
+        "Starting probe sniff on interface {}",
+        config.interface
+    );
+    on_progress(0.05, "Initializing interface...");
+
+    // Validate interface
+    if !crate::is_wireless_interface(&config.interface) {
+        return Err(WirelessError::Interface(format!(
+            "{} is not a wireless interface",
+            config.interface
+        )));
+    }
+
+    // Create loot directories
+    fs::create_dir_all(loot_dir)
+        .map_err(|e| WirelessError::System(format!("Failed to create loot dir: {}", e)))?;
+
+    let network_logs_dir = loot_dir.join("networks");
+    fs::create_dir_all(&network_logs_dir)
+        .map_err(|e| WirelessError::System(format!("Failed to create networks dir: {}", e)))?;
+
+    let timestamp = Local::now().format("%Y%m%d_%H%M%S");
+    let logs_dir = loot_dir.join("logs");
+    fs::create_dir_all(&logs_dir)
+        .map_err(|e| WirelessError::System(format!("Failed to create logs dir: {}", e)))?;
+
+    let global_log = logs_dir.join(format!("probe_sniff_{}.txt", timestamp));
+
+    on_progress(0.10, "Enabling monitor mode...");
+
+    // Setup interface
+    let mut iface = WirelessInterface::new(&config.interface)?;
+    iface.set_monitor_mode()?;
+
+    // Channel hopping setup
+    let channels: Vec<u8> = if config.channel == 0 {
+        vec![1, 6, 11, 2, 3, 4, 5, 7, 8, 9, 10]
+    } else {
+        vec![config.channel]
+    };
+
+    on_progress(0.15, "Starting capture...");
+
+    let mut sniffer = ProbeSniffer::from_name(&config.interface)?;
+    let start = Instant::now();
+    let duration = Duration::from_secs(config.duration as u64);
+    let mut channel_idx = 0;
+    let mut last_channel_hop = Instant::now();
+    let channel_hop_interval = Duration::from_millis(500); // Fast hopping for probes
+
+    // Create packet capture with probe request filter
+    let mut capture = PacketCapture::new(&config.interface)?;
+    let filter = CaptureFilter {
+        frame_types: Some(vec![FrameType::Management]),
+        subtypes: Some(vec![FrameSubtype::ProbeRequest]),
+        ..Default::default()
+    };
+    capture.set_filter(filter);
+
+    while start.elapsed() < duration {
+        // Channel hopping
+        if channels.len() > 1 && last_channel_hop.elapsed() > channel_hop_interval {
+            let ch = channels[channel_idx % channels.len()];
+            if iface.set_channel(ch).is_ok() {
+                log::trace!("Hopped to channel {}", ch);
+            }
+            channel_idx += 1;
+            last_channel_hop = Instant::now();
+        }
+
+        // Capture packets
+        if let Ok(Some(packet)) = capture.next_packet() {
+            if let Some(probe) = sniffer.parse_probe_request(&packet) {
+                sniffer.process_probe(&probe);
+                sniffer.probes.push(probe);
+            }
+        }
+
+        // Progress update
+        let elapsed_pct = start.elapsed().as_secs_f32() / duration.as_secs_f32();
+        if (elapsed_pct * 20.0) as u32 != ((elapsed_pct - 0.05) * 20.0).max(0.0) as u32 {
+            on_progress(
+                0.15 + elapsed_pct.min(0.8) * 0.7,
+                &format!(
+                    "{} probes, {} clients, {} networks",
+                    sniffer.probes.len(),
+                    sniffer.clients.len(),
+                    sniffer.networks.len()
+                ),
+            );
+        }
+    }
+
+    on_progress(0.90, "Saving logs...");
+
+    // Restore managed mode
+    if let Err(e) = iface.set_managed_mode() {
+        log::warn!("Failed to restore managed mode: {}", e);
+    }
+
+    // Build results
+    let top_networks: Vec<(String, u32)> = sniffer
+        .top_networks(10)
+        .iter()
+        .map(|n| (n.ssid.clone(), n.probe_count))
+        .collect();
+
+    let top_clients: Vec<(String, u32)> = sniffer
+        .active_clients(10)
+        .iter()
+        .map(|c| (c.mac.to_string(), c.probe_count))
+        .collect();
+
+    // Write per-network logs
+    for (ssid, network) in sniffer.networks() {
+        if ssid.is_empty() {
+            continue;
+        }
+
+        let safe_ssid = ssid.replace(|c: char| !c.is_alphanumeric() && c != '-' && c != '_', "_");
+        let network_file = network_logs_dir.join(format!("{}.txt", safe_ssid));
+
+        let mut content = String::new();
+        content.push_str(&format!("SSID: {}\n", ssid));
+        content.push_str(&format!("Probe count: {}\n", network.probe_count));
+        content.push_str(&format!("Unique clients: {}\n", network.clients.len()));
+        content.push_str("\nClients probing for this network:\n");
+        for mac in &network.clients {
+            let randomized = if mac.is_locally_administered() {
+                " (randomized)"
+            } else {
+                ""
+            };
+            content.push_str(&format!("  - {}{}\n", mac, randomized));
+        }
+
+        let _ = fs::write(&network_file, &content);
+    }
+
+    // Write global log
+    let mut log_content = String::new();
+    log_content.push_str("====================================================\n");
+    log_content.push_str("    RUSTYJACK PROBE SNIFF LOG                       \n");
+    log_content.push_str("====================================================\n\n");
+    log_content.push_str(&format!(
+        "Timestamp: {}\n",
+        Local::now().format("%Y-%m-%d %H:%M:%S")
+    ));
+    log_content.push_str(&format!("Interface: {}\n", config.interface));
+    log_content.push_str(&format!("Duration: {} seconds\n", config.duration));
+    log_content.push_str(&format!("Channels: {:?}\n", channels));
+
+    log_content.push_str("\n--- SUMMARY ---------------------------------------\n");
+    log_content.push_str(&format!("Total probes captured: {}\n", sniffer.probes.len()));
+    log_content.push_str(&format!("Unique clients: {}\n", sniffer.clients.len()));
+    log_content.push_str(&format!("Unique networks: {}\n", sniffer.networks.len()));
+
+    if !top_networks.is_empty() {
+        log_content.push_str("\n--- TOP NETWORKS (by probe count) -----------------\n");
+        for (i, (ssid, count)) in top_networks.iter().enumerate() {
+            log_content.push_str(&format!("  {}. {} ({} probes)\n", i + 1, ssid, count));
+        }
+    }
+
+    if !top_clients.is_empty() {
+        log_content.push_str("\n--- TOP CLIENTS (by activity) ---------------------\n");
+        for (i, (mac, count)) in top_clients.iter().enumerate() {
+            let mac_parsed: std::result::Result<MacAddress, _> = mac.parse();
+            let randomized = mac_parsed
+                .map(|m| m.is_locally_administered())
+                .unwrap_or(false);
+            let marker = if randomized { " (randomized)" } else { "" };
+            log_content.push_str(&format!("  {}. {}{} ({} probes)\n", i + 1, mac, marker, count));
+        }
+    }
+
+    log_content.push_str("\n--- ALL PROBED NETWORKS ---------------------------\n");
+    let mut all_networks: Vec<_> = sniffer.networks().values().collect();
+    all_networks.sort_by(|a, b| b.probe_count.cmp(&a.probe_count));
+    for net in all_networks {
+        log_content.push_str(&format!(
+            "  {} - {} probes, {} clients\n",
+            net.ssid,
+            net.probe_count,
+            net.clients.len()
+        ));
+    }
+
+    log_content.push_str("\n====================================================\n");
+    log_content.push_str("Use this data to identify targets for Evil Twin attacks\n");
+    log_content.push_str("====================================================\n");
+
+    fs::write(&global_log, &log_content)
+        .map_err(|e| WirelessError::System(format!("Failed to write log: {}", e)))?;
+
+    on_progress(1.0, "Complete");
+
+    Ok(ProbeSniffResult {
+        total_probes: sniffer.probes.len() as u32,
+        unique_clients: sniffer.clients.len() as u32,
+        unique_networks: sniffer.networks.len() as u32,
+        duration: start.elapsed(),
+        top_networks,
+        top_clients,
+        global_log,
+        network_logs_dir,
+    })
 }
 
 #[cfg(test)]

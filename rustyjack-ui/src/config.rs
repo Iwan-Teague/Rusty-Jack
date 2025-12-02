@@ -73,9 +73,6 @@ pub struct PinConfig {
     pub key2_pin: u32,
     #[serde(default = "PinConfig::default_key3")]
     pub key3_pin: u32,
-    /// Status LED (activity indicator). Set to 0 to disable.
-    #[serde(default = "PinConfig::default_status_led")]
-    pub status_led_pin: u32,
 }
 
 impl Default for PinConfig {
@@ -89,7 +86,6 @@ impl Default for PinConfig {
             key1_pin: Self::default_key1(),
             key2_pin: Self::default_key2(),
             key3_pin: Self::default_key3(),
-            status_led_pin: Self::default_status_led(),
         }
     }
 }
@@ -119,9 +115,6 @@ impl PinConfig {
     const fn default_key3() -> u32 {
         16
     }
-    const fn default_status_led() -> u32 {
-        23 // BCM23 (physical pin 16) reserved for activity LED
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -147,7 +140,7 @@ impl Default for ColorScheme {
         Self {
             background: "#000000".into(),
             border: "#8800AA".into(),
-            text: "#00FF00".into(),
+            text: "#AA00FF".into(),
             selected_text: "#CC44FF".into(),
             selected_background: "#330055".into(),
             gamepad: "#440066".into(),
@@ -164,7 +157,7 @@ impl ColorScheme {
         "#8800AA".to_string()
     }
     fn default_text() -> String {
-        "#00FF00".to_string()
+        "#AA00FF".to_string()
     }
     fn default_selected_text() -> String {
         "#CC44FF".to_string()
@@ -256,15 +249,15 @@ impl SettingsConfig {
     fn default_discord_enabled() -> bool {
         true
     }
-
+    
     fn default_active_interface() -> String {
         "wlan0".to_string()
     }
-
+    
     fn default_target_network() -> String {
         String::new()
     }
-
+    
     fn default_tx_power() -> String {
         "high".to_string()
     }

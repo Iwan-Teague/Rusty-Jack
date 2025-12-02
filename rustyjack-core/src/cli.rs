@@ -242,6 +242,8 @@ pub enum WifiCommand {
     ProbeSniff(WifiProbeSniffArgs),
     /// Crack captured handshake/PMKID
     Crack(WifiCrackArgs),
+    /// Launch Karma attack (respond to all probe requests)
+    Karma(WifiKarmaArgs),
 }
 
 #[derive(Args, Debug)]
@@ -367,6 +369,31 @@ pub struct WifiCrackArgs {
     /// Path to wordlist file (for wordlist mode)
     #[arg(long)]
     pub wordlist: Option<String>,
+}
+
+#[derive(Args, Debug)]
+pub struct WifiKarmaArgs {
+    /// Interface for probe sniffing (must support monitor mode)
+    #[arg(long)]
+    pub interface: String,
+    /// Optional second interface for fake AP (enables full Karma with AP)
+    #[arg(long)]
+    pub ap_interface: Option<String>,
+    /// Duration in seconds (default: 300 = 5 minutes)
+    #[arg(long, default_value_t = 300)]
+    pub duration: u32,
+    /// Channel to operate on (0 = hop channels)
+    #[arg(long, default_value_t = 0)]
+    pub channel: u8,
+    /// Create fake AP for captured SSIDs
+    #[arg(long, default_value_t = false)]
+    pub with_ap: bool,
+    /// SSIDs to respond to (comma-separated, empty = all)
+    #[arg(long)]
+    pub ssid_whitelist: Option<String>,
+    /// SSIDs to ignore (comma-separated)
+    #[arg(long)]
+    pub ssid_blacklist: Option<String>,
 }
 
 #[derive(Subcommand, Debug)]

@@ -93,17 +93,23 @@ pub use channel::ChannelInfo;
 pub use crack::{CrackResult, CrackerConfig, WpaCracker};
 pub use deauth::{DeauthAttacker, DeauthConfig, DeauthStats};
 pub use error::{Result, WirelessError};
-pub use evil_twin::{EvilTwin, EvilTwinConfig, EvilTwinStats};
+pub use evil_twin::{execute_evil_twin, EvilTwin, EvilTwinConfig, EvilTwinResult, EvilTwinStats};
 pub use frames::{DeauthFrame, DeauthReason, FrameSubtype, FrameType, Ieee80211Frame, MacAddress};
 pub use handshake::{HandshakeCapture, HandshakeExport, HandshakeMessage, HandshakeState};
 pub use interface::WirelessInterface;
-pub use karma::{CapturedProbe, KarmaAttack, KarmaConfig, KarmaResult, KarmaStats, KarmaVictim};
+pub use karma::{
+    execute_karma, execute_karma_with_ap, CapturedProbe, KarmaAttack, KarmaConfig,
+    KarmaExecutionResult, KarmaResult, KarmaStats, KarmaVictim,
+};
 pub use pipeline::{
     AttackPipeline, AttackTechnique, PipelineConfig, PipelineObjective, PipelineResult,
     PipelineStage,
 };
-pub use pmkid::{PmkidCapture, PmkidCapturer};
-pub use probe::{ClientStats, ProbeRequest, ProbeSniffer, ProbedNetwork};
+pub use pmkid::{execute_pmkid_capture, PmkidCapture, PmkidCaptureResult, PmkidCapturer, PmkidConfig};
+pub use probe::{
+    execute_probe_sniff, ClientStats, ProbeRequest, ProbeSniffConfig, ProbeSniffResult,
+    ProbeSniffer, ProbedNetwork,
+};
 
 /// Library version
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

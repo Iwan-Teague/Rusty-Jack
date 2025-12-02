@@ -14,12 +14,15 @@ pub mod system;
 pub mod wireless_native;
 
 pub use cli::{
-    Cli, Commands, OutputFormat, WifiCommand, WifiCrackArgs, WifiEvilTwinArgs, WifiPmkidArgs,
-    WifiProbeSniffArgs,
+    Cli, Commands, OutputFormat, WifiCommand, WifiCrackArgs, WifiEvilTwinArgs, WifiKarmaArgs,
+    WifiPmkidArgs, WifiProbeSniffArgs,
 };
 pub use operations::{dispatch_command, HandlerResult};
 pub use system::{resolve_root, InterfaceSummary};
 pub use wireless_native::{
-    check_capabilities, execute_deauth_attack, is_wireless_interface, native_available,
-    DeauthConfig, DeauthResult, WirelessCapabilities,
+    check_capabilities, execute_deauth_attack, execute_evil_twin, execute_karma,
+    execute_pmkid_capture, execute_probe_sniff, is_wireless_interface, native_available,
+    DeauthConfig, DeauthResult, EvilTwinAttackConfig, EvilTwinResult, KarmaAttackConfig,
+    KarmaResult, PmkidCaptureConfig, PmkidResult, ProbeSniffConfig, ProbeSniffResult,
+    WirelessCapabilities,
 };

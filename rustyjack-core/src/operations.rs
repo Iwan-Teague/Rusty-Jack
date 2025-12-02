@@ -1207,7 +1207,7 @@ fn handle_wifi_evil_twin(root: &Path, args: WifiEvilTwinArgs) -> Result<HandlerR
 }
 
 fn handle_wifi_pmkid(root: &Path, args: WifiPmkidArgs) -> Result<HandlerResult> {
-    use crate::wireless_native;
+    use crate::wireless_native::{self, PmkidCaptureConfig};
 
     log::info!("Starting PMKID capture on interface: {}", args.interface);
 
@@ -1234,22 +1234,42 @@ fn handle_wifi_pmkid(root: &Path, args: WifiPmkidArgs) -> Result<HandlerResult> 
     let loot_dir = wireless_target_directory(root, args.ssid.clone(), args.bssid.clone());
     fs::create_dir_all(&loot_dir)?;
 
+    // Build config for native implementation
+    let config = PmkidCaptureConfig {
+        interface: args.interface.clone(),
+        channel: args.channel,
+        target_bssid: args.bssid.clone(),
+        duration_secs: args.duration,
+    };
+
+    // Execute the native PMKID capture
+    let result = wireless_native::execute_pmkid_capture(&loot_dir, &config, |progress, status| {
+        log::debug!("PMKID progress: {:.0}% - {}", progress * 100.0, status);
+    })?;
+
     let data = json!({
         "interface": args.interface,
         "bssid": args.bssid,
         "ssid": args.ssid,
         "channel": args.channel,
         "duration": args.duration,
-        "status": "started",
-        "loot_directory": loot_dir.display().to_string(),
-        "note": "PMKID capture uses passive association request technique"
+        "pmkids_captured": result.pmkids_captured,
+        "networks_seen": result.networks_seen,
+        "hashcat_file": result.hashcat_file.as_ref().map(|p| p.display().to_string()),
+        "loot_directory": result.loot_path.display().to_string(),
     });
 
-    Ok(("PMKID capture started".to_string(), data))
+    let message = if result.pmkids_captured > 0 {
+        format!("PMKID captured! {} PMKIDs from {} networks", result.pmkids_captured, result.networks_seen)
+    } else {
+        "PMKID capture complete - no PMKIDs found".to_string()
+    };
+
+    Ok((message, data))
 }
 
 fn handle_wifi_probe_sniff(root: &Path, args: WifiProbeSniffArgs) -> Result<HandlerResult> {
-    use crate::wireless_native;
+    use crate::wireless_native::{self, ProbeSniffConfig as NativeProbeConfig};
 
     log::info!(
         "Starting probe request sniff on interface: {}",
@@ -1275,20 +1295,39 @@ fn handle_wifi_probe_sniff(root: &Path, args: WifiProbeSniffArgs) -> Result<Hand
         );
     }
 
-    // Create loot directory (probe sniff is passive and not target-specific)
-    let loot_dir = loot_directory(root, LootKind::Wireless);
+    // Create loot directory for probe sniffing (goes under probe_sniff subdirectory)
+    let loot_dir = loot_directory(root, LootKind::Wireless).join("probe_sniff");
     fs::create_dir_all(&loot_dir)?;
+
+    // Build config for native implementation
+    let config = NativeProbeConfig {
+        interface: args.interface.clone(),
+        channel: args.channel,
+        duration_secs: args.duration,
+    };
+
+    // Execute the native probe sniff
+    let result = wireless_native::execute_probe_sniff(&loot_dir, &config, |progress, status| {
+        log::debug!("Probe sniff progress: {:.0}% - {}", progress * 100.0, status);
+    })?;
 
     let data = json!({
         "interface": args.interface,
         "channel": args.channel,
         "duration": args.duration,
-        "status": "started",
-        "loot_directory": loot_dir.display().to_string(),
-        "note": "Capturing probe requests reveals networks devices have connected to"
+        "total_probes": result.probes_captured,
+        "unique_clients": result.unique_clients,
+        "unique_networks": result.unique_networks,
+        "loot_directory": result.loot_path.display().to_string(),
     });
 
-    Ok(("Probe sniffing started".to_string(), data))
+    Ok((
+        format!(
+            "Probe sniff complete: {} probes, {} clients, {} networks",
+            result.probes_captured, result.unique_clients, result.unique_networks
+        ),
+        data,
+    ))
 }
 
 fn handle_wifi_karma(root: &Path, args: WifiKarmaArgs) -> Result<HandlerResult> {

@@ -551,44 +551,130 @@ impl App {
     }
 
     fn show_loot(&mut self, section: LootSection) -> Result<()> {
-        let kind = match section {
-            LootSection::Wireless => LootKind::Wireless,
-            LootSection::Ethernet => LootKind::Ethernet,
+        let loot_base = match section {
+            LootSection::Wireless => self.root.join("loot/Wireless"),
+            LootSection::Ethernet => self.root.join("loot/Ethernet"),
         };
-        let (_, data) = self
-            .core
-            .dispatch(Commands::Loot(LootCommand::List(LootListArgs { kind })))?;
-        let files = data
-            .get("files")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
-        if files.is_empty() {
-            return self.show_message("Loot", ["No files"]);
+
+        if !loot_base.exists() {
+            return self.show_message("Loot", ["No captures yet"]);
         }
-        let mut paths = Vec::new();
-        let mut labels = Vec::new();
-        for entry in &files {
-            if let Some(path) = entry.get("path").and_then(Value::as_str) {
-                let display = Path::new(path)
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or(path)
-                    .to_string();
-                paths.push(path.to_string());
-                labels.push(display);
+
+        // Get list of network folders (or special folders like probe_sniff, karma)
+        let mut networks: Vec<(String, PathBuf)> = Vec::new();
+        
+        if let Ok(entries) = std::fs::read_dir(&loot_base) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                        networks.push((name.to_string(), path));
+                    }
+                }
+            }
+        }
+
+        // Also check for any loose files directly in loot_base
+        let mut loose_files: Vec<PathBuf> = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(&loot_base) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_file() {
+                    loose_files.push(path);
+                }
+            }
+        }
+
+        if networks.is_empty() && loose_files.is_empty() {
+            return self.show_message("Loot", ["No captures yet"]);
+        }
+
+        // Sort networks alphabetically
+        networks.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
+
+        // Build menu - networks first, then loose files
+        let mut labels: Vec<String> = networks.iter().map(|(name, _)| format!("[{}]", name)).collect();
+        let mut paths: Vec<PathBuf> = networks.iter().map(|(_, p)| p.clone()).collect();
+        
+        // Add loose files at the end
+        for file in &loose_files {
+            if let Some(name) = file.file_name().and_then(|n| n.to_str()) {
+                labels.push(name.to_string());
+                paths.push(file.clone());
+            }
+        }
+
+        loop {
+            let Some(index) = self.choose_from_menu("Targets", &labels)? else {
+                return Ok(());
+            };
+
+            let selected_path = &paths[index];
+            
+            if selected_path.is_dir() {
+                // Show files in this network folder
+                self.show_network_loot(selected_path)?;
+            } else {
+                // View the file directly
+                self.view_loot_file(&selected_path.to_string_lossy())?;
+            }
+        }
+    }
+
+    /// Show loot files for a specific network/target
+    fn show_network_loot(&mut self, network_dir: &Path) -> Result<()> {
+        let network_name = network_dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("Unknown");
+
+        // Get all files in this directory (recursively)
+        let mut files: Vec<(String, PathBuf)> = Vec::new();
+        
+        fn collect_files(dir: &Path, base: &Path, files: &mut Vec<(String, PathBuf)>) {
+            if let Ok(entries) = std::fs::read_dir(dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_file() {
+                        // Create relative display path
+                        let display = path
+                            .strip_prefix(base)
+                            .map(|p| p.to_string_lossy().to_string())
+                            .unwrap_or_else(|_| {
+                                path.file_name()
+                                    .map(|n| n.to_string_lossy().to_string())
+                                    .unwrap_or_default()
+                            });
+                        files.push((display, path));
+                    } else if path.is_dir() {
+                        collect_files(&path, base, files);
+                    }
+                }
             }
         }
         
-        // Interactive file browser - keeps looping until user backs out
+        collect_files(network_dir, network_dir, &mut files);
+
+        if files.is_empty() {
+            return self.show_message(network_name, ["No files in this target"]);
+        }
+
+        // Sort by modification time (newest first)
+        files.sort_by(|a, b| {
+            let time_a = a.1.metadata().and_then(|m| m.modified()).ok();
+            let time_b = b.1.metadata().and_then(|m| m.modified()).ok();
+            time_b.cmp(&time_a)
+        });
+
+        let labels: Vec<String> = files.iter().map(|(name, _)| name.clone()).collect();
+
         loop {
-            let Some(index) = self.choose_from_menu("Loot files", &labels)? else {
+            let Some(index) = self.choose_from_menu(network_name, &labels)? else {
                 return Ok(());
             };
-            let path = paths.get(index).cloned().unwrap_or_else(|| paths.first().cloned().unwrap());
-            
-            // Open the selected file in scrollable viewer
-            self.view_loot_file(&path)?;
+
+            let (_, path) = &files[index];
+            self.view_loot_file(&path.to_string_lossy())?;
         }
     }
     

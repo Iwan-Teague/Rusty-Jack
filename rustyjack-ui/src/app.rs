@@ -96,6 +96,14 @@ pub struct App {
     dashboard_view: Option<DashboardView>,
 }
 
+/// Result of checking for cancel during an attack
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CancelAction {
+    Continue,      // User wants to continue attack
+    GoBack,        // User wants to go back one menu
+    GoMainMenu,    // User wants to go to main menu
+}
+
 // Map low-level Button values to higher-level ButtonAction values
 impl App {
     fn map_button(&self, b: Button) -> ButtonAction {
@@ -142,14 +150,6 @@ impl App {
             }
         }
         Ok(())
-    }
-
-    /// Result of checking for cancel during an attack
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    enum CancelAction {
-        Continue,      // User wants to continue attack
-        GoBack,        // User wants to go back one menu
-        GoMainMenu,    // User wants to go to main menu
     }
 
     /// Check if user pressed cancel button during attack, show confirmation dialog

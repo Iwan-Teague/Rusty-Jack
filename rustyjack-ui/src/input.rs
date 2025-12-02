@@ -113,6 +113,19 @@ mod platform {
             Ok(None)
         }
 
+        /// Button check with timeout - polls for button press until timeout expires
+        pub fn try_read_timeout(&mut self, timeout: Duration) -> Result<Option<Button>> {
+            let start = Instant::now();
+            while start.elapsed() < timeout {
+                if let Some(kind) = self.poll()? {
+                    self.wait_for_release(kind)?;
+                    return Ok(Some(kind));
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+            Ok(None)
+        }
+
         fn wait_for_release(&mut self, kind: Button) -> Result<()> {
             let button = self
                 .buttons
@@ -159,6 +172,11 @@ mod platform {
         }
 
         pub fn try_read(&mut self) -> Result<Option<Button>> {
+            Ok(None)
+        }
+
+        pub fn try_read_timeout(&mut self, timeout: Duration) -> Result<Option<Button>> {
+            thread::sleep(timeout);
             Ok(None)
         }
     }

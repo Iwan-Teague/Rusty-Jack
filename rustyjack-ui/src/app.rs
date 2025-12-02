@@ -870,63 +870,102 @@ impl App {
     }
     
     fn scrollable_text_viewer(&mut self, title: &str, lines: &[String], truncated: bool) -> Result<()> {
-        const LINES_PER_PAGE: usize = 10;
+        use std::time::{Duration, Instant};
+        
+        const LINES_PER_PAGE: usize = 9; // Reduced slightly to fit position indicator
+        const MAX_TITLE_CHARS: usize = 15;
+        const SCROLL_INTERVAL: Duration = Duration::from_millis(200); // Speed of title scroll
+        const PAUSE_AT_END: Duration = Duration::from_secs(2); // Pause when showing end of filename
+        const PAUSE_AT_START: Duration = Duration::from_secs(2); // Pause at start before scrolling
+        
         let total_lines = lines.len();
-        let mut offset = 0;
+        let mut line_offset = 0;
+        let mut title_offset: usize = 0;
+        let mut last_scroll_time = Instant::now();
+        let mut paused_at_end = false;
+        let mut pause_start: Option<Instant> = Some(Instant::now()); // Start with initial pause
+        
+        // Calculate if title needs scrolling
+        let title_needs_scroll = title.len() > MAX_TITLE_CHARS;
+        let scroll_text_len = if title_needs_scroll { title.len() + 3 } else { 0 }; // +3 for padding
         
         loop {
             let overlay = self.stats.snapshot();
-            let end = (offset + LINES_PER_PAGE).min(total_lines);
-            let visible_lines: Vec<String> = lines[offset..end].to_vec();
+            let end = (line_offset + LINES_PER_PAGE).min(total_lines);
+            let visible_lines: Vec<String> = lines[line_offset..end].to_vec();
             
-            // Build display content with navigation hints
-            let mut content = vec![
-                format!("{} ({}/{})", title, offset + 1, total_lines),
-            ];
-            content.extend(visible_lines);
+            // Draw the file viewer with current scroll positions
+            self.display.draw_file_viewer(
+                title,
+                title_offset,
+                &visible_lines,
+                line_offset,
+                total_lines,
+                truncated,
+                &overlay,
+            )?;
             
-            // Add navigation hint
-            if offset + LINES_PER_PAGE < total_lines {
-                content.push("-- More below --".to_string());
-            } else if truncated {
-                content.push("[File truncated]".to_string());
+            // Handle title scrolling animation
+            if title_needs_scroll {
+                let now = Instant::now();
+                
+                if let Some(pause_time) = pause_start {
+                    // We're in a pause period
+                    let pause_duration = if paused_at_end { PAUSE_AT_END } else { PAUSE_AT_START };
+                    if now.duration_since(pause_time) >= pause_duration {
+                        pause_start = None;
+                        if paused_at_end {
+                            // Reset to start after end pause
+                            title_offset = 0;
+                            paused_at_end = false;
+                            pause_start = Some(now); // Pause at start again
+                        }
+                    }
+                } else if now.duration_since(last_scroll_time) >= SCROLL_INTERVAL {
+                    // Advance scroll position
+                    title_offset += 1;
+                    last_scroll_time = now;
+                    
+                    // Check if we've shown the full title (reached end of scroll cycle)
+                    if title_offset >= scroll_text_len {
+                        paused_at_end = true;
+                        pause_start = Some(now);
+                    }
+                }
             }
             
-            self.display.draw_dialog(&content, &overlay)?;
-            
-            let button = self.buttons.wait_for_press()?;
-            match self.map_button(button) {
-                ButtonAction::Down => {
-                    // Scroll down by one line
-                    if offset + LINES_PER_PAGE < total_lines {
-                        offset += 1;
+            // Non-blocking button check with short timeout
+            if let Some(button) = self.buttons.try_read_timeout(Duration::from_millis(50))? {
+                match self.map_button(button) {
+                    ButtonAction::Down => {
+                        if line_offset + LINES_PER_PAGE < total_lines {
+                            line_offset += 1;
+                        }
                     }
-                }
-                ButtonAction::Up => {
-                    // Scroll up by one line
-                    if offset > 0 {
-                        offset = offset.saturating_sub(1);
+                    ButtonAction::Up => {
+                        if line_offset > 0 {
+                            line_offset = line_offset.saturating_sub(1);
+                        }
                     }
-                }
-                ButtonAction::Select => {
-                    // Page down
-                    if offset + LINES_PER_PAGE < total_lines {
-                        offset = (offset + LINES_PER_PAGE).min(total_lines.saturating_sub(LINES_PER_PAGE));
+                    ButtonAction::Select => {
+                        // Page down
+                        if line_offset + LINES_PER_PAGE < total_lines {
+                            line_offset = (line_offset + LINES_PER_PAGE).min(total_lines.saturating_sub(LINES_PER_PAGE));
+                        }
                     }
-                }
-                ButtonAction::Back => {
-                    // Exit viewer and return to file list
-                    return Ok(());
-                }
-                ButtonAction::MainMenu => {
-                    self.menu_state.home();
-                    return Ok(());
-                }
-                ButtonAction::Refresh => {
-                    // Redraw current page
-                }
-                ButtonAction::Reboot => {
-                    self.confirm_reboot()?;
+                    ButtonAction::Back => {
+                        return Ok(());
+                    }
+                    ButtonAction::MainMenu => {
+                        self.menu_state.home();
+                        return Ok(());
+                    }
+                    ButtonAction::Refresh => {
+                        // Redraw on next iteration
+                    }
+                    ButtonAction::Reboot => {
+                        self.confirm_reboot()?;
+                    }
                 }
             }
         }

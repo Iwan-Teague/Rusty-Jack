@@ -636,6 +636,95 @@ impl Display {
         Ok(())
     }
 
+    /// Draw file viewer with scrolling filename in toolbar
+    /// `title_offset` controls the horizontal scroll position of the filename
+    pub fn draw_file_viewer(
+        &mut self,
+        filename: &str,
+        title_offset: usize,
+        lines: &[String],
+        line_offset: usize,
+        total_lines: usize,
+        truncated: bool,
+        status: &StatusOverlay,
+    ) -> Result<()> {
+        self.clear()?;
+        
+        // Draw toolbar background
+        let style = PrimitiveStyle::with_fill(Rgb565::new(20, 20, 20));
+        Rectangle::new(
+            Point::new(0, 0),
+            Size::new((LCD_WIDTH as u32) + 1, 14)
+        )
+        .into_styled(style)
+        .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
+
+        // Calculate max chars that fit in toolbar (leave space for temp on right)
+        // Toolbar width ~129, temp takes ~22px on right, title starts at x=4
+        // Available width for title: ~100px = ~16 chars at 6px/char
+        const MAX_TITLE_CHARS: usize = 15;
+        
+        // Apply scrolling offset to filename if it's too long
+        let display_title = if filename.len() > MAX_TITLE_CHARS {
+            let scroll_text = format!("{}   ", filename); // Add padding for wrap-around
+            let start = title_offset % scroll_text.len();
+            let mut visible: String = scroll_text.chars().cycle().skip(start).take(MAX_TITLE_CHARS).collect();
+            // Ensure we don't cut off mid-character
+            if visible.len() > MAX_TITLE_CHARS {
+                visible.truncate(MAX_TITLE_CHARS);
+            }
+            visible
+        } else {
+            filename.to_string()
+        };
+        
+        Text::with_baseline(&display_title, Point::new(4, 4), self.text_style_small, Baseline::Top)
+            .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
+
+        // Temperature in top right corner
+        let temp_text = format!("{:.0}C", status.temp_c.min(99.0));
+        let temp_x = LCD_WIDTH as i32 - 22;
+        Text::with_baseline(&temp_text, Point::new(temp_x, 4), self.text_style_regular, Baseline::Top)
+            .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
+
+        // Draw line position indicator below toolbar
+        let pos_text = format!("{}/{}", line_offset + 1, total_lines);
+        Text::with_baseline(&pos_text, Point::new(4, 16), self.text_style_small, Baseline::Top)
+            .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
+
+        // Draw file content starting below position indicator
+        let mut y = 28;
+        const MAX_CHARS: usize = 21;
+        
+        for line in lines {
+            if y > 118 {
+                break;
+            }
+            // Truncate long lines rather than wrap for file viewing
+            let display_line = if line.len() > MAX_CHARS {
+                format!("{}...", &line[..MAX_CHARS.saturating_sub(3)])
+            } else {
+                line.clone()
+            };
+            Text::with_baseline(&display_line, Point::new(4, y), self.text_style_regular, Baseline::Top)
+                .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
+            y += 10;
+        }
+
+        // Draw footer hint
+        let footer = if line_offset + lines.len() < total_lines {
+            "DOWN=More"
+        } else if truncated {
+            "[Truncated]"
+        } else {
+            "END"
+        };
+        Text::with_baseline(footer, Point::new(4, 120), self.text_style_small, Baseline::Top)
+            .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
+
+        Ok(())
+    }
+
     pub fn draw_progress_dialog(
         &mut self,
         title: &str,

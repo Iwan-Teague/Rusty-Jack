@@ -426,10 +426,9 @@ impl App {
                         self.dashboard_view = None;
                     }
                     ButtonAction::Select => {
-                        // Cycle to next dashboard (skip AttackMetrics)
+                        // Cycle to next dashboard
                         self.dashboard_view = Some(match view {
                             DashboardView::SystemHealth => DashboardView::LootSummary,
-                            DashboardView::AttackMetrics => DashboardView::LootSummary,
                             DashboardView::LootSummary => DashboardView::NetworkTraffic,
                             DashboardView::NetworkTraffic => DashboardView::SystemHealth,
                         });

@@ -791,7 +791,6 @@ impl Display {
         
         match view {
             DashboardView::SystemHealth => self.draw_system_health(status),
-            DashboardView::AttackMetrics => self.draw_attack_metrics(status),
             DashboardView::LootSummary => self.draw_loot_summary(status),
             DashboardView::NetworkTraffic => self.draw_network_traffic(status),
         }
@@ -840,62 +839,6 @@ impl Display {
         let uptime_text = format!("Up:{}h{}m", uptime_hrs, uptime_mins);
             if y <= 119 {
             Text::with_baseline(&uptime_text, Point::new(4, y), self.text_style_small, Baseline::Top)
-                .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
-        }
-
-        Text::with_baseline("LEFT=Exit SEL=Next", Point::new(12, 115), self.text_style_small, Baseline::Top)
-            .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
-        
-        Ok(())
-    }
-
-    fn draw_attack_metrics(&mut self, status: &StatusOverlay) -> Result<()> {
-        self.draw_toolbar_with_title(Some("ATTACK METRICS"), status)?;
-
-        let mut y = 16;
-        
-        if y <= 119 {
-            Text::with_baseline("Active Ops:", Point::new(4, y), self.text_style_small, Baseline::Top)
-                .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
-            y += 12;
-        }
-
-        for op in status.active_operations.iter().take(3) {
-            if y > 111 { break; }
-            // Wrap operation names instead of truncating (max 18 chars to account for "• " prefix)
-            let wrapped = wrap_text(op, 18);
-            for line in wrapped.iter().take(1) {
-                Text::with_baseline(&format!("• {}", line), Point::new(6, y), self.text_style_small, Baseline::Top)
-                    .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
-                y += 10;
-                if y > 111 { break; }
-            }
-        }
-        y += 6;
-
-        if y <= 119 {
-            Text::with_baseline("Net Traffic:", Point::new(4, y), self.text_style_small, Baseline::Top)
-                .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
-            y += 12;
-        }
-
-        let rx_kb = status.net_rx_rate / 1024.0;
-        let tx_kb = status.net_tx_rate / 1024.0;
-        
-        if y <= 119 {
-            Text::with_baseline(&format!("TX:{:.1}KB/s", tx_kb), Point::new(6, y), self.text_style_small, Baseline::Top)
-                .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
-            y += 10;
-        }
-        
-        if y <= 119 {
-            Text::with_baseline(&format!("RX:{:.1}KB/s", rx_kb), Point::new(6, y), self.text_style_small, Baseline::Top)
-                .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
-            y += 14;
-        }
-
-        if status.mitm_victims > 0 && y <= 118 {
-            Text::with_baseline(&format!("MITM Vic:{}", status.mitm_victims), Point::new(4, y), self.text_style_small, Baseline::Top)
                 .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
         }
 
@@ -1204,7 +1147,6 @@ pub struct StatusOverlay {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DashboardView {
     SystemHealth,
-    AttackMetrics,
     LootSummary,
     NetworkTraffic,
 }

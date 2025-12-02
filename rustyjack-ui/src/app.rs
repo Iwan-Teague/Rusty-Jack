@@ -2295,7 +2295,8 @@ impl App {
             ]);
         }
         
-        // Recursively find .hc22000, .cap, .pcap files in all subdirectories
+        // Recursively find handshake export JSON files in all subdirectories
+        // The native cracker only supports our JSON export format (handshake_export_*.json)
         let mut handshake_files: Vec<(String, std::path::PathBuf)> = Vec::new();
         fn scan_dir(dir: &std::path::Path, files: &mut Vec<(String, std::path::PathBuf)>) {
             if let Ok(entries) = std::fs::read_dir(dir) {
@@ -2303,8 +2304,9 @@ impl App {
                     let path = entry.path();
                     if path.is_dir() {
                         scan_dir(&path, files);
-                    } else if let Some(ext) = path.extension() {
-                        if ext == "hc22000" || ext == "cap" || ext == "pcap" {
+                    } else if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                        // Only match handshake_export_*.json files
+                        if name.starts_with("handshake_export_") && name.ends_with(".json") {
                             // Include parent folder name for context
                             let display_name = if let Some(parent) = path.parent() {
                                 if let Some(parent_name) = parent.file_name() {
@@ -2327,10 +2329,12 @@ impl App {
         
         if handshake_files.is_empty() {
             return self.show_message("Crack", [
-                "No handshakes found",
-                "in loot/Wireless/",
+                "No handshake exports",
+                "found in loot/",
                 "",
-                "Capture one first"
+                "Capture a handshake",
+                "first. Native cracker",
+                "uses JSON exports."
             ]);
         }
         
@@ -2347,7 +2351,6 @@ impl App {
         // Crack method selection
         let methods = vec![
             "Quick (common)".to_string(),
-            "8-digit PINs".to_string(),
             "SSID patterns".to_string(),
         ];
         
@@ -2355,8 +2358,7 @@ impl App {
         
         let crack_mode = match method {
             Some(0) => "quick",
-            Some(1) => "pins",
-            Some(2) => "ssid",
+            Some(1) => "ssid",
             _ => return Ok(()),
         };
         

@@ -40,6 +40,8 @@ pub struct CrackerConfig {
     pub progress_interval: u64,
     /// Stop after this many attempts (0 = unlimited)
     pub max_attempts: u64,
+    /// Yield to OS every N attempts to prevent thermal throttle (0 = no throttle)
+    pub throttle_interval: u64,
 }
 
 impl Default for CrackerConfig {
@@ -48,6 +50,7 @@ impl Default for CrackerConfig {
             threads: 1, // Pi Zero 2 W has 4 cores but limited RAM
             progress_interval: 1000,
             max_attempts: 0,
+            throttle_interval: 50, // Yield every 50 attempts to prevent thermal issues on Pi
         }
     }
 }
@@ -128,6 +131,7 @@ impl WpaCracker {
         let start = Instant::now();
         let total = total.unwrap_or(passwords.len() as u64);
         let progress_interval = self.config.progress_interval.max(1);
+        let throttle = self.config.throttle_interval;
 
         for (_idx, password) in passwords.iter().enumerate() {
             if self.stop_flag.load(Ordering::Relaxed) {
@@ -139,6 +143,11 @@ impl WpaCracker {
             let attempts = self.attempts.fetch_add(1, Ordering::Relaxed) + 1;
             if self.try_password(password) {
                 return Ok(CrackResult::Found(password.clone()));
+            }
+
+            // Thermal throttle: yield to OS periodically to prevent overheating
+            if throttle > 0 && attempts % throttle == 0 {
+                std::thread::yield_now();
             }
 
             if let Some(ref mut cb) = on_progress {
@@ -187,6 +196,7 @@ impl WpaCracker {
         log::info!("Starting wordlist attack with {:?}", wordlist_path);
 
         let start = Instant::now();
+        let throttle = self.config.throttle_interval;
 
         for line in reader.lines() {
             if self.stop_flag.load(Ordering::Relaxed) {
@@ -211,6 +221,11 @@ impl WpaCracker {
             }
 
             let attempts = self.attempts.fetch_add(1, Ordering::Relaxed) + 1;
+
+            // Thermal throttle: yield to OS periodically to prevent overheating
+            if throttle > 0 && attempts % throttle == 0 {
+                std::thread::yield_now();
+            }
 
             if attempts % self.config.progress_interval == 0 {
                 let elapsed = start.elapsed();
@@ -238,6 +253,7 @@ impl WpaCracker {
         log::info!("Starting attack with {} passwords", passwords.len());
 
         let start = Instant::now();
+        let throttle = self.config.throttle_interval;
 
         for password in passwords {
             if self.stop_flag.load(Ordering::Relaxed) {
@@ -255,7 +271,12 @@ impl WpaCracker {
                 return Ok(CrackResult::Found(password.clone()));
             }
 
-            self.attempts.fetch_add(1, Ordering::Relaxed);
+            let attempts = self.attempts.fetch_add(1, Ordering::Relaxed) + 1;
+
+            // Thermal throttle: yield to OS periodically to prevent overheating
+            if throttle > 0 && attempts % throttle == 0 {
+                std::thread::yield_now();
+            }
         }
 
         log::info!(
@@ -274,6 +295,7 @@ impl WpaCracker {
         log::info!("Starting 8-digit PIN attack (0-99999999)");
 
         let start = Instant::now();
+        let throttle = self.config.throttle_interval;
 
         for i in 0..=99_999_999u32 {
             if self.stop_flag.load(Ordering::Relaxed) {
@@ -289,6 +311,11 @@ impl WpaCracker {
             }
 
             let attempts = self.attempts.fetch_add(1, Ordering::Relaxed) + 1;
+
+            // Thermal throttle: yield to OS periodically to prevent overheating
+            if throttle > 0 && attempts % throttle == 0 {
+                std::thread::yield_now();
+            }
 
             if attempts % self.config.progress_interval == 0 {
                 let elapsed = start.elapsed();

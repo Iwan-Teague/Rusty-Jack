@@ -1209,7 +1209,7 @@ fn handle_wifi_evil_twin(root: &Path, args: WifiEvilTwinArgs) -> Result<HandlerR
         target_bssid,
         simultaneous_deauth: false, // Requires second interface
         deauth_interval: Duration::from_secs(5),
-        duration: Duration::from_secs(args.duration),
+        duration: Duration::from_secs(args.duration.into()),
         open_network: args.open,
         wpa_password: None,
         capture_path: loot_dir.to_string_lossy().to_string(),

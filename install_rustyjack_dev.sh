@@ -56,6 +56,8 @@ PACKAGES=(
   build-essential pkg-config libssl-dev
   # WiFi interface tools (for native Rust wireless operations)
   wireless-tools wpasupplicant iw iproute2 isc-dhcp-client network-manager
+  # Evil Twin / Karma AP requirements
+  hostapd dnsmasq iptables
   # USB WiFi dongle support
   firmware-linux-nonfree firmware-realtek firmware-atheros
   # misc

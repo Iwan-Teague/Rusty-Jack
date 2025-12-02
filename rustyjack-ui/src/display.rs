@@ -86,11 +86,12 @@ use st7735_lcd::{Orientation, ST7735};
 use std::{thread::sleep, time::Duration as StdDuration};
 
 #[cfg(target_os = "linux")]
-const LCD_WIDTH: u16 = 128;
+const LCD_WIDTH: u16 = 129;
 #[cfg(target_os = "linux")]
-const LCD_HEIGHT: u16 = 128;
+const LCD_HEIGHT: u16 = 130;
 // Offset adjusted to utilize full screen width and avoid dead pixels
-// ST7735S has a 132x162 buffer but Waveshare 1.44" uses 128x128 visible
+// ST7735S has a 132x162 buffer but Waveshare 1.44" uses ~128x128 visible
+// Increased dimensions to 129x130 to fill dead rows/columns on edge
 // X offset of 2 shifts content to use full visible area
 #[cfg(target_os = "linux")]
 // Offset X is 0 by default to align drawing to left edge on most displays.
@@ -532,6 +533,10 @@ impl Display {
     }
 
     pub fn draw_toolbar(&mut self, status: &StatusOverlay) -> Result<()> {
+        self.draw_toolbar_with_title(None, status)
+    }
+
+    pub fn draw_toolbar_with_title(&mut self, title: Option<&str>, status: &StatusOverlay) -> Result<()> {
         let style = PrimitiveStyle::with_fill(Rgb565::new(20, 20, 20));
         Rectangle::new(
             Point::new(0, 0),
@@ -540,18 +545,23 @@ impl Display {
         .into_styled(style)
         .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
 
-        // Use plain 'C' rather than degree symbol — some Pi terminals/GUIs
-        // render the Unicode degree symbol as '?', so keep ASCII for reliability.
-        let temp_text = format!("{:.0}C", status.temp_c);
-        Text::with_baseline(&temp_text, Point::new(4, 2), self.text_style_regular, Baseline::Top)
+        // Draw title in top left if provided
+        if let Some(t) = title {
+            Text::with_baseline(t, Point::new(4, 2), self.text_style_small, Baseline::Top)
+                .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
+        }
+
+        // Temperature in top right corner (right-aligned, max 3 chars "99C")
+        let temp_text = format!("{:.0}C", status.temp_c.min(99.0));
+        let temp_x = LCD_WIDTH as i32 - 22; // 3 chars * 6px + 4px margin = 22px from right
+        Text::with_baseline(&temp_text, Point::new(temp_x, 2), self.text_style_regular, Baseline::Top)
             .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
         
-        // Display autopilot indicator if running
+        // Display autopilot indicator if running (center of toolbar)
         if status.autopilot_running {
             let ap_indicator = if status.autopilot_mode.is_empty() {
                 "[AP]".to_string()
             } else {
-                // Abbreviate mode: Standard->STD, Aggressive->AGR, Stealth->STH, Harvest->HRV
                 let mode_abbr = match status.autopilot_mode.as_str() {
                     "Standard" => "STD",
                     "Aggressive" => "AGR",
@@ -562,17 +572,11 @@ impl Display {
                 format!("[{}]", mode_abbr)
             };
             
-            // Draw in center of toolbar with highlight color
-            let center_x = (LCD_WIDTH / 2) as i32 - 12; // Approximate center
+            let center_x = (LCD_WIDTH / 2) as i32 - 12;
             Text::with_baseline(&ap_indicator, Point::new(center_x, 2), self.text_style_highlight, Baseline::Top)
                 .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
         }
         
-        if !status.text.is_empty() {
-            // In embedded-graphics 0.8, we don't have with_alignment, so just draw at the position
-            Text::with_baseline(&status.text, Point::new(90, 2), self.text_style_small, Baseline::Top)
-                .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
-        }
         Ok(())
     }
 
@@ -584,13 +588,10 @@ impl Display {
         status: &StatusOverlay,
     ) -> Result<()> {
         self.clear()?;
-        self.draw_toolbar(status)?;
-        // Border removed for cleaner display
+        self.draw_toolbar_with_title(Some(title), status)?;
 
-        Text::with_baseline(title, Point::new(4, 16), self.text_style_small, Baseline::Top)
-            .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
-
-        let mut y = 30;
+        // Menu items start right below toolbar (y=16)
+        let mut y = 16;
         for (idx, label) in items.iter().enumerate() {
             if idx == selected {
                 Rectangle::new(
@@ -708,10 +709,7 @@ impl Display {
     }
 
     fn draw_system_health(&mut self, status: &StatusOverlay) -> Result<()> {
-        Text::with_baseline("SYSTEM HEALTH", Point::new(18, 2), self.text_style_highlight, Baseline::Top)
-            .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
-        
-        // No border line - just a gap
+        self.draw_toolbar_with_title(Some("SYSTEM HEALTH"), status)?;
 
         let cpu_bar_len = ((status.cpu_percent / 100.0) * 100.0).min(100.0) as u32;
         let mem_percent = (status.mem_used_mb as f32 / status.mem_total_mb.max(1) as f32) * 100.0;
@@ -719,7 +717,7 @@ impl Display {
         let disk_percent = (status.disk_used_gb / status.disk_total_gb.max(0.1)) * 100.0;
         let disk_bar_len = ((disk_percent / 100.0) * 100.0).min(100.0) as u32;
 
-        let mut y = 22;
+        let mut y = 16;
         
         let cpu_text = format!("CPU:{:.0}C {:.0}%", status.temp_c, status.cpu_percent);
             if y <= 119 {
@@ -756,19 +754,16 @@ impl Display {
                 .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
         }
 
-        Text::with_baseline("<- Back  Next ->", Point::new(18, 115), self.text_style_small, Baseline::Top)
+        Text::with_baseline("LEFT=Exit SEL=Next", Point::new(12, 115), self.text_style_small, Baseline::Top)
             .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
         
         Ok(())
     }
 
     fn draw_attack_metrics(&mut self, status: &StatusOverlay) -> Result<()> {
-        Text::with_baseline("ATTACK METRICS", Point::new(16, 2), self.text_style_highlight, Baseline::Top)
-            .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
-        
-        // No border line
+        self.draw_toolbar_with_title(Some("ATTACK METRICS"), status)?;
 
-        let mut y = 22;
+        let mut y = 16;
         
         if y <= 119 {
             Text::with_baseline("Active Ops:", Point::new(4, y), self.text_style_small, Baseline::Top)
@@ -815,19 +810,16 @@ impl Display {
                 .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
         }
 
-        Text::with_baseline("<- Back  Next ->", Point::new(18, 115), self.text_style_small, Baseline::Top)
+        Text::with_baseline("LEFT=Exit SEL=Next", Point::new(12, 115), self.text_style_small, Baseline::Top)
             .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
         
         Ok(())
     }
 
     fn draw_loot_summary(&mut self, status: &StatusOverlay) -> Result<()> {
-        Text::with_baseline("LOOT SUMMARY", Point::new(22, 2), self.text_style_highlight, Baseline::Top)
-            .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
-        
-        // No border line
+        self.draw_toolbar_with_title(Some("LOOT SUMMARY"), status)?;
 
-        let mut y = 24;
+        let mut y = 16;
         
         if y <= 119 {
             Text::with_baseline("Session Stats:", Point::new(4, y), self.text_style_small, Baseline::Top)
@@ -872,19 +864,16 @@ impl Display {
             }
         }
 
-        Text::with_baseline("<- Back  Next ->", Point::new(18, 115), self.text_style_small, Baseline::Top)
+        Text::with_baseline("LEFT=Exit SEL=Next", Point::new(12, 115), self.text_style_small, Baseline::Top)
             .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
         
         Ok(())
     }
 
     fn draw_network_traffic(&mut self, status: &StatusOverlay) -> Result<()> {
-        Text::with_baseline("NET TRAFFIC", Point::new(26, 2), self.text_style_highlight, Baseline::Top)
-            .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
-        
-        // No border line
+        self.draw_toolbar_with_title(Some("NET TRAFFIC"), status)?;
 
-        let mut y = 24;
+        let mut y = 16;
         
         if y <= 119 {
             Text::with_baseline("Total:", Point::new(4, y), self.text_style_small, Baseline::Top)
@@ -938,7 +927,7 @@ impl Display {
             self.draw_progress_bar(Point::new(4, y), rate_bars_tx)?;
         }
 
-        Text::with_baseline("<- Back  Menu", Point::new(22, 115), self.text_style_small, Baseline::Top)
+        Text::with_baseline("LEFT=Exit SEL=Next", Point::new(12, 115), self.text_style_small, Baseline::Top)
             .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
         
         Ok(())

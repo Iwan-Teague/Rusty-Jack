@@ -11,7 +11,6 @@ pub enum MenuAction {
     RestartSystem,
     Loot(LootSection),
     DiscordUpload,
-    SystemUpdate,
     ViewDashboards,
     ToggleDiscord,
     TransferToUSB,
@@ -108,6 +107,7 @@ impl MenuTree {
         nodes.insert("ah", MenuNode::Static(loot_menu));
         nodes.insert("aw", MenuNode::Static(wifi_menu));
         nodes.insert("as", MenuNode::Static(settings_menu));
+        nodes.insert("asd", MenuNode::Static(discord_menu));
         nodes.insert("ap", MenuNode::Static(pipeline_menu));
         nodes.insert("ao", MenuNode::Static(obfuscation_menu)); // Obfuscation & Evasion
         nodes.insert("atx", MenuNode::Static(tx_power_menu));
@@ -241,11 +241,17 @@ fn tx_power_menu() -> Vec<MenuEntry> {
 
 fn settings_menu() -> Vec<MenuEntry> {
     vec![
-        MenuEntry::new("Toggle Discord", MenuAction::ToggleDiscord),
-        MenuEntry::new("Upload to Discord", MenuAction::DiscordUpload),
+        MenuEntry::new("Discord", MenuAction::Submenu("asd")),
         MenuEntry::new("Options", MenuAction::Submenu("ae")),
         MenuEntry::new("System", MenuAction::Submenu("af")),
         MenuEntry::new("WiFi Drivers", MenuAction::InstallWifiDrivers),
+    ]
+}
+
+fn discord_menu() -> Vec<MenuEntry> {
+    vec![
+        MenuEntry::new("Toggle Discord", MenuAction::ToggleDiscord),
+        MenuEntry::new("Upload Loot", MenuAction::DiscordUpload),
     ]
 }
 
@@ -276,7 +282,6 @@ fn colors_menu() -> Vec<MenuEntry> {
 fn system_menu() -> Vec<MenuEntry> {
     vec![
         MenuEntry::new("Restart", MenuAction::RestartSystem),
-        MenuEntry::new("Update from git", MenuAction::SystemUpdate),
     ]
 }
 
@@ -298,6 +303,7 @@ pub fn menu_title(id: &str) -> &'static str {
         "aw" => "WiFi Attacks",
         "aeth" => "Ethernet Recon",
         "as" => "Settings",
+        "asd" => "Discord",
         "ap" => "Attack Pipelines",
         "ao" => "Obfuscation & Evasion",
         "atx" => "TX Power",

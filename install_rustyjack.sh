@@ -53,7 +53,7 @@ PACKAGES=(
   # network / offensive tools
   nmap ncat tcpdump arp-scan dsniff ettercap-text-only php procps iproute2 isc-dhcp-client network-manager
   # WiFi interface tools (for native Rust wireless operations)
-  wireless-tools wpasupplicant iw hostapd dnsmasq
+  wireless-tools wpasupplicant iw hostapd dnsmasq iptables
   # USB WiFi dongle support
   firmware-linux-nonfree firmware-realtek firmware-atheros firmware-ralink firmware-misc-nonfree
   # misc

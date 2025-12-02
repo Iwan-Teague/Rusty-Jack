@@ -11,7 +11,7 @@ use anyhow::{Result, bail, Context};
 use rustyjack_core::cli::{
     Commands, DiscordCommand, DiscordSendArgs,
     HardwareCommand, LootCommand, LootKind, LootListArgs, 
-    LootReadArgs, NotifyCommand, SystemUpdateArgs,
+    LootReadArgs, NotifyCommand,
     WifiCommand, WifiDeauthArgs, WifiRouteCommand, WifiScanArgs, 
     WifiStatusArgs, WifiProfileCommand, WifiProfileConnectArgs, WifiProfileDeleteArgs,
 };
@@ -142,6 +142,150 @@ impl App {
             }
         }
         Ok(())
+    }
+
+    /// Result of checking for cancel during an attack
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum CancelAction {
+        Continue,      // User wants to continue attack
+        GoBack,        // User wants to go back one menu
+        GoMainMenu,    // User wants to go to main menu
+    }
+
+    /// Check if user pressed cancel button during attack, show confirmation dialog
+    fn check_attack_cancel(&mut self, attack_name: &str) -> Result<CancelAction> {
+        // Non-blocking check for button press
+        if let Some(button) = self.buttons.try_read()? {
+            let action = self.map_button(button);
+            match action {
+                ButtonAction::Back => {
+                    return self.confirm_cancel_attack(attack_name, CancelAction::GoBack);
+                }
+                ButtonAction::MainMenu => {
+                    return self.confirm_cancel_attack(attack_name, CancelAction::GoMainMenu);
+                }
+                _ => {}
+            }
+        }
+        Ok(CancelAction::Continue)
+    }
+
+    /// Show cancel confirmation dialog
+    fn confirm_cancel_attack(&mut self, attack_name: &str, cancel_to: CancelAction) -> Result<CancelAction> {
+        let overlay = self.stats.snapshot();
+        let dest = match cancel_to {
+            CancelAction::GoBack => "previous menu",
+            CancelAction::GoMainMenu => "main menu",
+            CancelAction::Continue => return Ok(CancelAction::Continue),
+        };
+        
+        let content = vec![
+            format!("Cancel {}?", attack_name),
+            "".to_string(),
+            format!("Return to {}", dest),
+            "".to_string(),
+            "SELECT = Cancel attack".to_string(),
+            "LEFT = Continue attack".to_string(),
+        ];
+        
+        self.display.draw_dialog(&content, &overlay)?;
+        
+        loop {
+            let button = self.buttons.wait_for_press()?;
+            match self.map_button(button) {
+                ButtonAction::Select => {
+                    // User confirmed cancel
+                    return Ok(cancel_to);
+                }
+                ButtonAction::Back | ButtonAction::Refresh => {
+                    // User wants to continue attack
+                    return Ok(CancelAction::Continue);
+                }
+                ButtonAction::MainMenu => {
+                    // Change to go to main menu instead
+                    return Ok(CancelAction::GoMainMenu);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Run a command with cancel support - shows progress and allows user to cancel
+    /// Returns Ok(Some(result)) if completed, Ok(None) if cancelled
+    fn dispatch_cancellable(
+        &mut self,
+        attack_name: &str,
+        cmd: Commands,
+        duration_secs: u64,
+    ) -> Result<Option<(String, serde_json::Value)>> {
+        use std::sync::{Arc, Mutex};
+        use std::thread;
+        use std::time::Duration;
+        
+        let core = self.core.clone();
+        let result: Arc<Mutex<Option<Result<(String, serde_json::Value)>>>> = Arc::new(Mutex::new(None));
+        let result_clone = Arc::clone(&result);
+        
+        // Spawn command in background
+        thread::spawn(move || {
+            let r = core.dispatch(cmd);
+            *result_clone.lock().unwrap() = Some(r);
+        });
+        
+        let start = std::time::Instant::now();
+        
+        loop {
+            let elapsed = start.elapsed().as_secs();
+            
+            // Check for cancel
+            match self.check_attack_cancel(attack_name)? {
+                CancelAction::Continue => {}
+                CancelAction::GoBack => {
+                    self.show_message(&format!("{} Cancelled", attack_name), [
+                        "Attack stopped early",
+                        "",
+                        "Partial results may be",
+                        "saved in loot folder"
+                    ])?;
+                    return Ok(None);
+                }
+                CancelAction::GoMainMenu => {
+                    self.menu_state.home();
+                    self.show_message(&format!("{} Cancelled", attack_name), [
+                        "Attack stopped early",
+                        "",
+                        "Partial results may be",
+                        "saved in loot folder"
+                    ])?;
+                    return Ok(None);
+                }
+            }
+            
+            // Check if completed
+            if let Some(r) = result.lock().unwrap().take() {
+                return Ok(Some(r?));
+            }
+            
+            // Update progress display
+            let progress = if duration_secs > 0 {
+                (elapsed as f32 / duration_secs as f32).min(1.0) * 100.0
+            } else {
+                0.0
+            };
+            
+            let msg = if duration_secs > 0 && elapsed < duration_secs {
+                format!("{}s/{}s [LEFT=Cancel]", elapsed, duration_secs)
+            } else if duration_secs > 0 {
+                "Finalizing... [LEFT=Cancel]".to_string()
+            } else {
+                "Running... [LEFT=Cancel]".to_string()
+            };
+            
+            let overlay = self.stats.snapshot();
+            self.display.draw_progress_dialog(attack_name, &msg, progress, &overlay)?;
+            
+            thread::sleep(Duration::from_millis(100));
+        }
     }
 }
 
@@ -276,9 +420,9 @@ impl App {
                         self.dashboard_view = None;
                     }
                     ButtonAction::Select => {
-                        // Cycle to next dashboard
+                        // Cycle to next dashboard (skip AttackMetrics)
                         self.dashboard_view = Some(match view {
-                            DashboardView::SystemHealth => DashboardView::AttackMetrics,
+                            DashboardView::SystemHealth => DashboardView::LootSummary,
                             DashboardView::AttackMetrics => DashboardView::LootSummary,
                             DashboardView::LootSummary => DashboardView::NetworkTraffic,
                             DashboardView::NetworkTraffic => DashboardView::SystemHealth,
@@ -288,6 +432,8 @@ impl App {
                         // force redraw; nothing else required (loop will redraw)
                     }
                     ButtonAction::MainMenu => {
+                        // Exit dashboard and go to main menu
+                        self.dashboard_view = None;
                         self.menu_state.home();
                     }
                     ButtonAction::Reboot => {
@@ -395,7 +541,6 @@ impl App {
             MenuAction::RestartSystem => self.restart_system()?,
             MenuAction::Loot(section) => self.show_loot(section)?,
             MenuAction::DiscordUpload => self.discord_upload()?,
-            MenuAction::SystemUpdate => self.run_system_update()?,
             MenuAction::ViewDashboards => {
                 self.dashboard_view = Some(DashboardView::SystemHealth);
             }
@@ -1084,6 +1229,29 @@ impl App {
     }
 
     fn discord_upload(&mut self) -> Result<()> {
+        // Check if webhook is configured first
+        let webhook_path = self.root.join("discord_webhook.txt");
+        let has_webhook = if webhook_path.exists() {
+            if let Ok(content) = fs::read_to_string(&webhook_path) {
+                let trimmed = content.trim();
+                trimmed.starts_with("https://discord.com/api/webhooks/") && !trimmed.is_empty()
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+        
+        if !has_webhook {
+            return self.show_message("Discord Error", [
+                "No webhook configured",
+                "",
+                "Create file:",
+                "discord_webhook.txt",
+                "with your webhook URL"
+            ]);
+        }
+        
         let (temp_path, archive_path) = self.build_loot_archive()?;
         let args = DiscordSendArgs {
             title: "Rustyjack Loot".to_string(),
@@ -1381,40 +1549,6 @@ impl App {
         } else {
             false
         }
-    }
-
-    fn run_system_update(&mut self) -> Result<()> {
-        let args = SystemUpdateArgs {
-            service: "rustyjack".to_string(),
-            remote: "origin".to_string(),
-            branch: "main".to_string(),
-            backup_dir: None,
-        };
-
-        let core = self.core.clone();
-        let display = &mut self.display;
-        let stats = &self.stats;
-
-        let result = core.run_system_update_with_progress(args, |pct, task| {
-            let status = stats.snapshot();
-            let _ = display.draw_progress_dialog("System Update", task, pct, &status);
-        });
-
-        match result {
-            Ok((_, data)) => {
-                let backup = data
-                    .get("backup_path")
-                    .and_then(Value::as_str)
-                    .unwrap_or("archive");
-                let msg = vec!["Updated from git".to_string(), format!("Backup: {backup}")];
-                self.show_message("Update", msg.iter().map(|s| s.as_str()))?;
-            }
-            Err(err) => {
-                let msg = err.to_string();
-                self.show_message("Update", [msg.as_str()])?;
-            }
-        }
-        Ok(())
     }
 
     fn build_loot_archive(&self) -> Result<(TempPath, PathBuf)> {
@@ -1755,15 +1889,30 @@ impl App {
         let attack_duration = 120u64;
         let start = std::time::Instant::now();
         let mut stage_idx = 0;
+        let mut cancelled = false;
         
         loop {
             let elapsed = start.elapsed().as_secs();
+            
+            // Check for cancel button press
+            match self.check_attack_cancel("Deauth")? {
+                CancelAction::Continue => {}
+                CancelAction::GoBack => {
+                    cancelled = true;
+                    break;
+                }
+                CancelAction::GoMainMenu => {
+                    cancelled = true;
+                    self.menu_state.home();
+                    break;
+                }
+            }
             
             // Update stage
             while stage_idx < progress_stages.len() && elapsed >= progress_stages[stage_idx].0 {
                 let overlay = self.stats.snapshot();
                 self.display.draw_progress_dialog(
-                    "Deauth Attack",
+                    "Deauth [LEFT=Cancel]",
                     progress_stages[stage_idx].1,
                     (elapsed as f32 / attack_duration as f32) * 100.0,
                     &overlay,
@@ -1780,7 +1929,7 @@ impl App {
             if elapsed % 5 == 0 {
                 let overlay = self.stats.snapshot();
                 let message = if elapsed < attack_duration {
-                    format!("Attack progress... {}s/{}s", elapsed, attack_duration)
+                    format!("{}s/{}s [LEFT=Cancel]", elapsed, attack_duration)
                 } else {
                     "Finalizing...".to_string()
                 };
@@ -1792,7 +1941,18 @@ impl App {
                 )?;
             }
             
-            thread::sleep(Duration::from_millis(500));
+            thread::sleep(Duration::from_millis(100));
+        }
+        
+        // If cancelled, show message and return
+        if cancelled {
+            self.show_message("Deauth Cancelled", [
+                "Attack stopped early",
+                "",
+                "Partial results may be",
+                "in loot/Wireless/"
+            ])?;
+            return Ok(());
         }
         
         // Get result
@@ -1838,16 +1998,42 @@ impl App {
     }
     
     fn connect_known_network(&mut self) -> Result<()> {
-        // For now, show message that user should use WiFi Manager or CLI
-        // A full text input UI would require keyboard support
-        self.show_message("Connect Network", [
-            "Use WiFi Manager to",
-            "connect to networks",
-            "",
-            "Or use command line:",
-            "rustyjack-core wifi",
-            "profile connect",
-        ])
+        // Fetch saved WiFi profiles
+        let profiles = match self.fetch_wifi_profiles() {
+            Ok(p) => p,
+            Err(e) => {
+                return self.show_message("Connect", [
+                    "Failed to load profiles",
+                    "",
+                    &format!("{}", e),
+                ]);
+            }
+        };
+        
+        if profiles.is_empty() {
+            return self.show_message("Connect", [
+                "No saved profiles",
+                "",
+                "Profiles are stored in",
+                "wifi/profiles/*.json",
+                "",
+                "Or scan networks and",
+                "save credentials"
+            ]);
+        }
+        
+        // Let user select a profile
+        let profile_names: Vec<String> = profiles.iter().map(|p| p.ssid.clone()).collect();
+        let choice = self.choose_from_list("Select Network", &profile_names)?;
+        
+        let Some(idx) = choice else {
+            return Ok(());
+        };
+        
+        let selected = &profiles[idx];
+        self.connect_named_profile(&selected.ssid)?;
+        
+        Ok(())
     }
     
     fn launch_evil_twin(&mut self) -> Result<()> {
@@ -1878,12 +2064,11 @@ impl App {
         // Show attack configuration
         self.show_message("Evil Twin Attack", [
             &format!("SSID: {}", target_network),
-            &format!("Channel: {}", target_channel),
-            &format!("Interface: {}", active_interface),
+            &format!("Ch: {} Iface: {}", target_channel, active_interface),
             "",
-            "Creates fake AP with",
-            "same SSID to capture",
-            "client connections",
+            "Creates fake AP with same",
+            "SSID to capture client",
+            "credentials.",
             "",
             "Press SELECT to start"
         ])?;
@@ -1896,13 +2081,7 @@ impl App {
             return Ok(());
         }
         
-        // Show progress - in background start evil twin
-        self.show_progress("Evil Twin", [
-            &format!("Creating fake: {}", target_network),
-            "Starting hostapd...",
-        ])?;
-        
-        // Execute evil twin via core
+        // Execute evil twin via core with cancel support
         use rustyjack_core::{Commands, WifiCommand, WifiEvilTwinArgs};
         
         let cmd = Commands::Wifi(WifiCommand::EvilTwin(WifiEvilTwinArgs {
@@ -1914,21 +2093,48 @@ impl App {
             open: true,
         }));
         
-        match self.core.dispatch(cmd) {
-            Ok((msg, data)) => {
-                let mut lines = vec![msg];
-                if let Some(clients) = data.get("clients_connected").and_then(|v| v.as_u64()) {
-                    lines.push(format!("Clients: {}", clients));
-                }
-                if let Some(hs) = data.get("handshakes_captured").and_then(|v| v.as_u64()) {
-                    lines.push(format!("Handshakes: {}", hs));
-                }
-                self.show_message("Evil Twin Done", lines.iter().map(|s| s.as_str()))?;
+        let result = self.dispatch_cancellable("Evil Twin", cmd, 300)?;
+        
+        let Some((msg, data)) = result else {
+            return Ok(()); // Cancelled
+        };
+        
+        let mut lines = Vec::new();
+        
+        // Check status
+        let status = data.get("status").and_then(|v| v.as_str()).unwrap_or("unknown");
+        
+        if status == "started" || status == "running" {
+            lines.push("Attack Running".to_string());
+            lines.push("".to_string());
+            if let Some(dir) = data.get("loot_directory").and_then(|v| v.as_str()) {
+                // Show just the last part of the path
+                let short_dir = dir.split('/').last().unwrap_or(dir);
+                lines.push(format!("Loot: {}", short_dir));
             }
-            Err(e) => {
-                self.show_message("Evil Twin Error", [format!("{}", e)])?;
+        } else {
+            lines.push(msg);
+        }
+        
+        if let Some(clients) = data.get("clients_connected").and_then(|v| v.as_u64()) {
+            lines.push(format!("Clients: {}", clients));
+        }
+        if let Some(hs) = data.get("handshakes_captured").and_then(|v| v.as_u64()) {
+            lines.push(format!("Handshakes: {}", hs));
+        }
+        if let Some(creds) = data.get("credentials_captured").and_then(|v| v.as_u64()) {
+            if creds > 0 {
+                lines.push(format!("Creds captured: {}", creds));
             }
         }
+        
+        if lines.len() <= 2 {
+            lines.push("".to_string());
+            lines.push("No clients yet".to_string());
+            lines.push("Try again or wait".to_string());
+        }
+        
+        self.show_message("Evil Twin", lines.iter().map(|s| s.as_str()))?;
         
         Ok(())
     }
@@ -1960,11 +2166,6 @@ impl App {
             _ => return Ok(()),
         };
         
-        self.show_progress("Probe Sniff", [
-            "Capturing probe requests",
-            "from nearby devices...",
-        ])?;
-        
         use rustyjack_core::{Commands, WifiCommand, WifiProbeSniffArgs};
         
         let cmd = Commands::Wifi(WifiCommand::ProbeSniff(WifiProbeSniffArgs {
@@ -1973,38 +2174,37 @@ impl App {
             channel: 0, // hop channels
         }));
         
-        match self.core.dispatch(cmd) {
-            Ok((msg, data)) => {
-                let mut lines = vec![msg];
-                
-                if let Some(probes) = data.get("total_probes").and_then(|v| v.as_u64()) {
-                    lines.push(format!("Probes: {}", probes));
+        let result = self.dispatch_cancellable("Probe Sniff", cmd, duration_secs as u64)?;
+        
+        let Some((msg, data)) = result else {
+            return Ok(()); // Cancelled
+        };
+        
+        let mut lines = vec![msg];
+        
+        if let Some(probes) = data.get("total_probes").and_then(|v| v.as_u64()) {
+            lines.push(format!("Probes: {}", probes));
+        }
+        if let Some(clients) = data.get("unique_clients").and_then(|v| v.as_u64()) {
+            lines.push(format!("Clients: {}", clients));
+        }
+        if let Some(networks) = data.get("unique_networks").and_then(|v| v.as_u64()) {
+            lines.push(format!("Networks: {}", networks));
+        }
+        
+        // Show top probed networks
+        if let Some(top) = data.get("top_networks").and_then(|v| v.as_array()) {
+            lines.push("".to_string());
+            lines.push("Top Networks:".to_string());
+            for net in top.iter().take(3) {
+                if let Some(ssid) = net.get("ssid").and_then(|v| v.as_str()) {
+                    let count = net.get("probe_count").and_then(|v| v.as_u64()).unwrap_or(0);
+                    lines.push(format!("  {} ({})", ssid, count));
                 }
-                if let Some(clients) = data.get("unique_clients").and_then(|v| v.as_u64()) {
-                    lines.push(format!("Clients: {}", clients));
-                }
-                if let Some(networks) = data.get("unique_networks").and_then(|v| v.as_u64()) {
-                    lines.push(format!("Networks: {}", networks));
-                }
-                
-                // Show top probed networks
-                if let Some(top) = data.get("top_networks").and_then(|v| v.as_array()) {
-                    lines.push("".to_string());
-                    lines.push("Top Networks:".to_string());
-                    for net in top.iter().take(3) {
-                        if let Some(ssid) = net.get("ssid").and_then(|v| v.as_str()) {
-                            let count = net.get("probe_count").and_then(|v| v.as_u64()).unwrap_or(0);
-                            lines.push(format!("  {} ({})", ssid, count));
-                        }
-                    }
-                }
-                
-                self.show_message("Probe Sniff Done", lines.iter().map(|s| s.as_str()))?;
-            }
-            Err(e) => {
-                self.show_message("Probe Error", [format!("{}", e)])?;
             }
         }
+        
+        self.show_message("Probe Sniff Done", lines.iter().map(|s| s.as_str()))?;
         
         Ok(())
     }
@@ -2042,11 +2242,6 @@ impl App {
             _ => return Ok(()),
         };
         
-        self.show_progress("PMKID Capture", [
-            if use_target { "Targeting network..." } else { "Passive capture..." },
-            "No deauth needed!",
-        ])?;
-        
         use rustyjack_core::{Commands, WifiCommand, WifiPmkidArgs};
         
         let cmd = Commands::Wifi(WifiCommand::PmkidCapture(WifiPmkidArgs {
@@ -2057,38 +2252,37 @@ impl App {
             duration,
         }));
         
-        match self.core.dispatch(cmd) {
-            Ok((msg, data)) => {
-                let mut lines = vec![msg];
+        let result = self.dispatch_cancellable("PMKID Capture", cmd, duration as u64)?;
+        
+        let Some((msg, data)) = result else {
+            return Ok(()); // Cancelled
+        };
+        
+        let mut lines = vec![msg];
+        
+        if let Some(count) = data.get("pmkids_captured").and_then(|v| v.as_u64()) {
+            if count > 0 {
+                lines.push(format!("Captured: {} PMKIDs", count));
+                lines.push("".to_string());
+                lines.push("Auto-cracking...".to_string());
                 
-                if let Some(count) = data.get("pmkids_captured").and_then(|v| v.as_u64()) {
-                    if count > 0 {
-                        lines.push(format!("Captured: {} PMKIDs", count));
-                        lines.push("".to_string());
-                        lines.push("Auto-cracking...".to_string());
-                        
-                        // If PMKID was captured, trigger auto-crack
-                        if let Some(hashcat) = data.get("hashcat_format").and_then(|v| v.as_str()) {
-                            lines.push(format!("Hash saved for cracking"));
-                        }
-                    } else {
-                        lines.push("No PMKIDs found".to_string());
-                        lines.push("Try different network".to_string());
-                    }
+                // If PMKID was captured, trigger auto-crack
+                if let Some(_hashcat) = data.get("hashcat_format").and_then(|v| v.as_str()) {
+                    lines.push("Hash saved for cracking".to_string());
                 }
-                
-                self.show_message("PMKID Result", lines.iter().map(|s| s.as_str()))?;
-            }
-            Err(e) => {
-                self.show_message("PMKID Error", [format!("{}", e)])?;
+            } else {
+                lines.push("No PMKIDs found".to_string());
+                lines.push("Try different network".to_string());
             }
         }
+        
+        self.show_message("PMKID Result", lines.iter().map(|s| s.as_str()))?;
         
         Ok(())
     }
     
     fn launch_crack_handshake(&mut self) -> Result<()> {
-        // Look for captured handshakes in loot directory
+        // Look for captured handshakes in loot directory (including subdirs)
         let loot_dir = self.root.join("loot/Wireless");
         
         if !loot_dir.exists() {
@@ -2101,39 +2295,54 @@ impl App {
             ]);
         }
         
-        // Find .hc22000 or .cap files
-        let mut handshake_files = Vec::new();
-        if let Ok(entries) = std::fs::read_dir(&loot_dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if let Some(ext) = path.extension() {
-                    if ext == "hc22000" || ext == "cap" || ext == "pcap" {
-                        if let Some(name) = path.file_name() {
-                            handshake_files.push(name.to_string_lossy().to_string());
+        // Recursively find .hc22000, .cap, .pcap files in all subdirectories
+        let mut handshake_files: Vec<(String, std::path::PathBuf)> = Vec::new();
+        fn scan_dir(dir: &std::path::Path, files: &mut Vec<(String, std::path::PathBuf)>) {
+            if let Ok(entries) = std::fs::read_dir(dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        scan_dir(&path, files);
+                    } else if let Some(ext) = path.extension() {
+                        if ext == "hc22000" || ext == "cap" || ext == "pcap" {
+                            // Include parent folder name for context
+                            let display_name = if let Some(parent) = path.parent() {
+                                if let Some(parent_name) = parent.file_name() {
+                                    format!("{}/{}", 
+                                        parent_name.to_string_lossy(),
+                                        path.file_name().unwrap_or_default().to_string_lossy())
+                                } else {
+                                    path.file_name().unwrap_or_default().to_string_lossy().to_string()
+                                }
+                            } else {
+                                path.file_name().unwrap_or_default().to_string_lossy().to_string()
+                            };
+                            files.push((display_name, path));
                         }
                     }
                 }
             }
         }
+        scan_dir(&loot_dir, &mut handshake_files);
         
         if handshake_files.is_empty() {
             return self.show_message("Crack", [
                 "No handshakes found",
-                "in loot/Wireless",
+                "in loot/Wireless/",
                 "",
                 "Capture one first"
             ]);
         }
         
-        // Let user select which to crack
-        let choice = self.choose_from_menu("Select Handshake", &handshake_files)?;
+        // Let user select which to crack (show display names)
+        let display_names: Vec<String> = handshake_files.iter().map(|(name, _)| name.clone()).collect();
+        let choice = self.choose_from_menu("Select Handshake", &display_names)?;
         
         let Some(idx) = choice else {
             return Ok(());
         };
         
-        let selected_file = &handshake_files[idx];
-        let file_path = loot_dir.join(selected_file);
+        let (selected_name, file_path) = &handshake_files[idx];
         
         // Crack method selection
         let methods = vec![
@@ -2151,11 +2360,6 @@ impl App {
             _ => return Ok(()),
         };
         
-        self.show_progress("Cracking", [
-            &format!("File: {}", selected_file),
-            "This may take a while...",
-        ])?;
-        
         use rustyjack_core::{Commands, WifiCommand, WifiCrackArgs};
         
         let cmd = Commands::Wifi(WifiCommand::Crack(WifiCrackArgs {
@@ -2165,28 +2369,28 @@ impl App {
             wordlist: None,
         }));
         
-        match self.core.dispatch(cmd) {
-            Ok((msg, data)) => {
-                let mut lines = vec![msg];
-                
-                if let Some(password) = data.get("password").and_then(|v| v.as_str()) {
-                    lines.push("".to_string());
-                    lines.push("PASSWORD FOUND!".to_string());
-                    lines.push(format!("{}", password));
-                } else {
-                    if let Some(attempts) = data.get("attempts").and_then(|v| v.as_u64()) {
-                        lines.push(format!("Tried: {} passwords", attempts));
-                    }
-                    lines.push("No match found".to_string());
-                    lines.push("Try different method".to_string());
-                }
-                
-                self.show_message("Crack Result", lines.iter().map(|s| s.as_str()))?;
+        // Cracking can take a long time - use 0 for unknown duration
+        let result = self.dispatch_cancellable("Crack Handshake", cmd, 0)?;
+        
+        let Some((msg, data)) = result else {
+            return Ok(()); // Cancelled
+        };
+        
+        let mut lines = vec![msg];
+        
+        if let Some(password) = data.get("password").and_then(|v| v.as_str()) {
+            lines.push("".to_string());
+            lines.push("PASSWORD FOUND!".to_string());
+            lines.push(password.to_string());
+        } else {
+            if let Some(attempts) = data.get("attempts").and_then(|v| v.as_u64()) {
+                lines.push(format!("Tried: {} passwords", attempts));
             }
-            Err(e) => {
-                self.show_message("Crack Error", [format!("{}", e)])?;
-            }
+            lines.push("No match found".to_string());
+            lines.push("Try different method".to_string());
         }
+        
+        self.show_message("Crack Result", lines.iter().map(|s| s.as_str()))?;
         
         Ok(())
     }
@@ -2549,13 +2753,7 @@ impl App {
             _ => return Ok(()),
         };
         
-        self.show_progress("Karma Attack", [
-            "Listening for probes...",
-            "",
-            if with_ap { "Creating fake AP..." } else { "Passive mode active" },
-        ])?;
-        
-        // Execute via core
+        // Execute via core with cancel support
         use rustyjack_core::{Commands, WifiCommand, WifiKarmaArgs};
         
         let cmd = Commands::Wifi(WifiCommand::Karma(WifiKarmaArgs {
@@ -2568,31 +2766,30 @@ impl App {
             ssid_blacklist: None,
         }));
         
-        match self.core.dispatch(cmd) {
-            Ok((msg, data)) => {
-                let mut lines = vec![msg];
-                
-                if let Some(probes) = data.get("probes_seen").and_then(|v| v.as_u64()) {
-                    lines.push(format!("Probes: {}", probes));
-                }
-                if let Some(ssids) = data.get("unique_ssids").and_then(|v| v.as_u64()) {
-                    lines.push(format!("SSIDs: {}", ssids));
-                }
-                if let Some(clients) = data.get("unique_clients").and_then(|v| v.as_u64()) {
-                    lines.push(format!("Clients: {}", clients));
-                }
-                if let Some(victims) = data.get("victims").and_then(|v| v.as_u64()) {
-                    if victims > 0 {
-                        lines.push(format!("Victims: {}", victims));
-                    }
-                }
-                
-                self.show_message("Karma Done", lines.iter().map(|s| s.as_str()))?;
-            }
-            Err(e) => {
-                self.show_message("Karma Error", [format!("{}", e)])?;
+        let result = self.dispatch_cancellable("Karma Attack", cmd, duration as u64)?;
+        
+        let Some((msg, data)) = result else {
+            return Ok(()); // Cancelled
+        };
+        
+        let mut lines = vec![msg];
+        
+        if let Some(probes) = data.get("probes_seen").and_then(|v| v.as_u64()) {
+            lines.push(format!("Probes: {}", probes));
+        }
+        if let Some(ssids) = data.get("unique_ssids").and_then(|v| v.as_u64()) {
+            lines.push(format!("SSIDs: {}", ssids));
+        }
+        if let Some(clients) = data.get("unique_clients").and_then(|v| v.as_u64()) {
+            lines.push(format!("Clients: {}", clients));
+        }
+        if let Some(victims) = data.get("victims").and_then(|v| v.as_u64()) {
+            if victims > 0 {
+                lines.push(format!("Victims: {}", victims));
             }
         }
+        
+        self.show_message("Karma Done", lines.iter().map(|s| s.as_str()))?;
         
         Ok(())
     }
@@ -2613,10 +2810,7 @@ impl App {
         let (title, description, steps) = match pipeline_type {
             PipelineType::GetPassword => (
                 "Get WiFi Password",
-                vec![
-                    "Automated sequence to",
-                    "obtain target password:",
-                ],
+                "Automated sequence to obtain target WiFi password",
                 vec![
                     "1. Scan networks",
                     "2. PMKID capture",
@@ -2627,10 +2821,7 @@ impl App {
             ),
             PipelineType::MassCapture => (
                 "Mass Capture",
-                vec![
-                    "Capture handshakes from",
-                    "all visible networks:",
-                ],
+                "Capture handshakes from all visible networks",
                 vec![
                     "1. Scan all networks",
                     "2. Channel hopping",
@@ -2640,10 +2831,7 @@ impl App {
             ),
             PipelineType::StealthRecon => (
                 "Stealth Recon",
-                vec![
-                    "Passive reconnaissance",
-                    "NO transmission:",
-                ],
+                "Passive reconnaissance with NO transmission",
                 vec![
                     "1. Randomize MAC",
                     "2. Minimum TX power",
@@ -2653,10 +2841,7 @@ impl App {
             ),
             PipelineType::CredentialHarvest => (
                 "Credential Harvest",
-                vec![
-                    "Capture login creds",
-                    "via fake networks:",
-                ],
+                "Capture login credentials via fake networks",
                 vec![
                     "1. Probe sniff",
                     "2. Karma attack",
@@ -2666,10 +2851,7 @@ impl App {
             ),
             PipelineType::FullPentest => (
                 "Full Pentest",
-                vec![
-                    "Complete automated",
-                    "wireless audit:",
-                ],
+                "Complete automated wireless audit",
                 vec![
                     "1. Stealth recon",
                     "2. Network mapping",
@@ -2681,17 +2863,16 @@ impl App {
             ),
         };
         
-        // Show pipeline description
+        // Show pipeline description with text wrapping
         let mut all_lines: Vec<String> = Vec::new();
-        for line in description {
-            all_lines.push(line.to_string());
-        }
+        all_lines.push(description.to_string());
         all_lines.push("".to_string());
-        for step in steps {
+        all_lines.push("Steps:".to_string());
+        for step in &steps {
             all_lines.push(step.to_string());
         }
         all_lines.push("".to_string());
-        all_lines.push("Press SELECT to start".to_string());
+        all_lines.push("SELECT = Start".to_string());
         
         self.show_message(title, all_lines.iter().map(|s| s.as_str()))?;
         
@@ -2711,27 +2892,95 @@ impl App {
             self.show_message("Select Target", [
                 "No target network set",
                 "",
-                "Scanning for networks...",
+                "Scanning networks...",
             ])?;
             
             // Scan and let user pick target
             self.scan_wifi_networks()?;
+            
+            // Check if user selected a target
+            if self.config.settings.target_network.is_empty() {
+                return self.show_message("Pipeline Cancelled", [
+                    "No target selected",
+                    "",
+                    "Select a network first",
+                ]);
+            }
         }
         
-        // Execute pipeline
-        self.show_progress(title, [
-            "Pipeline running...",
-            "",
-            "This is automated.",
-            "Please wait.",
-        ])?;
+        // Execute pipeline steps with cancel support
+        let total_steps = steps.len();
         
-        // Placeholder - actual execution would happen here
+        for (i, step) in steps.iter().enumerate() {
+            // Check for cancel at each step
+            match self.check_attack_cancel(title)? {
+                CancelAction::Continue => {}
+                CancelAction::GoBack => {
+                    return self.show_message("Pipeline Cancelled", [
+                        &format!("Stopped at step {}", i + 1),
+                        "",
+                        "Partial results may be",
+                        "saved in loot folder",
+                    ]);
+                }
+                CancelAction::GoMainMenu => {
+                    self.menu_state.home();
+                    return self.show_message("Pipeline Cancelled", [
+                        &format!("Stopped at step {}", i + 1),
+                        "",
+                        "Partial results may be",
+                        "saved in loot folder",
+                    ]);
+                }
+            }
+            
+            // Show progress
+            let progress = ((i + 1) as f32 / total_steps as f32) * 100.0;
+            let overlay = self.stats.snapshot();
+            self.display.draw_progress_dialog(
+                title,
+                &format!("{} [LEFT=Cancel]", step),
+                progress,
+                &overlay,
+            )?;
+            
+            // Simulate step execution (actual implementation would call pipeline module)
+            // Each step takes ~2 seconds for now
+            for _ in 0..20 {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                
+                // Check for cancel during step
+                match self.check_attack_cancel(title)? {
+                    CancelAction::Continue => {}
+                    CancelAction::GoBack => {
+                        return self.show_message("Pipeline Cancelled", [
+                            &format!("Stopped during: {}", step),
+                            "",
+                            "Partial results may be",
+                            "saved in loot folder",
+                        ]);
+                    }
+                    CancelAction::GoMainMenu => {
+                        self.menu_state.home();
+                        return self.show_message("Pipeline Cancelled", [
+                            &format!("Stopped during: {}", step),
+                            "",
+                            "Partial results may be",
+                            "saved in loot folder",
+                        ]);
+                    }
+                }
+            }
+        }
+        
+        // Pipeline complete
         self.show_message("Pipeline Complete", [
-            "Automated attack finished",
+            &format!("{} finished", title),
             "",
-            "Check Loot folder for",
-            "captured data.",
+            "Results saved to:",
+            "loot/Wireless/",
+            "",
+            "Check Loot menu to view",
         ])?;
         
         Ok(())

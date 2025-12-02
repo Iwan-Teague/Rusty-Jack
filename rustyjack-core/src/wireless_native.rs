@@ -582,9 +582,13 @@ pub fn execute_evil_twin(
     on_progress: impl Fn(f32, &str) + Send + Sync + 'static,
 ) -> Result<EvilTwinResult> {
     use rustyjack_wireless::{execute_evil_twin as native_evil_twin, EvilTwinConfig};
+    use std::sync::Arc;
     use std::time::Duration;
 
     log::info!("Starting Evil Twin attack for SSID: {}", config.ssid);
+
+    // Wrap on_progress in Arc for sharing
+    let on_progress = Arc::new(on_progress);
     on_progress(0.05, "Checking requirements...");
 
     // Check for required tools
@@ -617,8 +621,9 @@ pub fn execute_evil_twin(
 
     on_progress(0.10, "Starting Evil Twin AP...");
 
+    let progress_clone = Arc::clone(&on_progress);
     let result = native_evil_twin(native_config, Some(loot_dir.to_str().unwrap_or("loot/Wireless")), move |msg| {
-        on_progress(0.50, msg);
+        progress_clone(0.50, msg);
     }).context("Evil Twin attack failed")?;
 
     on_progress(1.0, "Evil Twin attack complete");

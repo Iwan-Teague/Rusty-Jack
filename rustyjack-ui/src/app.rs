@@ -418,6 +418,8 @@ impl App {
             MenuAction::SetTxPower(level) => self.set_tx_power(level)?,
             MenuAction::TogglePassiveMode => self.toggle_passive_mode()?,
             MenuAction::PassiveRecon => self.launch_passive_recon()?,
+            MenuAction::EthernetDiscovery => self.launch_ethernet_discovery()?,
+            MenuAction::EthernetPortScan => self.launch_ethernet_port_scan()?,
             MenuAction::ShowInfo => {} // No-op for informational entries
         }
         Ok(())
@@ -551,6 +553,7 @@ impl App {
     fn show_loot(&mut self, section: LootSection) -> Result<()> {
         let kind = match section {
             LootSection::Wireless => LootKind::Wireless,
+            LootSection::Ethernet => LootKind::Ethernet,
         };
         let (_, data) = self
             .core
@@ -1456,7 +1459,7 @@ impl App {
                         details.push("".to_string());
                         details.push("[OK] Set Active".to_string());
                         
-                        self.display.draw_menu("Interface details", &details, usize::MAX, &self.stats.snapshot())?;;
+                        self.display.draw_menu("Interface details", &details, usize::MAX, &self.stats.snapshot())?;
                         // Wait for action
                         loop {
                             let btn = self.buttons.wait_for_press()?;
@@ -2106,7 +2109,6 @@ impl App {
     /// Keeps user on screen until installation completes or fails
     fn install_wifi_drivers(&mut self) -> Result<()> {
         use std::fs;
-        use std::io::{BufRead, BufReader};
         use std::process::{Command, Stdio};
         
         // Status file used by the driver installer script
@@ -2989,6 +2991,30 @@ impl App {
                 "support TX power control.".to_string(),
             ])
         }
+    }
+
+    /// Launch Ethernet device discovery scan
+    fn launch_ethernet_discovery(&mut self) -> Result<()> {
+        self.show_message("Ethernet Discovery", [
+            "Network Discovery",
+            "",
+            "Scans local network",
+            "for connected devices.",
+            "",
+            "Feature coming soon."
+        ])
+    }
+
+    /// Launch Ethernet port scan
+    fn launch_ethernet_port_scan(&mut self) -> Result<()> {
+        self.show_message("Port Scan", [
+            "Quick Port Scan",
+            "",
+            "Scans common ports",
+            "on target hosts.",
+            "",
+            "Feature coming soon."
+        ])
     }
 }
 

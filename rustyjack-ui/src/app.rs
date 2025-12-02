@@ -873,7 +873,7 @@ impl App {
         
         const LINES_PER_PAGE: usize = 9; // Reduced slightly to fit position indicator
         const MAX_TITLE_CHARS: usize = 15;
-        const SCROLL_INTERVAL: Duration = Duration::from_millis(200); // Speed of title scroll
+        const SCROLL_INTERVAL: Duration = Duration::from_millis(300); // Speed of title scroll
         const PAUSE_AT_END: Duration = Duration::from_secs(2); // Pause when showing end of filename
         const PAUSE_AT_START: Duration = Duration::from_secs(2); // Pause at start before scrolling
         
@@ -883,26 +883,31 @@ impl App {
         let mut last_scroll_time = Instant::now();
         let mut paused_at_end = false;
         let mut pause_start: Option<Instant> = Some(Instant::now()); // Start with initial pause
+        let mut needs_redraw = true; // Track when redraw is needed
         
         // Calculate if title needs scrolling
         let title_needs_scroll = title.len() > MAX_TITLE_CHARS;
         let scroll_text_len = if title_needs_scroll { title.len() + 3 } else { 0 }; // +3 for padding
         
         loop {
-            let overlay = self.stats.snapshot();
-            let end = (line_offset + LINES_PER_PAGE).min(total_lines);
-            let visible_lines: Vec<String> = lines[line_offset..end].to_vec();
-            
-            // Draw the file viewer with current scroll positions
-            self.display.draw_file_viewer(
-                title,
-                title_offset,
-                &visible_lines,
-                line_offset,
-                total_lines,
-                truncated,
-                &overlay,
-            )?;
+            // Only redraw when something has changed
+            if needs_redraw {
+                let overlay = self.stats.snapshot();
+                let end = (line_offset + LINES_PER_PAGE).min(total_lines);
+                let visible_lines: Vec<String> = lines[line_offset..end].to_vec();
+                
+                // Draw the file viewer with current scroll positions
+                self.display.draw_file_viewer(
+                    title,
+                    title_offset,
+                    &visible_lines,
+                    line_offset,
+                    total_lines,
+                    truncated,
+                    &overlay,
+                )?;
+                needs_redraw = false;
+            }
             
             // Handle title scrolling animation
             if title_needs_scroll {
@@ -918,12 +923,14 @@ impl App {
                             title_offset = 0;
                             paused_at_end = false;
                             pause_start = Some(now); // Pause at start again
+                            needs_redraw = true;
                         }
                     }
                 } else if now.duration_since(last_scroll_time) >= SCROLL_INTERVAL {
                     // Advance scroll position
                     title_offset += 1;
                     last_scroll_time = now;
+                    needs_redraw = true;
                     
                     // Check if we've shown the full title (reached end of scroll cycle)
                     if title_offset >= scroll_text_len {
@@ -934,22 +941,25 @@ impl App {
             }
             
             // Non-blocking button check with short timeout
-            if let Some(button) = self.buttons.try_read_timeout(Duration::from_millis(50))? {
+            if let Some(button) = self.buttons.try_read_timeout(Duration::from_millis(100))? {
                 match self.map_button(button) {
                     ButtonAction::Down => {
                         if line_offset + LINES_PER_PAGE < total_lines {
                             line_offset += 1;
+                            needs_redraw = true;
                         }
                     }
                     ButtonAction::Up => {
                         if line_offset > 0 {
                             line_offset = line_offset.saturating_sub(1);
+                            needs_redraw = true;
                         }
                     }
                     ButtonAction::Select => {
                         // Page down
                         if line_offset + LINES_PER_PAGE < total_lines {
                             line_offset = (line_offset + LINES_PER_PAGE).min(total_lines.saturating_sub(LINES_PER_PAGE));
+                            needs_redraw = true;
                         }
                     }
                     ButtonAction::Back => {
@@ -960,10 +970,11 @@ impl App {
                         return Ok(());
                     }
                     ButtonAction::Refresh => {
-                        // Redraw on next iteration
+                        needs_redraw = true;
                     }
                     ButtonAction::Reboot => {
                         self.confirm_reboot()?;
+                        needs_redraw = true;
                     }
                 }
             }
@@ -1934,6 +1945,7 @@ impl App {
         let start = std::time::Instant::now();
         let mut stage_idx = 0;
         let mut cancelled = false;
+        let mut last_displayed_elapsed: u64 = u64::MAX; // Track to avoid redundant redraws
         
         loop {
             let elapsed = start.elapsed().as_secs();
@@ -1952,40 +1964,40 @@ impl App {
                 }
             }
             
-            // Update stage
-            while stage_idx < progress_stages.len() && elapsed >= progress_stages[stage_idx].0 {
-                let overlay = self.stats.snapshot();
-                self.display.draw_progress_dialog(
-                    "Deauth [LEFT=Cancel]",
-                    progress_stages[stage_idx].1,
-                    (elapsed as f32 / attack_duration as f32) * 100.0,
-                    &overlay,
-                )?;
-                stage_idx += 1;
-            }
-            
             // Check if attack completed
             if result.lock().unwrap().is_some() {
                 break;
             }
             
-            // Update display periodically
-            if elapsed % 5 == 0 {
+            // Only redraw when elapsed seconds changed
+            if elapsed != last_displayed_elapsed {
+                last_displayed_elapsed = elapsed;
+                
+                // Update stage message if we've reached a new stage
+                let mut current_stage_msg = "Attack in progress...";
+                for (time, msg) in &progress_stages {
+                    if elapsed >= *time {
+                        current_stage_msg = msg;
+                    } else {
+                        break;
+                    }
+                }
+                
                 let overlay = self.stats.snapshot();
                 let message = if elapsed < attack_duration {
-                    format!("{}s/{}s [LEFT=Cancel]", elapsed, attack_duration)
+                    format!("{}s/{}s {}", elapsed, attack_duration, current_stage_msg)
                 } else {
                     "Finalizing...".to_string()
                 };
                 self.display.draw_progress_dialog(
-                    "Deauth Attack",
+                    "Deauth [LEFT=Cancel]",
                     &message,
                     (elapsed as f32 / attack_duration as f32).min(1.0) * 100.0,
                     &overlay,
                 )?;
             }
             
-            thread::sleep(Duration::from_millis(100));
+            thread::sleep(Duration::from_millis(50));
         }
         
         // If cancelled, show message and return

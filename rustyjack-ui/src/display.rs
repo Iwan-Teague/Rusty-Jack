@@ -573,7 +573,7 @@ impl Display {
             };
             
             let center_x = (LCD_WIDTH / 2) as i32 - 12;
-            Text::with_baseline(&ap_indicator, Point::new(center_x, 4), self.text_style_highlight, Baseline::Top)
+            Text::with_baseline(&ap_indicator, Point::new(center_x, 3), self.text_style_highlight, Baseline::Top)
                 .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
         }
         
@@ -678,13 +678,13 @@ impl Display {
             filename.to_string()
         };
         
-        Text::with_baseline(&display_title, Point::new(4, 4), self.text_style_small, Baseline::Top)
+        Text::with_baseline(&display_title, Point::new(4, 3), self.text_style_small, Baseline::Top)
             .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
 
         // Temperature in top right corner
         let temp_text = format!("{:.0}C", status.temp_c.min(99.0));
         let temp_x = LCD_WIDTH as i32 - 22;
-        Text::with_baseline(&temp_text, Point::new(temp_x, 4), self.text_style_regular, Baseline::Top)
+        Text::with_baseline(&temp_text, Point::new(temp_x, 3), self.text_style_regular, Baseline::Top)
             .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
 
         // Draw line position indicator below toolbar

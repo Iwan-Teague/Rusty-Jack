@@ -14,8 +14,8 @@ pub mod system;
 pub mod wireless_native;
 
 pub use cli::{
-    Cli, Commands, OutputFormat, WifiCommand, WifiCrackArgs, WifiEvilTwinArgs, WifiKarmaArgs,
-    WifiPmkidArgs, WifiProbeSniffArgs,
+    Cli, Commands, OutputFormat, WifiCommand, WifiCrackArgs, WifiDeauthArgs, WifiEvilTwinArgs, 
+    WifiKarmaArgs, WifiPmkidArgs, WifiProbeSniffArgs, WifiScanArgs,
 };
 pub use operations::{dispatch_command, HandlerResult};
 pub use system::{resolve_root, InterfaceSummary};

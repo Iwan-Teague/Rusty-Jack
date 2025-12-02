@@ -233,11 +233,12 @@ impl App {
         });
         
         let start = std::time::Instant::now();
+        let mut last_displayed_secs: u64 = u64::MAX; // Force initial draw
         
         loop {
             let elapsed = start.elapsed().as_secs();
             
-            // Check for cancel
+            // Check for cancel (non-blocking button check)
             match self.check_attack_cancel(attack_name)? {
                 CancelAction::Continue => {}
                 CancelAction::GoBack => {
@@ -266,25 +267,30 @@ impl App {
                 return Ok(Some(r?));
             }
             
-            // Update progress display
-            let progress = if duration_secs > 0 {
-                (elapsed as f32 / duration_secs as f32).min(1.0) * 100.0
-            } else {
-                0.0
-            };
+            // Only redraw if seconds changed (reduces flicker significantly)
+            if elapsed != last_displayed_secs {
+                last_displayed_secs = elapsed;
+                
+                let progress = if duration_secs > 0 {
+                    (elapsed as f32 / duration_secs as f32).min(1.0) * 100.0
+                } else {
+                    0.0
+                };
+                
+                let msg = if duration_secs > 0 && elapsed < duration_secs {
+                    format!("{}s/{}s [LEFT=Cancel]", elapsed, duration_secs)
+                } else if duration_secs > 0 {
+                    "Finalizing... [LEFT=Cancel]".to_string()
+                } else {
+                    "Running... [LEFT=Cancel]".to_string()
+                };
+                
+                let overlay = self.stats.snapshot();
+                self.display.draw_progress_dialog(attack_name, &msg, progress, &overlay)?;
+            }
             
-            let msg = if duration_secs > 0 && elapsed < duration_secs {
-                format!("{}s/{}s [LEFT=Cancel]", elapsed, duration_secs)
-            } else if duration_secs > 0 {
-                "Finalizing... [LEFT=Cancel]".to_string()
-            } else {
-                "Running... [LEFT=Cancel]".to_string()
-            };
-            
-            let overlay = self.stats.snapshot();
-            self.display.draw_progress_dialog(attack_name, &msg, progress, &overlay)?;
-            
-            thread::sleep(Duration::from_millis(100));
+            // Sleep briefly between button checks (50ms for responsive cancellation)
+            thread::sleep(Duration::from_millis(50));
         }
     }
 }

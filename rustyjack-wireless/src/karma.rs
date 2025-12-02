@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Mutex,
@@ -459,7 +459,7 @@ where
     };
     capture.set_filter(filter);
 
-    let mut probe_sniffer = ProbeSniffer::from_name(&config.interface)?;
+    let probe_sniffer = ProbeSniffer::from_name(&config.interface)?;
 
     let attack_clone = Arc::clone(&attack);
     let probe_log = Arc::new(Mutex::new(probe_log));

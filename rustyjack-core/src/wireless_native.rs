@@ -434,7 +434,6 @@ pub fn execute_pmkid_capture(
     on_progress: impl Fn(f32, &str) + Send + 'static,
 ) -> Result<PmkidResult> {
     use rustyjack_wireless::{execute_pmkid_capture as native_pmkid, PmkidConfig};
-    use std::time::Duration;
 
     log::info!("Starting native PMKID capture on {}", config.interface);
     on_progress(0.05, "Initializing PMKID capture...");
@@ -444,25 +443,20 @@ pub fn execute_pmkid_capture(
         bail!("Interface {} is not a wireless interface", config.interface);
     }
 
-    // Build native config
+    // Build native config - using the actual API
     let native_config = PmkidConfig {
         interface: config.interface.clone(),
-        channel: if config.channel > 0 {
-            Some(config.channel as u32)
-        } else {
-            None
-        },
-        target_bssid: config.target_bssid.clone(),
-        duration: Duration::from_secs(config.duration_secs as u64),
-        channel_hop: config.channel == 0,
-        hop_interval: Duration::from_millis(500),
+        bssid: config.target_bssid.clone(),
+        ssid: None,
+        channel: config.channel,
+        duration: config.duration_secs,
     };
 
     on_progress(0.10, "Starting capture...");
 
-    // Execute capture
-    let result = native_pmkid(native_config, Some(loot_dir.to_str().unwrap_or("loot/Wireless")), move |msg| {
-        on_progress(0.50, msg);
+    // Execute capture - actual API: (loot_dir, config, callback)
+    let result = native_pmkid(loot_dir, &native_config, |progress, msg| {
+        on_progress(progress, msg);
     }).context("PMKID capture failed")?;
 
     on_progress(1.0, "PMKID capture complete");
@@ -470,9 +464,9 @@ pub fn execute_pmkid_capture(
     Ok(PmkidResult {
         interface: config.interface.clone(),
         duration_secs: config.duration_secs as u64,
-        pmkids_captured: result.pmkids.len(),
-        networks_seen: result.networks_seen,
-        loot_path: result.loot_path.clone(),
+        pmkids_captured: result.pmkids_captured,
+        networks_seen: result.captures.len(),
+        loot_path: loot_dir.to_path_buf(),
         hashcat_file: result.hashcat_file,
     })
 }
@@ -513,7 +507,6 @@ pub fn execute_probe_sniff(
     on_progress: impl Fn(f32, &str) + Send + 'static,
 ) -> Result<ProbeSniffResult> {
     use rustyjack_wireless::{execute_probe_sniff as native_probe, ProbeSniffConfig as NativeProbeConfig};
-    use std::time::Duration;
 
     log::info!("Starting probe sniff on {}", config.interface);
     on_progress(0.05, "Initializing probe sniffer...");
@@ -522,23 +515,18 @@ pub fn execute_probe_sniff(
         bail!("Interface {} is not a wireless interface", config.interface);
     }
 
+    // Build native config - using the actual API
     let native_config = NativeProbeConfig {
         interface: config.interface.clone(),
-        channel: if config.channel > 0 {
-            Some(config.channel as u32)
-        } else {
-            None
-        },
-        duration: Duration::from_secs(config.duration_secs as u64),
-        channel_hop: config.channel == 0,
-        hop_interval: Duration::from_millis(500),
-        filter_broadcast: false,
+        duration: config.duration_secs,
+        channel: config.channel,
     };
 
     on_progress(0.10, "Starting probe capture...");
 
-    let result = native_probe(native_config, Some(loot_dir.to_str().unwrap_or("loot/Wireless")), move |msg| {
-        on_progress(0.50, msg);
+    // Execute capture - actual API: (loot_dir, config, callback)
+    let result = native_probe(loot_dir, &native_config, |progress, msg| {
+        on_progress(progress, msg);
     }).context("Probe sniff failed")?;
 
     on_progress(1.0, "Probe sniff complete");
@@ -546,10 +534,10 @@ pub fn execute_probe_sniff(
     Ok(ProbeSniffResult {
         interface: config.interface.clone(),
         duration_secs: config.duration_secs as u64,
-        probes_captured: result.total_probes,
-        unique_clients: result.unique_clients,
-        unique_networks: result.unique_networks,
-        loot_path: result.loot_path,
+        probes_captured: result.total_probes as usize,
+        unique_clients: result.unique_clients as usize,
+        unique_networks: result.unique_networks as usize,
+        loot_path: loot_dir.to_path_buf(),
     })
 }
 
@@ -591,7 +579,7 @@ pub struct EvilTwinAttackConfig {
 pub fn execute_evil_twin(
     loot_dir: &Path,
     config: &EvilTwinAttackConfig,
-    on_progress: impl Fn(f32, &str) + Send + 'static,
+    on_progress: impl Fn(f32, &str) + Send + Sync + 'static,
 ) -> Result<EvilTwinResult> {
     use rustyjack_wireless::{execute_evil_twin as native_evil_twin, EvilTwinConfig};
     use std::time::Duration;
@@ -686,8 +674,12 @@ pub fn execute_karma(
     on_progress: impl Fn(f32, &str) + Send + Sync + 'static,
 ) -> Result<KarmaResult> {
     use rustyjack_wireless::{execute_karma as native_karma, execute_karma_with_ap, KarmaConfig};
+    use std::sync::Arc;
 
     log::info!("Starting Karma attack on {}", config.interface);
+
+    // Wrap on_progress in Arc for sharing
+    let on_progress = Arc::new(on_progress);
     on_progress(0.05, "Initializing Karma attack...");
 
     if !is_wireless_interface(&config.interface) {
@@ -711,12 +703,14 @@ pub fn execute_karma(
 
     let result = if config.with_ap {
         let ap_iface = config.ap_interface.as_deref().unwrap_or(&config.interface);
+        let progress_clone = Arc::clone(&on_progress);
         execute_karma_with_ap(native_config, ap_iface, Some(loot_dir.to_str().unwrap_or("loot/Wireless")), move |msg| {
-            on_progress(0.50, msg);
+            progress_clone(0.50, msg);
         }).context("Karma AP attack failed")?
     } else {
+        let progress_clone = Arc::clone(&on_progress);
         native_karma(native_config, Some(loot_dir.to_str().unwrap_or("loot/Wireless")), move |msg| {
-            on_progress(0.50, msg);
+            progress_clone(0.50, msg);
         }).context("Karma attack failed")?
     };
 

@@ -129,7 +129,7 @@ impl WpaCracker {
         let total = total.unwrap_or(passwords.len() as u64);
         let progress_interval = self.config.progress_interval.max(1);
 
-        for (idx, password) in passwords.iter().enumerate() {
+        for (_idx, password) in passwords.iter().enumerate() {
             if self.stop_flag.load(Ordering::Relaxed) {
                 return Ok(CrackResult::Stopped {
                     attempts: self.attempts(),

@@ -625,12 +625,12 @@ impl Display {
             // Wrap each line if it's longer than MAX_CHARS characters
             let wrapped = wrap_text(line, MAX_CHARS);
             for wrapped_line in wrapped {
-                if y > 90 {
-                    break; // Stop if we're running out of space
+                if y > 118 {
+                    break; // Stop if we're running out of space (LCD height ~129)
                 }
                 Text::with_baseline(&wrapped_line, Point::new(4, y), self.text_style_regular, Baseline::Top)
                     .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
-                y += 10; // Reduced from 12 to fit more lines
+                y += 10; // 10px per line
             }
         }
         Ok(())

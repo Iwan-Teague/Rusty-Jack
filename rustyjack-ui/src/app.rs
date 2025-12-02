@@ -870,7 +870,7 @@ impl App {
     }
     
     fn scrollable_text_viewer(&mut self, title: &str, lines: &[String], truncated: bool) -> Result<()> {
-        const LINES_PER_PAGE: usize = 9;
+        const LINES_PER_PAGE: usize = 10;
         let total_lines = lines.len();
         let mut offset = 0;
         

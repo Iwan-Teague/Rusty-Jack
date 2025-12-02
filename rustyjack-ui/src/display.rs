@@ -547,14 +547,14 @@ impl Display {
 
         // Draw title in top left if provided
         if let Some(t) = title {
-            Text::with_baseline(t, Point::new(4, 2), self.text_style_small, Baseline::Top)
+            Text::with_baseline(t, Point::new(4, 4), self.text_style_small, Baseline::Top)
                 .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
         }
 
         // Temperature in top right corner (right-aligned, max 3 chars "99C")
         let temp_text = format!("{:.0}C", status.temp_c.min(99.0));
         let temp_x = LCD_WIDTH as i32 - 22; // 3 chars * 6px + 4px margin = 22px from right
-        Text::with_baseline(&temp_text, Point::new(temp_x, 2), self.text_style_regular, Baseline::Top)
+        Text::with_baseline(&temp_text, Point::new(temp_x, 4), self.text_style_regular, Baseline::Top)
             .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
         
         // Display autopilot indicator if running (center of toolbar)
@@ -573,7 +573,7 @@ impl Display {
             };
             
             let center_x = (LCD_WIDTH / 2) as i32 - 12;
-            Text::with_baseline(&ap_indicator, Point::new(center_x, 2), self.text_style_highlight, Baseline::Top)
+            Text::with_baseline(&ap_indicator, Point::new(center_x, 4), self.text_style_highlight, Baseline::Top)
                 .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
         }
         

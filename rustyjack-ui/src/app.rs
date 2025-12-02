@@ -2104,16 +2104,20 @@ impl App {
         // Check status
         let status = data.get("status").and_then(|v| v.as_str()).unwrap_or("unknown");
         
-        if status == "started" || status == "running" {
-            lines.push("Attack Running".to_string());
-            lines.push("".to_string());
-            if let Some(dir) = data.get("loot_directory").and_then(|v| v.as_str()) {
-                // Show just the last part of the path
-                let short_dir = dir.split('/').last().unwrap_or(dir);
-                lines.push(format!("Loot: {}", short_dir));
-            }
+        if status == "completed" {
+            lines.push("Attack Complete".to_string());
+        } else if status == "failed" {
+            lines.push("Attack Failed".to_string());
+            lines.push(msg);
         } else {
             lines.push(msg);
+        }
+        
+        // Show stats
+        if let Some(duration) = data.get("attack_duration_secs").and_then(|v| v.as_u64()) {
+            let mins = duration / 60;
+            let secs = duration % 60;
+            lines.push(format!("Duration: {}m {}s", mins, secs));
         }
         
         if let Some(clients) = data.get("clients_connected").and_then(|v| v.as_u64()) {
@@ -2123,15 +2127,13 @@ impl App {
             lines.push(format!("Handshakes: {}", hs));
         }
         if let Some(creds) = data.get("credentials_captured").and_then(|v| v.as_u64()) {
-            if creds > 0 {
-                lines.push(format!("Creds captured: {}", creds));
-            }
+            lines.push(format!("Creds: {}", creds));
         }
         
-        if lines.len() <= 2 {
-            lines.push("".to_string());
-            lines.push("No clients yet".to_string());
-            lines.push("Try again or wait".to_string());
+        // Show loot location
+        if let Some(dir) = data.get("loot_directory").and_then(|v| v.as_str()) {
+            let short_dir = dir.split('/').last().unwrap_or(dir);
+            lines.push(format!("Loot: {}", short_dir));
         }
         
         self.show_message("Evil Twin", lines.iter().map(|s| s.as_str()))?;

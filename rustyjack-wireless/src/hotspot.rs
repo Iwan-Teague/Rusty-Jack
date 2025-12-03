@@ -47,7 +47,6 @@ pub struct HotspotState {
 
 const STATE_PATH: &str = "/tmp/rustyjack_hotspot/state.json";
 const CONF_DIR: &str = "/tmp/rustyjack_hotspot";
-const AP_SUBNET: &str = "10.20.30.0/24";
 const AP_GATEWAY: &str = "10.20.30.1";
 
 /// Generate a random SSID suffix (user-friendly).

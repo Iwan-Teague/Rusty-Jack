@@ -184,8 +184,6 @@ pub fn execute_deauth_attack(
         }
     }
 
-    // Save handshake export (JSON) for cracking
-    let mut handshake_export_path = None;
     if let Some(export) = handshake_export {
         let export_bundle = serde_json::json!({
             "ssid": ssid_display,
@@ -194,7 +192,6 @@ pub fn execute_deauth_attack(
         let export_file = loot_dir.join(format!("handshake_export_{}_{}.json", safe_ssid, timestamp));
         fs::write(&export_file, serde_json::to_vec_pretty(&export_bundle)?)
             .with_context(|| format!("Writing handshake export: {}", export_file.display()))?;
-        handshake_export_path = Some(export_file.clone());
         capture_files.push(export_file);
     }
 

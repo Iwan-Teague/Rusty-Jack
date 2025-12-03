@@ -109,6 +109,7 @@ pub fn discover_hosts(network: Ipv4Net, timeout: Duration) -> Result<LanDiscover
         return Ok(LanDiscoveryResult {
             network,
             hosts: Vec::new(),
+            details: Vec::new(),
         });
     }
 
@@ -302,18 +303,20 @@ pub fn discover_hosts_arp(
     }
 
     sock.set_read_timeout(Some(timeout))?;
-    let mut buf = [0u8; 1500];
+    let mut buf = [MaybeUninit::<u8>::uninit(); 1500];
     loop {
         match sock.recv(&mut buf) {
             Ok(n) => {
                 if n < 42 {
                     continue;
                 }
-                if buf[12] != 0x08 || buf[13] != 0x06 {
+                // Safety: recv initialized the first `n` bytes.
+                let bytes = unsafe { std::slice::from_raw_parts(buf.as_ptr() as *const u8, n) };
+                if bytes[12] != 0x08 || bytes[13] != 0x06 {
                     continue;
                 }
                 // ARP reply opcode 2 at bytes 20-21 of Ethernet payload
-                let payload = &buf[14..];
+                let payload = &bytes[14..];
                 if payload[6] != 0x00 || payload[7] != 0x02 {
                     continue;
                 }

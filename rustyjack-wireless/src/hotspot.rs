@@ -1,7 +1,6 @@
 use std::fs;
 use std::path::Path;
-use std::process::{Child, Command};
-use std::time::Duration;
+use std::process::Command;
 
 use rand::{distributions::Alphanumeric, rngs::OsRng, Rng};
 
@@ -195,7 +194,7 @@ pub fn start_hotspot(config: HotspotConfig) -> Result<HotspotState> {
 
 /// Stop a running hotspot and clean up.
 pub fn stop_hotspot() -> Result<()> {
-    let state = status_hotspot().ok();
+    let state = status_hotspot();
 
     // Best-effort kill processes
     if let Some(s) = state {
@@ -274,7 +273,9 @@ fn spawn_background(cmd: &str, args: &[&str]) -> Result<Option<i32>> {
         .args(args)
         .spawn()
         .map_err(|e| WirelessError::System(format!("spawn {}: {}", cmd, e)))?;
-    Ok(child.id().map(|id| id as i32))
+    let pid = i32::try_from(child.id())
+        .map_err(|_| WirelessError::System(format!("{}: PID does not fit in i32", cmd)))?;
+    Ok(Some(pid))
 }
 
 fn ensure_tools_present() -> Result<()> {

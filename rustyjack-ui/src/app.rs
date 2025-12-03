@@ -13,7 +13,7 @@ use rustyjack_core::cli::{
     HardwareCommand, LootCommand, LootKind, LootListArgs, 
     LootReadArgs, NotifyCommand,
     WifiCommand, WifiDeauthArgs, WifiRouteCommand, WifiScanArgs, 
-    WifiStatusArgs, WifiProfileCommand, WifiProfileConnectArgs, WifiProfileDeleteArgs, EthernetCommand, EthernetDiscoverArgs, EthernetPortScanArgs,
+    WifiStatusArgs, WifiProfileCommand, WifiProfileConnectArgs, WifiProfileDeleteArgs, EthernetCommand, EthernetDiscoverArgs, EthernetPortScanArgs, HotspotCommand, HotspotStartArgs,
 };
 use rustyjack_core::InterfaceSummary;
 use serde::Deserialize;
@@ -586,6 +586,7 @@ impl App {
             MenuAction::PassiveRecon => self.launch_passive_recon()?,
             MenuAction::EthernetDiscovery => self.launch_ethernet_discovery()?,
             MenuAction::EthernetPortScan => self.launch_ethernet_port_scan()?,
+            MenuAction::Hotspot => self.manage_hotspot()?,
             MenuAction::ShowInfo => {} // No-op for informational entries
         }
         Ok(())
@@ -1675,6 +1676,28 @@ impl App {
         Ok(self
             .choose_from_list(title, &labels)?
             .map(|idx| names[idx].clone()))
+    }
+
+    fn choose_interface_prompt(&mut self, title: &str) -> Result<Option<String>> {
+        let (_, data) = self.core.dispatch(Commands::Hardware(HardwareCommand::Detect))?;
+        let mut names: Vec<String> = Vec::new();
+        if let Some(arr) = data.get("ethernet_ports").and_then(|v| v.as_array()) {
+            for item in arr {
+                if let Ok(info) = serde_json::from_value::<InterfaceSummary>(item.clone()) {
+                    names.push(info.name);
+                }
+            }
+        }
+        if let Some(arr) = data.get("wifi_modules").and_then(|v| v.as_array()) {
+            for item in arr {
+                if let Ok(info) = serde_json::from_value::<InterfaceSummary>(item.clone()) {
+                    names.push(info.name);
+                }
+            }
+        }
+        names.sort();
+        names.dedup();
+        self.choose_interface_name(title, &names)
     }
 
     fn toggle_discord(&mut self) -> Result<()> {
@@ -3900,6 +3923,11 @@ impl App {
                     .get("loot_path")
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string());
+                let detail = data
+                    .get("hosts_detail")
+                    .and_then(|v| v.as_array())
+                    .cloned()
+                    .unwrap_or_default();
 
                 let mut lines = vec![
                     format!("Net: {}", network),
@@ -3908,8 +3936,22 @@ impl App {
                 ];
 
                 if !hosts.is_empty() {
-                    let sample: Vec<String> = hosts.iter().take(3).cloned().collect();
-                    lines.push(format!("Sample: {}", sample.join(", ")));
+                    let mut samples = Vec::new();
+                    for host in detail.iter().take(3) {
+                        if let Some(ip) = host.get("ip").and_then(|v| v.as_str()) {
+                            let os = host.get("os_guess").and_then(|v| v.as_str()).unwrap_or("");
+                            if os.is_empty() {
+                                samples.push(ip.to_string());
+                            } else {
+                                samples.push(format!("{} ({})", ip, os));
+                            }
+                        }
+                    }
+                    if samples.is_empty() {
+                        lines.push(format!("Sample: {}", hosts.iter().take(3).cloned().collect::<Vec<_>>().join(", ")));
+                    } else {
+                        lines.push(format!("Sample: {}", samples.join(", ")));
+                    }
                     if hosts.len() > 3 {
                         lines.push(format!("+{} more", hosts.len() - 3));
                     }
@@ -3968,6 +4010,11 @@ impl App {
                     .get("loot_path")
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string());
+                let banners = data
+                    .get("banners")
+                    .and_then(|v| v.as_array())
+                    .cloned()
+                    .unwrap_or_default();
 
                 let mut lines = vec![
                     format!("Target: {}", target),
@@ -3988,6 +4035,26 @@ impl App {
                     lines.push("No open ports found".to_string());
                 }
 
+                if !banners.is_empty() {
+                    let mut preview = Vec::new();
+                    for b in banners.iter().take(3) {
+                        let port = b.get("port").and_then(|v| v.as_u64()).unwrap_or(0);
+                        let banner = b
+                            .get("banner")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .chars()
+                            .take(40)
+                            .collect::<String>();
+                        preview.push(format!("{}: {}", port, banner));
+                    }
+                    lines.push("Banners:".to_string());
+                    lines.extend(preview);
+                    if banners.len() > 3 {
+                        lines.push(format!("+{} more", banners.len() - 3));
+                    }
+                }
+
                 if let Some(path) = loot_path {
                     lines.push("Saved:".to_string());
                     lines.push(shorten_for_display(&path, 18));
@@ -3996,6 +4063,156 @@ impl App {
                 self.show_message("Port Scan Done", lines)?;
             }
             Ok(())
+        }
+    }
+
+    /// Manage hotspot (start/stop, randomize credentials)
+    fn manage_hotspot(&mut self) -> Result<()> {
+        #[cfg(not(target_os = "linux"))]
+        {
+            return self.show_message("Hotspot", [
+                "Hotspot control is available",
+                "on Linux targets only.",
+            ]);
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            loop {
+                let status = self
+                    .core
+                    .dispatch(Commands::Hotspot(HotspotCommand::Status))?;
+                let data = status.1;
+                let running = data
+                    .get("running")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let current_ssid = data
+                    .get("ssid")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(&self.config.settings.hotspot_ssid)
+                    .to_string();
+                let current_password = data
+                    .get("password")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(&self.config.settings.hotspot_password)
+                    .to_string();
+
+                let mut lines = vec![
+                    format!("SSID: {}", current_ssid),
+                    format!("Password: {}", current_password),
+                    "".to_string(),
+                    format!("Status: {}", if running { "ON" } else { "OFF" }),
+                ];
+
+                let options = if running {
+                    lines.push("Turn off to exit this view".to_string());
+                    vec!["Turn off hotspot".to_string(), "Refresh".to_string()]
+                } else {
+                    vec![
+                        "Start hotspot".to_string(),
+                        "Randomize name".to_string(),
+                        "Randomize password".to_string(),
+                        "Back".to_string(),
+                    ]
+                };
+
+                let choice = self.choose_from_list("Hotspot", &options)?;
+                match (running, choice) {
+                    (true, Some(0)) => {
+                        let _ = self
+                            .core
+                            .dispatch(Commands::Hotspot(HotspotCommand::Stop));
+                    }
+                    (true, Some(1)) | (true, None) => {
+                        continue;
+                    }
+                    (false, Some(0)) => {
+                        // Select interfaces
+                        let upstream = self.choose_interface_prompt("Upstream (internet)")?;
+                        let ap_iface = self.choose_interface_prompt("AP interface")?;
+                        let upstream_iface = upstream.unwrap_or_else(|| "eth0".to_string());
+                        let ap_iface = ap_iface.unwrap_or_else(|| {
+                            if self.config.settings.active_network_interface.is_empty() {
+                                "wlan0".to_string()
+                            } else {
+                                self.config.settings.active_network_interface.clone()
+                            }
+                        });
+
+                        let args = HotspotStartArgs {
+                            ap_interface: ap_iface.clone(),
+                            upstream_interface: upstream_iface.clone(),
+                            ssid: self.config.settings.hotspot_ssid.clone(),
+                            password: self.config.settings.hotspot_password.clone(),
+                            channel: 6,
+                        };
+                        match self.core.dispatch(Commands::Hotspot(HotspotCommand::Start(args)))
+                        {
+                            Ok((msg, data)) => {
+                                let ssid = data
+                                    .get("ssid")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or(&self.config.settings.hotspot_ssid)
+                                    .to_string();
+                                let password = data
+                                    .get("password")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or(&self.config.settings.hotspot_password)
+                                    .to_string();
+                                self.config.settings.hotspot_ssid = ssid.clone();
+                                self.config.settings.hotspot_password = password.clone();
+                                let config_path = self.root.join("gui_conf.json");
+                                let _ = self.config.save(&config_path);
+
+                                self.show_message("Hotspot started", [
+                                    msg,
+                                    format!("SSID: {}", ssid),
+                                    format!("Password: {}", password),
+                                    format!("AP: {}", ap_iface),
+                                    format!("Upstream: {}", upstream_iface),
+                                    "",
+                                    "Turn off to exit this view",
+                                ])?;
+                            }
+                            Err(e) => {
+                                self.show_message("Hotspot error", [
+                                    "Failed to start hotspot",
+                                    &format!("{e}"),
+                                ])?;
+                            }
+                        }
+                    }
+                    (false, Some(1)) => {
+                        #[cfg(target_os = "linux")]
+                        {
+                            let ssid = rustyjack_wireless::random_ssid();
+                            self.config.settings.hotspot_ssid = ssid.clone();
+                            let config_path = self.root.join("gui_conf.json");
+                            let _ = self.config.save(&config_path);
+                            self.show_message("Hotspot", [
+                                "SSID updated",
+                                &ssid,
+                            ])?;
+                        }
+                    }
+                    (false, Some(2)) => {
+                        #[cfg(target_os = "linux")]
+                        {
+                            let pw = rustyjack_wireless::random_password();
+                            self.config.settings.hotspot_password = pw.clone();
+                            let config_path = self.root.join("gui_conf.json");
+                            let _ = self.config.save(&config_path);
+                            self.show_message("Hotspot", [
+                                "Password updated",
+                                &pw,
+                            ])?;
+                        }
+                    }
+                    (false, Some(3)) | (false, None) => return Ok(()),
+                    _ => return Ok(()),
+                }
+            }
         }
     }
 }

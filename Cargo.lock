@@ -1656,6 +1656,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "ipnet",
+ "libc",
  "log",
  "socket2 0.5.10",
 ]
@@ -1722,6 +1723,7 @@ dependencies = [
  "netlink-sys",
  "nix 0.27.1",
  "pbkdf2",
+ "rand 0.8.5",
  "rustyjack-evasion",
  "serde",
  "serde_json",

@@ -9,14 +9,18 @@ use anyhow::{anyhow, bail, Context, Result};
 use chrono::Local;
 use ipnet::Ipv4Net;
 use regex::Regex;
-use rustyjack_ethernet::{discover_hosts, quick_port_scan};
+use rustyjack_ethernet::{discover_hosts, discover_hosts_arp, quick_port_scan};
+use rustyjack_wireless::{
+    start_hotspot, status_hotspot, stop_hotspot, HotspotConfig, HotspotState,
+};
 use serde_json::{json, Value};
 use walkdir::WalkDir;
 
 use crate::cli::{
     AutopilotCommand, AutopilotStartArgs, BridgeCommand, BridgeStartArgs, BridgeStopArgs, Commands,
     DiscordCommand, DiscordSendArgs, DnsSpoofCommand, DnsSpoofStartArgs, EthernetCommand,
-    EthernetDiscoverArgs, EthernetPortScanArgs, HardwareCommand, LootCommand, LootKind,
+    EthernetDiscoverArgs, EthernetPortScanArgs, HardwareCommand, HotspotCommand, HotspotStartArgs,
+    LootCommand, LootKind,
     LootListArgs, LootReadArgs, MitmCommand, MitmStartArgs, NotifyCommand, ProcessCommand,
     ProcessKillArgs, ProcessStatusArgs, ResponderArgs, ResponderCommand, ReverseCommand,
     ReverseLaunchArgs, ScanCommand, ScanRunArgs, StatusCommand, SystemCommand, SystemUpdateArgs,
@@ -117,6 +121,11 @@ pub fn dispatch_command(root: &Path, command: Commands) -> Result<HandlerResult>
             EthernetCommand::Discover(args) => handle_eth_discover(root, args),
             EthernetCommand::PortScan(args) => handle_eth_port_scan(root, args),
         },
+        Commands::Hotspot(sub) => match sub {
+            HotspotCommand::Start(args) => handle_hotspot_start(args),
+            HotspotCommand::Stop => handle_hotspot_stop(),
+            HotspotCommand::Status => handle_hotspot_status(),
+        },
     }
 }
 
@@ -133,7 +142,25 @@ fn handle_eth_discover(root: &Path, args: EthernetDiscoverArgs) -> Result<Handle
     let net: Ipv4Net = cidr.parse().context("parsing target CIDR")?;
 
     let timeout = Duration::from_millis(args.timeout_ms.max(50));
-    let result = discover_hosts(net, timeout).context("running LAN discovery")?;
+    // Try ARP sweep first for low-noise discovery, then augment with ICMP.
+    let mut hosts_detail = Vec::new();
+    if let Ok(arp_result) =
+        discover_hosts_arp(&interface.name, net, Some(50), timeout)
+    {
+        hosts_detail.extend(arp_result.details);
+    }
+    if let Ok(icmp_result) = discover_hosts(net, timeout) {
+        hosts_detail.extend(icmp_result.details);
+    }
+    // Deduplicate while preserving the first discovery method/ttl observed.
+    let mut seen = std::collections::HashSet::new();
+    let mut deduped = Vec::new();
+    for h in hosts_detail {
+        if seen.insert(h.ip) {
+            deduped.push(h);
+        }
+    }
+    let hosts: Vec<Ipv4Addr> = deduped.iter().map(|h| h.ip).collect();
 
     // Save loot
     let loot_dir = root.join("loot").join("Ethernet");
@@ -145,19 +172,38 @@ fn handle_eth_discover(root: &Path, args: EthernetDiscoverArgs) -> Result<Handle
     out.push_str(&format!("Interface: {}\n", interface.name));
     out.push_str(&format!("Timeout: {:?}\n", timeout));
     out.push_str("\nHosts:\n");
-    for ip in &result.hosts {
-        out.push_str(&format!("{}\n", ip));
+    for host in &deduped {
+        let ttl_txt = host.ttl.map(|t| format!(" ttl={}", t)).unwrap_or_default();
+        let os_guess = rustyjack_ethernet::guess_os_from_ttl(host.ttl)
+            .map(|s| format!(" os={}", s))
+            .unwrap_or_default();
+        let method = match host.method {
+            rustyjack_ethernet::DiscoveryMethod::Icmp => "icmp",
+            rustyjack_ethernet::DiscoveryMethod::Arp => "arp",
+        };
+        out.push_str(&format!("{} [{}]{}{}\n", host.ip, method, ttl_txt, os_guess));
     }
     fs::write(&file, out).with_context(|| format!("writing {}", file.display()))?;
 
     let data = json!({
         "network": net.to_string(),
         "interface": interface.name,
-        "hosts_found": result.hosts,
+        "hosts_found": hosts,
+        "hosts_detail": deduped.iter().map(|h| {
+            json!({
+                "ip": h.ip.to_string(),
+                "method": match h.method {
+                    rustyjack_ethernet::DiscoveryMethod::Icmp => "icmp",
+                    rustyjack_ethernet::DiscoveryMethod::Arp => "arp",
+                },
+                "ttl": h.ttl,
+                "os_guess": rustyjack_ethernet::guess_os_from_ttl(h.ttl),
+            })
+        }).collect::<Vec<_>>(),
         "loot_path": file.display().to_string(),
     });
     Ok((
-        format!("LAN discovery complete ({} hosts)", result.hosts.len()),
+        format!("LAN discovery complete ({} hosts)", hosts.len()),
         data,
     ))
 }
@@ -203,17 +249,82 @@ fn handle_eth_port_scan(root: &Path, args: EthernetPortScanArgs) -> Result<Handl
     for p in &result.open_ports {
         out.push_str(&format!("{}\n", p));
     }
+    if !result.banners.is_empty() {
+        out.push_str("\nBanners:\n");
+        for b in &result.banners {
+            out.push_str(&format!("{} [{}]: {}\n", b.port, b.probe, b.banner));
+        }
+    }
     fs::write(&file, out).with_context(|| format!("writing {}", file.display()))?;
 
     let data = json!({
         "target": target.to_string(),
         "open_ports": result.open_ports,
+        "banners": result.banners.iter().map(|b| {
+            json!({
+                "port": b.port,
+                "probe": b.probe,
+                "banner": b.banner,
+            })
+        }).collect::<Vec<_>>(),
         "loot_path": file.display().to_string(),
     });
     Ok((
         format!("Port scan complete ({} open)", result.open_ports.len()),
         data,
     ))
+}
+
+fn handle_hotspot_start(args: HotspotStartArgs) -> Result<HandlerResult> {
+    let cfg = HotspotConfig {
+        ap_interface: args.ap_interface,
+        upstream_interface: args.upstream_interface,
+        ssid: args.ssid,
+        password: args.password,
+        channel: args.channel,
+    };
+    let state = start_hotspot(cfg).context("starting hotspot")?;
+
+    let data = json!({
+        "running": true,
+        "ssid": state.ssid,
+        "password": state.password,
+        "ap_interface": state.ap_interface,
+        "upstream_interface": state.upstream_interface,
+        "channel": state.channel,
+    });
+    Ok(("Hotspot started".to_string(), data))
+}
+
+fn handle_hotspot_stop() -> Result<HandlerResult> {
+    stop_hotspot().context("stopping hotspot")?;
+    let data = json!({ "running": false });
+    Ok(("Hotspot stopped".to_string(), data))
+}
+
+fn handle_hotspot_status() -> Result<HandlerResult> {
+    if let Some(HotspotState {
+        ssid,
+        password,
+        ap_interface,
+        upstream_interface,
+        channel,
+        ..
+    }) = status_hotspot()
+    {
+        let data = json!({
+            "running": true,
+            "ssid": ssid,
+            "password": password,
+            "ap_interface": ap_interface,
+            "upstream_interface": upstream_interface,
+            "channel": channel,
+        });
+        Ok(("Hotspot running".to_string(), data))
+    } else {
+        let data = json!({ "running": false });
+        Ok(("Hotspot not running".to_string(), data))
+    }
 }
 
 pub fn run_scan_with_progress<F>(

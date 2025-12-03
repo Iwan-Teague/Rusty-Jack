@@ -45,6 +45,8 @@ pub enum MenuAction {
     EthernetDiscovery,
     /// Ethernet quick port scan
     EthernetPortScan,
+    /// Hotspot management
+    Hotspot,
     /// Placeholder for informational entries (no action)
     ShowInfo,
 }
@@ -164,6 +166,7 @@ fn wifi_menu() -> Vec<MenuEntry> {
         MenuEntry::new("Probe Sniff", MenuAction::ProbeSniff),
         MenuEntry::new("Crack Handshake", MenuAction::CrackHandshake),
         MenuEntry::new("Connect Network", MenuAction::ConnectKnownNetwork),
+        MenuEntry::new("Hotspot", MenuAction::Hotspot),
     ]
 }
 

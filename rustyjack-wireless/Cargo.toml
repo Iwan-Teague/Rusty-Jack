@@ -60,6 +60,9 @@ pbkdf2 = "0.12"
 # Time handling
 chrono = "0.4"
 
+# Randomness (hotspot SSID/password helpers)
+rand = { version = "0.8", features = ["std", "std_rng"] }
+
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 

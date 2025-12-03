@@ -65,6 +65,8 @@ pub enum Commands {
     Hardware(HardwareCommand),
     #[command(subcommand)]
     Ethernet(EthernetCommand),
+    #[command(subcommand)]
+    Hotspot(HotspotCommand),
 }
 
 #[derive(Subcommand, Debug)]
@@ -78,6 +80,16 @@ pub enum EthernetCommand {
     Discover(EthernetDiscoverArgs),
     /// Quick TCP port scan on a target
     PortScan(EthernetPortScanArgs),
+}
+
+#[derive(Subcommand, Debug)]
+pub enum HotspotCommand {
+    /// Start a NATed hotspot (hostapd + dnsmasq)
+    Start(HotspotStartArgs),
+    /// Stop the hotspot and clean up
+    Stop,
+    /// Show hotspot status
+    Status,
 }
 
 #[derive(Args, Debug)]
@@ -112,6 +124,25 @@ pub struct EthernetPortScanArgs {
     /// Connect timeout per port (ms)
     #[arg(long, default_value_t = 500)]
     pub timeout_ms: u64,
+}
+
+#[derive(Args, Debug)]
+pub struct HotspotStartArgs {
+    /// Interface to host the hotspot (AP mode)
+    #[arg(long, default_value = "wlan0")]
+    pub ap_interface: String,
+    /// Upstream interface for Internet access (eth0/wlan0/etc)
+    #[arg(long, default_value = "eth0")]
+    pub upstream_interface: String,
+    /// Hotspot SSID
+    #[arg(long, default_value = "rustyjack")]
+    pub ssid: String,
+    /// Hotspot password (WPA2, 8-63 chars). Empty for open network.
+    #[arg(long, default_value = "rustyjack")]
+    pub password: String,
+    /// Wi-Fi channel (2.4 GHz)
+    #[arg(long, default_value_t = 6)]
+    pub channel: u8,
 }
 
 #[derive(Args, Debug)]

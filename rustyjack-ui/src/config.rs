@@ -226,6 +226,12 @@ pub struct SettingsConfig {
     /// Passive mode - no transmissions during recon
     #[serde(default)]
     pub passive_mode_enabled: bool,
+    /// Hotspot SSID
+    #[serde(default = "SettingsConfig::default_hotspot_ssid")]
+    pub hotspot_ssid: String,
+    /// Hotspot password
+    #[serde(default = "SettingsConfig::default_hotspot_password")]
+    pub hotspot_password: String,
 }
 
 impl Default for SettingsConfig {
@@ -241,6 +247,8 @@ impl Default for SettingsConfig {
             current_mac: String::new(),
             tx_power_level: Self::default_tx_power(),
             passive_mode_enabled: false,
+            hotspot_ssid: Self::default_hotspot_ssid(),
+            hotspot_password: Self::default_hotspot_password(),
         }
     }
 }
@@ -260,5 +268,13 @@ impl SettingsConfig {
     
     fn default_tx_power() -> String {
         "high".to_string()
+    }
+
+    fn default_hotspot_ssid() -> String {
+        "rustyjack".to_string()
+    }
+
+    fn default_hotspot_password() -> String {
+        "rustyjack".to_string()
     }
 }

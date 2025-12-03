@@ -57,6 +57,7 @@
 - **Standalone** - LCD screen, buttons, all tools built-in
 - **Portable** - Pocket-sized, battery-powered option
 - **Complete** - Recon, credential capture, phishing, and other integrated tools
+- **On-device hotspot** - Start a NATed hotspot with configurable SSID/password
 
 ### Architecture
 
@@ -98,8 +99,13 @@ Notes:
 - Ethernet loot lives under `loot/Ethernet/` (LAN discovery / port scans, timestamped).
 
 **Ethernet recon:**
-- LAN discovery (ICMP sweep) on the wired interface
-- Quick TCP connect port scan against a target (defaults to gateway)
+- LAN discovery on the wired interface (ARP + ICMP, TTL-based OS hints)
+- Quick TCP connect port scan (defaults to gateway) with basic banner grabs
+
+**Hotspot:**
+- Start/stop a NATed hotspot (hostapd + dnsmasq) from the UI
+- Defaults to SSID/password `rustyjack`, with quick randomize buttons
+- Choose upstream (internet) interface and AP interface at launch
 
 **Discord integration:**
 - Manual upload of ZIP loot archives via the UI when configured
@@ -357,7 +363,8 @@ Main Menu
 │  ├─ PMKID Capture
 │  ├─ Probe Sniff
 │  ├─ Crack Handshake
-│  └─ Connect Network
+│  ├─ Connect Network
+│  └─ Hotspot (start/stop)
 ├─ Ethernet Recon
 │  ├─ LAN Discovery (ICMP sweep)
 │  └─ Port Scan (quick TCP connect)
@@ -400,7 +407,7 @@ Rustyjack is now focused on providing a compact UI for the device and a core orc
 - Hardware detection (interface and peripheral detection)
 - Wireless attacks: deauth/handshake, PMKID, probe sniff, evil twin, karma, attack pipelines (via `rustyjack-wireless`)
 - Evasion: MAC randomization, passive mode toggle, TX power adjust (`rustyjack-evasion`)
-- Ethernet recon: wired LAN discovery and quick port scan (loot saved under `loot/Ethernet`)
+- Ethernet recon: wired LAN discovery (ARP+ICMP) and quick port scan with banners (loot saved under `loot/Ethernet`)
 - Loot viewer and transfer utilities (wireless and ethernet captures)
 - Discord webhook integration for uploading loot and notifications
 - System management: restart from the System menu; configuration refresh/save from Options; updates via the installer script

@@ -59,6 +59,7 @@ pub mod frames;
 pub mod handshake;
 pub mod inject;
 pub mod interface;
+pub mod hotspot;
 pub mod karma;
 pub mod nl80211;
 pub mod pipeline;
@@ -72,6 +73,10 @@ pub use rustyjack_evasion::{
     EvasionConfig, EvasionSettings, MacAddress as EvasionMacAddress, MacGenerationStrategy,
     MacManager, MacState, PassiveConfig, PassiveManager, PassiveResult, TxPowerLevel,
     TxPowerManager,
+};
+pub use hotspot::{
+    random_password, random_ssid, start_hotspot, status_hotspot, stop_hotspot, HotspotConfig,
+    HotspotState,
 };
 
 // Legacy stealth module re-export for backwards compatibility

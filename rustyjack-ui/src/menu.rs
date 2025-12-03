@@ -52,7 +52,7 @@ pub enum MenuAction {
 }
 
 /// Pipeline types for automated attacks
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum PipelineType {
     /// Get WiFi password automatically
     GetPassword,

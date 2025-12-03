@@ -10,7 +10,7 @@ use std::{
 use anyhow::{Result, bail, Context};
 use rustyjack_core::cli::{
     Commands, DiscordCommand, DiscordSendArgs,
-    HardwareCommand, LootCommand, LootKind, LootListArgs, 
+    HardwareCommand, LootCommand, 
     LootReadArgs, NotifyCommand,
     WifiCommand, WifiDeauthArgs, WifiRouteCommand, WifiScanArgs, 
     WifiStatusArgs, WifiProfileCommand, WifiProfileConnectArgs, WifiProfileDeleteArgs, EthernetCommand, EthernetDiscoverArgs, EthernetPortScanArgs, HotspotCommand, HotspotStartArgs,
@@ -1853,7 +1853,6 @@ impl App {
                     // for encrypted networks so '*' is reserved for the selected target.
                     let bssid = net.bssid.as_deref().unwrap_or("");
                     let cur_target_bssid = self.config.settings.target_bssid.as_str();
-                    let cur_target_ssid = self.config.settings.target_network.as_str();
                     let is_target = (!cur_target_bssid.is_empty() && cur_target_bssid == bssid)
                         || (!self.config.settings.target_network.is_empty() && self.config.settings.target_network == ssid);
                     let target_marker = if is_target { "*" } else { " " };
@@ -1982,7 +1981,6 @@ impl App {
         // Show progress updates while attack runs (120 seconds)
         let attack_duration = 120u64;
         let start = std::time::Instant::now();
-        let mut stage_idx = 0;
         let mut cancelled = false;
         let mut last_displayed_elapsed: u64 = u64::MAX; // Track to avoid redundant redraws
         
@@ -2443,7 +2441,7 @@ impl App {
             return Ok(());
         };
         
-        let (selected_name, file_path) = &handshake_files[idx];
+        let (_selected_name, file_path) = &handshake_files[idx];
         
         // Crack method selection
         let methods = vec![
@@ -3049,8 +3047,6 @@ impl App {
     
     /// Execute the actual pipeline steps using real attack implementations
     fn execute_pipeline_steps(&mut self, pipeline_type: PipelineType, title: &str, steps: &[&str]) -> Result<PipelineResult> {
-        use rustyjack_core::{Commands, WifiCommand, WifiScanArgs, WifiDeauthArgs, WifiPmkidArgs};
-
         let mut result = PipelineResult {
             cancelled: false,
             steps_completed: 0,
@@ -3318,7 +3314,7 @@ impl App {
                     let _ = randomize_mac_with_reconnect(interface);
                 }
                 thread::sleep(Duration::from_secs(2));
-                Ok(StepOutcome::Completed(Some((0, 0, None, 0, 0))))
+                return Ok(StepOutcome::Completed(Some((0, 0, None, 0, 0))));
             }
             1 => {
                 // Step 2: Minimum TX power
@@ -3330,7 +3326,7 @@ impl App {
                         .output();
                 }
                 thread::sleep(Duration::from_secs(1));
-                Ok(StepOutcome::Completed(Some((0, 0, None, 0, 0))))
+                return Ok(StepOutcome::Completed(Some((0, 0, None, 0, 0))));
             }
             2 => {
                 // Step 3: Passive scan only (no probe requests sent)
@@ -3422,7 +3418,7 @@ impl App {
                 // Step 4: Captive portal (continuation of Evil Twin)
                 // Evil Twin with open network serves as captive portal
                 thread::sleep(Duration::from_secs(5));
-                Ok(StepOutcome::Completed(Some((0, 0, None, 0, 0))))
+                return Ok(StepOutcome::Completed(Some((0, 0, None, 0, 0))));
             }
             _ => {}
         }
@@ -4171,8 +4167,8 @@ impl App {
                                     format!("Password: {}", password),
                                     format!("AP: {}", ap_iface),
                                     format!("Upstream: {}", upstream_iface),
-                                    "",
-                                    "Turn off to exit this view",
+                                    "".to_string(),
+                                    "Turn off to exit this view".to_string(),
                                 ])?;
                             }
                             Err(e) => {

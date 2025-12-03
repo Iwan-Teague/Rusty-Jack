@@ -13,7 +13,7 @@ use rustyjack_core::cli::{
     HardwareCommand, LootCommand, LootKind, LootListArgs, 
     LootReadArgs, NotifyCommand,
     WifiCommand, WifiDeauthArgs, WifiRouteCommand, WifiScanArgs, 
-    WifiStatusArgs, WifiProfileCommand, WifiProfileConnectArgs, WifiProfileDeleteArgs,
+    WifiStatusArgs, WifiProfileCommand, WifiProfileConnectArgs, WifiProfileDeleteArgs, EthernetCommand, EthernetDiscoverArgs, EthernetPortScanArgs,
 };
 use rustyjack_core::InterfaceSummary;
 use serde::Deserialize;
@@ -113,6 +113,11 @@ struct PipelineResult {
     password_found: Option<String>,
     networks_found: u32,
     clients_found: u32,
+}
+
+enum StepOutcome {
+    Completed(Option<(u32, u32, Option<String>, u32, u32)>),
+    Skipped(String),
 }
 
 // Map low-level Button values to higher-level ButtonAction values
@@ -3022,7 +3027,7 @@ impl App {
     /// Execute the actual pipeline steps using real attack implementations
     fn execute_pipeline_steps(&mut self, pipeline_type: PipelineType, title: &str, steps: &[&str]) -> Result<PipelineResult> {
         use rustyjack_core::{Commands, WifiCommand, WifiScanArgs, WifiDeauthArgs, WifiPmkidArgs};
-        
+
         let mut result = PipelineResult {
             cancelled: false,
             steps_completed: 0,
@@ -3079,14 +3084,26 @@ impl App {
             };
             
             // Update result from step
-            if let Some((pmkids, handshakes, password, networks, clients)) = step_result {
-                result.pmkids_captured += pmkids;
-                result.handshakes_captured += handshakes;
-                if password.is_some() {
-                    result.password_found = password;
+            match step_result {
+                StepOutcome::Completed(Some((pmkids, handshakes, password, networks, clients))) => {
+                    result.pmkids_captured += pmkids;
+                    result.handshakes_captured += handshakes;
+                    if password.is_some() {
+                        result.password_found = password;
+                    }
+                    result.networks_found += networks;
+                    result.clients_found += clients;
                 }
-                result.networks_found += networks;
-                result.clients_found += clients;
+                StepOutcome::Completed(None) => {}
+                StepOutcome::Skipped(reason) => {
+                    result.cancelled = true;
+                    self.show_message("Pipeline stopped", [
+                        &format!("Step {} halted", i + 1),
+                        "",
+                        &reason,
+                    ])?;
+                    return Ok(result);
+                }
             }
             
             result.steps_completed = i + 1;
@@ -3103,7 +3120,7 @@ impl App {
     /// Execute a step in the GetPassword pipeline
     /// Returns (pmkids, handshakes, password, networks, clients)
     fn execute_get_password_step(&mut self, step: usize, interface: &str, bssid: &str, channel: u8, ssid: &str) 
-        -> Result<Option<(u32, u32, Option<String>, u32, u32)>> 
+        -> Result<StepOutcome> 
     {
         use rustyjack_core::{Commands, WifiCommand, WifiScanArgs, WifiDeauthArgs, WifiPmkidArgs};
         
@@ -3115,63 +3132,66 @@ impl App {
                 }));
                 if let Some((_, data)) = self.dispatch_cancellable("Scanning", cmd, 20)? {
                     let count = data.get("count").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-                    return Ok(Some((0, 0, None, count, 0)));
+                    return Ok(StepOutcome::Completed(Some((0, 0, None, count, 0))));
                 }
             }
             1 => {
                 // Step 2: PMKID capture
-                if !bssid.is_empty() {
-                    let cmd = Commands::Wifi(WifiCommand::PmkidCapture(WifiPmkidArgs {
-                        interface: interface.to_string(),
-                        bssid: Some(bssid.to_string()),
-                        ssid: Some(ssid.to_string()),
-                        channel,
-                        duration: 30,
-                    }));
-                    if let Some((_, data)) = self.dispatch_cancellable("PMKID", cmd, 35)? {
-                        let pmkids = data.get("pmkids_captured").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-                        return Ok(Some((pmkids, 0, None, 0, 0)));
-                    }
+                if bssid.is_empty() {
+                    return Ok(StepOutcome::Skipped("Target BSSID not set; select a network first".to_string()));
+                }
+                let cmd = Commands::Wifi(WifiCommand::PmkidCapture(WifiPmkidArgs {
+                    interface: interface.to_string(),
+                    bssid: Some(bssid.to_string()),
+                    ssid: Some(ssid.to_string()),
+                    channel,
+                    duration: 30,
+                }));
+                if let Some((_, data)) = self.dispatch_cancellable("PMKID", cmd, 35)? {
+                    let pmkids = data.get("pmkids_captured").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                    return Ok(StepOutcome::Completed(Some((pmkids, 0, None, 0, 0))));
                 }
             }
             2 => {
                 // Step 3: Deauth attack
-                if !bssid.is_empty() {
-                    let cmd = Commands::Wifi(WifiCommand::Deauth(WifiDeauthArgs {
-                        interface: interface.to_string(),
-                        bssid: bssid.to_string(),
-                        ssid: Some(ssid.to_string()),
-                        client: None,
-                        channel,
-                        packets: 64,
-                        duration: 30,
-                        continuous: true,
-                        interval: 1,
-                    }));
-                    if let Some((_, data)) = self.dispatch_cancellable("Deauth", cmd, 35)? {
-                        let handshakes = if data.get("handshake_captured").and_then(|v| v.as_bool()).unwrap_or(false) { 1 } else { 0 };
-                        return Ok(Some((0, handshakes, None, 0, 0)));
-                    }
+                if bssid.is_empty() {
+                    return Ok(StepOutcome::Skipped("Target BSSID not set; select a network first".to_string()));
+                }
+                let cmd = Commands::Wifi(WifiCommand::Deauth(WifiDeauthArgs {
+                    interface: interface.to_string(),
+                    bssid: bssid.to_string(),
+                    ssid: Some(ssid.to_string()),
+                    client: None,
+                    channel,
+                    packets: 64,
+                    duration: 30,
+                    continuous: true,
+                    interval: 1,
+                }));
+                if let Some((_, data)) = self.dispatch_cancellable("Deauth", cmd, 35)? {
+                    let handshakes = if data.get("handshake_captured").and_then(|v| v.as_bool()).unwrap_or(false) { 1 } else { 0 };
+                    return Ok(StepOutcome::Completed(Some((0, handshakes, None, 0, 0))));
                 }
             }
             3 => {
                 // Step 4: Handshake capture (continuation of deauth with longer capture)
-                if !bssid.is_empty() {
-                    let cmd = Commands::Wifi(WifiCommand::Deauth(WifiDeauthArgs {
-                        interface: interface.to_string(),
-                        bssid: bssid.to_string(),
-                        ssid: Some(ssid.to_string()),
-                        client: None,
-                        channel,
-                        packets: 32,
-                        duration: 60,
-                        continuous: true,
-                        interval: 1,
-                    }));
-                    if let Some((_, data)) = self.dispatch_cancellable("Capture", cmd, 65)? {
-                        let handshakes = if data.get("handshake_captured").and_then(|v| v.as_bool()).unwrap_or(false) { 1 } else { 0 };
-                        return Ok(Some((0, handshakes, None, 0, 0)));
-                    }
+                if bssid.is_empty() {
+                    return Ok(StepOutcome::Skipped("Target BSSID not set; select a network first".to_string()));
+                }
+                let cmd = Commands::Wifi(WifiCommand::Deauth(WifiDeauthArgs {
+                    interface: interface.to_string(),
+                    bssid: bssid.to_string(),
+                    ssid: Some(ssid.to_string()),
+                    client: None,
+                    channel,
+                    packets: 32,
+                    duration: 60,
+                    continuous: true,
+                    interval: 1,
+                }));
+                if let Some((_, data)) = self.dispatch_cancellable("Capture", cmd, 65)? {
+                    let handshakes = if data.get("handshake_captured").and_then(|v| v.as_bool()).unwrap_or(false) { 1 } else { 0 };
+                    return Ok(StepOutcome::Completed(Some((0, handshakes, None, 0, 0))));
                 }
             }
             4 => {
@@ -3189,20 +3209,21 @@ impl App {
                         }));
                         if let Some((_msg, data)) = self.dispatch_cancellable("Cracking", cmd, 120)? {
                             if let Some(password) = data.get("password").and_then(|v| v.as_str()) {
-                                return Ok(Some((0, 0, Some(password.to_string()), 0, 0)));
+                                return Ok(StepOutcome::Completed(Some((0, 0, Some(password.to_string()), 0, 0))));
                             }
                         }
                     }
                 }
+                return Ok(StepOutcome::Skipped("No captured handshake available to crack".to_string()));
             }
             _ => {}
         }
-        Ok(None)
+        Ok(StepOutcome::Completed(None))
     }
     
     /// Execute a step in the MassCapture pipeline
     fn execute_mass_capture_step(&mut self, step: usize, interface: &str) 
-        -> Result<Option<(u32, u32, Option<String>, u32, u32)>> 
+        -> Result<StepOutcome> 
     {
         use rustyjack_core::{Commands, WifiCommand, WifiScanArgs, WifiPmkidArgs};
         
@@ -3214,7 +3235,7 @@ impl App {
                 }));
                 if let Some((_, data)) = self.dispatch_cancellable("Scanning", cmd, 35)? {
                     let count = data.get("count").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-                    return Ok(Some((0, 0, None, count, 0)));
+                    return Ok(StepOutcome::Completed(Some((0, 0, None, count, 0))));
                 }
             }
             1 => {
@@ -3224,7 +3245,7 @@ impl App {
                 }));
                 if let Some((_, data)) = self.dispatch_cancellable("Ch. Hop", cmd, 50)? {
                     let count = data.get("count").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-                    return Ok(Some((0, 0, None, count, 0)));
+                    return Ok(StepOutcome::Completed(Some((0, 0, None, count, 0))));
                 }
             }
             2 => {
@@ -3238,7 +3259,7 @@ impl App {
                 }));
                 if let Some((_, data)) = self.dispatch_cancellable("PMKID", cmd, 100)? {
                     let pmkids = data.get("pmkids_captured").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-                    return Ok(Some((pmkids, 0, None, 0, 0)));
+                    return Ok(StepOutcome::Completed(Some((pmkids, 0, None, 0, 0))));
                 }
             }
             3 => {
@@ -3252,17 +3273,17 @@ impl App {
                 if let Some((_, data)) = self.dispatch_cancellable("Capture", cmd, 70)? {
                     let clients = data.get("unique_clients").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
                     let networks = data.get("unique_networks").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-                    return Ok(Some((0, 0, None, networks, clients)));
+                    return Ok(StepOutcome::Completed(Some((0, 0, None, networks, clients))));
                 }
             }
             _ => {}
         }
-        Ok(None)
+        Ok(StepOutcome::Completed(None))
     }
     
     /// Execute a step in the StealthRecon pipeline
     fn execute_stealth_recon_step(&mut self, step: usize, interface: &str) 
-        -> Result<Option<(u32, u32, Option<String>, u32, u32)>> 
+        -> Result<StepOutcome> 
     {
         use rustyjack_core::{Commands, WifiCommand, WifiProbeSniffArgs};
         
@@ -3271,13 +3292,10 @@ impl App {
                 // Step 1: Randomize MAC
                 #[cfg(target_os = "linux")]
                 {
-                    use rustyjack_evasion::MacManager;
-                    if let Ok(mut manager) = MacManager::new(interface) {
-                        let _ = manager.randomize();
-                    }
+                    let _ = randomize_mac_with_reconnect(interface);
                 }
                 thread::sleep(Duration::from_secs(2));
-                Ok(Some((0, 0, None, 0, 0)))
+                Ok(StepOutcome::Completed(Some((0, 0, None, 0, 0))))
             }
             1 => {
                 // Step 2: Minimum TX power
@@ -3289,7 +3307,7 @@ impl App {
                         .output();
                 }
                 thread::sleep(Duration::from_secs(1));
-                Ok(Some((0, 0, None, 0, 0)))
+                Ok(StepOutcome::Completed(Some((0, 0, None, 0, 0))))
             }
             2 => {
                 // Step 3: Passive scan only (no probe requests sent)
@@ -3301,7 +3319,7 @@ impl App {
                 }));
                 if let Some((_, data)) = self.dispatch_cancellable("Passive", cmd, 70)? {
                     let networks = data.get("unique_networks").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-                    return Ok(Some((0, 0, None, networks, 0)));
+                    return Ok(StepOutcome::Completed(Some((0, 0, None, networks, 0))));
                 }
             }
             3 => {
@@ -3314,17 +3332,17 @@ impl App {
                 if let Some((_, data)) = self.dispatch_cancellable("Sniffing", cmd, 130)? {
                     let clients = data.get("unique_clients").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
                     let networks = data.get("unique_networks").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-                    return Ok(Some((0, 0, None, networks, clients)));
+                    return Ok(StepOutcome::Completed(Some((0, 0, None, networks, clients))));
                 }
             }
             _ => {}
         }
-        Ok(None)
+        Ok(StepOutcome::Completed(None))
     }
     
     /// Execute a step in the CredentialHarvest pipeline
     fn execute_credential_harvest_step(&mut self, step: usize, interface: &str, ssid: &str, channel: u8) 
-        -> Result<Option<(u32, u32, Option<String>, u32, u32)>> 
+        -> Result<StepOutcome> 
     {
         use rustyjack_core::{Commands, WifiCommand, WifiProbeSniffArgs, WifiKarmaArgs, WifiEvilTwinArgs};
         
@@ -3339,7 +3357,7 @@ impl App {
                 if let Some((_, data)) = self.dispatch_cancellable("Sniffing", cmd, 40)? {
                     let networks = data.get("unique_networks").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
                     let clients = data.get("unique_clients").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-                    return Ok(Some((0, 0, None, networks, clients)));
+                    return Ok(StepOutcome::Completed(Some((0, 0, None, networks, clients))));
                 }
             }
             1 => {
@@ -3355,41 +3373,42 @@ impl App {
                 }));
                 if let Some((_, data)) = self.dispatch_cancellable("Karma", cmd, 70)? {
                     let clients = data.get("victims").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-                    return Ok(Some((0, 0, None, 0, clients)));
+                    return Ok(StepOutcome::Completed(Some((0, 0, None, 0, clients))));
                 }
             }
             2 => {
                 // Step 3: Evil Twin AP
-                if !ssid.is_empty() {
-                    let cmd = Commands::Wifi(WifiCommand::EvilTwin(WifiEvilTwinArgs {
-                        interface: interface.to_string(),
-                        ssid: ssid.to_string(),
-                        channel: if channel > 0 { channel } else { 6 },
-                        duration: 90,
-                        target_bssid: None,
-                        open: true,
-                    }));
-                    if let Some((_, data)) = self.dispatch_cancellable("Evil Twin", cmd, 100)? {
-                        let clients = data.get("clients_connected").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-                        let handshakes = data.get("handshakes_captured").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-                        return Ok(Some((0, handshakes, None, 0, clients)));
-                    }
+                if ssid.is_empty() {
+                    return Ok(StepOutcome::Skipped("Target SSID not set; select a network first".to_string()));
+                }
+                let cmd = Commands::Wifi(WifiCommand::EvilTwin(WifiEvilTwinArgs {
+                    interface: interface.to_string(),
+                    ssid: ssid.to_string(),
+                    channel: if channel > 0 { channel } else { 6 },
+                    duration: 90,
+                    target_bssid: None,
+                    open: true,
+                }));
+                if let Some((_, data)) = self.dispatch_cancellable("Evil Twin", cmd, 100)? {
+                    let clients = data.get("clients_connected").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                    let handshakes = data.get("handshakes_captured").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                    return Ok(StepOutcome::Completed(Some((0, handshakes, None, 0, clients))));
                 }
             }
             3 => {
                 // Step 4: Captive portal (continuation of Evil Twin)
                 // Evil Twin with open network serves as captive portal
                 thread::sleep(Duration::from_secs(5));
-                Ok(Some((0, 0, None, 0, 0)))
+                Ok(StepOutcome::Completed(Some((0, 0, None, 0, 0))))
             }
             _ => {}
         }
-        Ok(None)
+        Ok(StepOutcome::Completed(None))
     }
     
     /// Execute a step in the FullPentest pipeline
     fn execute_full_pentest_step(&mut self, step: usize, interface: &str, bssid: &str, channel: u8, ssid: &str) 
-        -> Result<Option<(u32, u32, Option<String>, u32, u32)>> 
+        -> Result<StepOutcome> 
     {
         use rustyjack_core::{Commands, WifiCommand, WifiScanArgs, WifiPmkidArgs, WifiDeauthArgs, WifiProbeSniffArgs, WifiKarmaArgs};
         
@@ -3398,10 +3417,7 @@ impl App {
                 // Step 1: Stealth recon - MAC randomization + passive scan
                 #[cfg(target_os = "linux")]
                 {
-                    use rustyjack_evasion::MacManager;
-                    if let Ok(mut manager) = MacManager::new(interface) {
-                        let _ = manager.randomize();
-                    }
+                    let _ = randomize_mac_with_reconnect(interface);
                 }
                 let cmd = Commands::Wifi(WifiCommand::ProbeSniff(WifiProbeSniffArgs {
                     interface: interface.to_string(),
@@ -3411,7 +3427,7 @@ impl App {
                 if let Some((_, data)) = self.dispatch_cancellable("Recon", cmd, 55)? {
                     let networks = data.get("unique_networks").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
                     let clients = data.get("unique_clients").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-                    return Ok(Some((0, 0, None, networks, clients)));
+                    return Ok(StepOutcome::Completed(Some((0, 0, None, networks, clients))));
                 }
             }
             1 => {
@@ -3421,7 +3437,7 @@ impl App {
                 }));
                 if let Some((_, data)) = self.dispatch_cancellable("Mapping", cmd, 40)? {
                     let count = data.get("count").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-                    return Ok(Some((0, 0, None, count, 0)));
+                    return Ok(StepOutcome::Completed(Some((0, 0, None, count, 0))));
                 }
             }
             2 => {
@@ -3435,27 +3451,28 @@ impl App {
                 }));
                 if let Some((_, data)) = self.dispatch_cancellable("PMKID", cmd, 70)? {
                     let pmkids = data.get("pmkids_captured").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-                    return Ok(Some((pmkids, 0, None, 0, 0)));
+                    return Ok(StepOutcome::Completed(Some((pmkids, 0, None, 0, 0))));
                 }
             }
             3 => {
                 // Step 4: Deauth attacks
-                if !bssid.is_empty() {
-                    let cmd = Commands::Wifi(WifiCommand::Deauth(WifiDeauthArgs {
-                        interface: interface.to_string(),
-                        bssid: bssid.to_string(),
-                        ssid: Some(ssid.to_string()),
-                        client: None,
-                        channel,
-                        packets: 64,
-                        duration: 45,
-                        continuous: true,
-                        interval: 1,
-                    }));
-                    if let Some((_, data)) = self.dispatch_cancellable("Deauth", cmd, 55)? {
-                        let handshakes = if data.get("handshake_captured").and_then(|v| v.as_bool()).unwrap_or(false) { 1 } else { 0 };
-                        return Ok(Some((0, handshakes, None, 0, 0)));
-                    }
+                if bssid.is_empty() {
+                    return Ok(StepOutcome::Skipped("Target BSSID not set; select a network first".to_string()));
+                }
+                let cmd = Commands::Wifi(WifiCommand::Deauth(WifiDeauthArgs {
+                    interface: interface.to_string(),
+                    bssid: bssid.to_string(),
+                    ssid: Some(ssid.to_string()),
+                    client: None,
+                    channel,
+                    packets: 64,
+                    duration: 45,
+                    continuous: true,
+                    interval: 1,
+                }));
+                if let Some((_, data)) = self.dispatch_cancellable("Deauth", cmd, 55)? {
+                    let handshakes = if data.get("handshake_captured").and_then(|v| v.as_bool()).unwrap_or(false) { 1 } else { 0 };
+                    return Ok(StepOutcome::Completed(Some((0, handshakes, None, 0, 0))));
                 }
             }
             4 => {
@@ -3471,7 +3488,7 @@ impl App {
                 }));
                 if let Some((_, data)) = self.dispatch_cancellable("Karma", cmd, 70)? {
                     let clients = data.get("victims").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-                    return Ok(Some((0, 0, None, 0, clients)));
+                    return Ok(StepOutcome::Completed(Some((0, 0, None, 0, clients))));
                 }
             }
             5 => {
@@ -3488,15 +3505,16 @@ impl App {
                         }));
                         if let Some((_, data)) = self.dispatch_cancellable("Cracking", cmd, 120)? {
                             if let Some(password) = data.get("password").and_then(|v| v.as_str()) {
-                                return Ok(Some((0, 0, Some(password.to_string()), 0, 0)));
+                                return Ok(StepOutcome::Completed(Some((0, 0, Some(password.to_string()), 0, 0))));
                             }
                         }
                     }
                 }
+                return Ok(StepOutcome::Skipped("No captured handshake available to crack".to_string()));
             }
             _ => {}
         }
-        Ok(None)
+        Ok(StepOutcome::Completed(None))
     }
     
     /// Find the most recent handshake export file in loot directory
@@ -3646,88 +3664,55 @@ impl App {
             ]);
         }
         
-        // First, save the original MAC if we haven't already
-        if self.config.settings.original_mac.is_empty() {
-            let mac_path = format!("/sys/class/net/{}/address", active_interface);
-            if let Ok(mac) = std::fs::read_to_string(&mac_path) {
-                self.config.settings.original_mac = mac.trim().to_uppercase();
-            }
-        }
-        
-        self.show_progress("Randomize MAC", [
-            &format!("Interface: {}", active_interface),
-            "",
-            "Generating random MAC...",
-        ])?;
-        
-        // Bring interface down
-        let down_result = Command::new("ip")
-            .args(["link", "set", &active_interface, "down"])
-            .output();
-        
-        if down_result.is_err() {
-            return self.show_message("MAC Error", [
-                "Failed to bring down",
-                "interface. Need root?"
+        #[cfg(not(target_os = "linux"))]
+        {
+            return self.show_message("Randomize MAC", [
+                "Supported on Linux targets only"
             ]);
         }
-        
-        // Generate random MAC (locally administered, unicast)
-        let random_mac = format!(
-            "{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
-            (rand_byte() | 0x02) & 0xFE, // Locally administered, unicast
-            rand_byte(),
-            rand_byte(),
-            rand_byte(),
-            rand_byte(),
-            rand_byte()
-        );
-        
-        // Set new MAC
-        let set_result = Command::new("ip")
-            .args(["link", "set", &active_interface, "address", &random_mac])
-            .output();
-        
-        // Bring interface back up regardless of success
-        let _ = Command::new("ip")
-            .args(["link", "set", &active_interface, "up"])
-            .output();
-        
-        if let Ok(output) = set_result {
-            if output.status.success() {
-                // Save the new MAC in config
-                let original_mac = self.config.settings.original_mac.clone();
-                self.config.settings.current_mac = random_mac.clone();
-                let config_path = self.root.join("gui_conf.json");
-                let _ = self.config.save(&config_path);
-                
-                self.show_message("MAC Randomized", [
-                    format!("Interface: {}", active_interface),
-                    "".to_string(),
-                    "New MAC:".to_string(),
-                    random_mac,
-                    "".to_string(),
-                    "Original saved:".to_string(),
-                    original_mac,
-                ])
-            } else {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                self.show_message("MAC Error", [
-                    "Failed to set new MAC",
-                    "",
-                    "Driver may not support",
-                    "MAC address changes.",
-                    "",
-                    &format!("{}", stderr.chars().take(30).collect::<String>())
-                ])
-            }
-        } else {
-            self.show_message("MAC Error", [
-                "Failed to execute",
-                "ip link command.",
+
+        #[cfg(target_os = "linux")]
+        {
+            self.show_progress("Randomize MAC", [
+                &format!("Interface: {}", active_interface),
                 "",
-                "Check permissions."
-            ])
+                "Generating vendor-aware MAC...",
+            ])?;
+
+            match randomize_mac_with_reconnect(&active_interface) {
+                Ok(state) => {
+                    let original_mac = state.original_mac.to_string();
+                    let new_mac = state.current_mac.to_string();
+
+                    if self.config.settings.original_mac.is_empty() {
+                        self.config.settings.original_mac = original_mac.clone();
+                    }
+                    self.config.settings.current_mac = new_mac.clone();
+                    let config_path = self.root.join("gui_conf.json");
+                    let _ = self.config.save(&config_path);
+
+                    self.show_message("MAC Randomized", [
+                        format!("Interface: {}", active_interface),
+                        "".to_string(),
+                        "New MAC:".to_string(),
+                        new_mac,
+                        "".to_string(),
+                        "Original saved:".to_string(),
+                        original_mac,
+                        "".to_string(),
+                        "DHCP renewed and reconnect signaled.".to_string(),
+                    ])
+                }
+                Err(e) => {
+                    self.show_message("MAC Error", [
+                        "Failed to randomize MAC",
+                        "",
+                        &format!("{}", e),
+                        "",
+                        "Check permissions/driver."
+                    ])
+                }
+            }
         }
     }
     
@@ -3872,43 +3857,212 @@ impl App {
 
     /// Launch Ethernet device discovery scan
     fn launch_ethernet_discovery(&mut self) -> Result<()> {
-        self.show_message("Ethernet Discovery", [
-            "Network Discovery",
-            "",
-            "Scans local network",
-            "for connected devices.",
-            "",
-            "Feature coming soon."
-        ])
+        #[cfg(not(target_os = "linux"))]
+        {
+            return self.show_message("Ethernet", [
+                "Available on Linux targets only",
+            ]);
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            self.show_progress("Ethernet Discovery", [
+                "ICMP sweep on wired LAN",
+                "Press Back to cancel",
+            ])?;
+
+            let args = EthernetDiscoverArgs {
+                interface: None,
+                target: None,
+                timeout_ms: 500,
+            };
+            let cmd = Commands::Ethernet(EthernetCommand::Discover(args));
+
+            if let Some((_, data)) = self.dispatch_cancellable("Ethernet Discovery", cmd, 30)? {
+                let network = data
+                    .get("network")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
+                let interface = data
+                    .get("interface")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("eth0");
+                let hosts: Vec<String> = data
+                    .get("hosts_found")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str().map(ToString::to_string))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let loot_path = data
+                    .get("loot_path")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+
+                let mut lines = vec![
+                    format!("Net: {}", network),
+                    format!("Iface: {}", interface),
+                    format!("Hosts: {}", hosts.len()),
+                ];
+
+                if !hosts.is_empty() {
+                    let sample: Vec<String> = hosts.iter().take(3).cloned().collect();
+                    lines.push(format!("Sample: {}", sample.join(", ")));
+                    if hosts.len() > 3 {
+                        lines.push(format!("+{} more", hosts.len() - 3));
+                    }
+                }
+
+                if let Some(path) = loot_path {
+                    lines.push("Saved:".to_string());
+                    lines.push(shorten_for_display(&path, 18));
+                }
+
+                self.show_message("Discovery Done", lines)?;
+            }
+            Ok(())
+        }
     }
 
     /// Launch Ethernet port scan
     fn launch_ethernet_port_scan(&mut self) -> Result<()> {
-        self.show_message("Port Scan", [
-            "Quick Port Scan",
-            "",
-            "Scans common ports",
-            "on target hosts.",
-            "",
-            "Feature coming soon."
-        ])
+        #[cfg(not(target_os = "linux"))]
+        {
+            return self.show_message("Ethernet", [
+                "Available on Linux targets only",
+            ]);
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            self.show_progress("Ethernet Port Scan", [
+                "Scanning target (gateway if unset)",
+                "Press Back to cancel",
+            ])?;
+
+            let args = EthernetPortScanArgs {
+                target: None,       // defaults to gateway
+                interface: None,    // auto-detect wired iface
+                ports: None,        // default common ports
+                timeout_ms: 500,
+            };
+            let cmd = Commands::Ethernet(EthernetCommand::PortScan(args));
+
+            if let Some((_, data)) = self.dispatch_cancellable("Port Scan", cmd, 40)? {
+                let target = data
+                    .get("target")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
+                let open_ports: Vec<u16> = data
+                    .get("open_ports")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_u64().map(|p| p as u16))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let loot_path = data
+                    .get("loot_path")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+
+                let mut lines = vec![
+                    format!("Target: {}", target),
+                    format!("Open: {}", open_ports.len()),
+                ];
+
+                if !open_ports.is_empty() {
+                    let preview: Vec<String> = open_ports
+                        .iter()
+                        .take(6)
+                        .map(|p| p.to_string())
+                        .collect();
+                    lines.push(preview.join(", "));
+                    if open_ports.len() > 6 {
+                        lines.push(format!("+{} more", open_ports.len() - 6));
+                    }
+                } else {
+                    lines.push("No open ports found".to_string());
+                }
+
+                if let Some(path) = loot_path {
+                    lines.push("Saved:".to_string());
+                    lines.push(shorten_for_display(&path, 18));
+                }
+
+                self.show_message("Port Scan Done", lines)?;
+            }
+            Ok(())
+        }
     }
 }
 
-/// Generate a pseudo-random byte
-fn rand_byte() -> u8 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    static mut SEED: u64 = 0;
-    unsafe {
-        if SEED == 0 {
-            SEED = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos() as u64;
+#[cfg(target_os = "linux")]
+fn renew_dhcp_and_reconnect(interface: &str) {
+    let _ = Command::new("dhclient").args(["-r", interface]).status();
+    let _ = Command::new("dhclient").arg(interface).status();
+    let _ = Command::new("wpa_cli")
+        .args(["-i", interface, "reconnect"])
+        .status();
+    let _ = Command::new("nmcli")
+        .args(["device", "reconnect", interface])
+        .status();
+}
+
+#[cfg(target_os = "linux")]
+fn generate_vendor_aware_mac(interface: &str) -> anyhow::Result<rustyjack_evasion::MacAddress> {
+    use rustyjack_evasion::{MacAddress, VendorOui};
+
+    let current = std::fs::read_to_string(format!("/sys/class/net/{}/address", interface))
+        .ok()
+        .and_then(|s| MacAddress::parse(s.trim()).ok());
+
+    if let Some(mac) = current {
+        if let Some(vendor) = VendorOui::from_oui(mac.oui()) {
+            let mut candidate = MacAddress::random_with_oui(vendor.oui)?;
+            let mut bytes = *candidate.as_bytes();
+            // Preserve vendor flavor but force locally administered + unicast bits
+            bytes[0] = (bytes[0] | 0x02) & 0xFE;
+            candidate = MacAddress::new(bytes);
+            return Ok(candidate);
         }
-        SEED = SEED.wrapping_mul(6364136223846793005).wrapping_add(1);
-        (SEED >> 33) as u8
     }
+
+    Ok(MacAddress::random()?)
+}
+
+#[cfg(target_os = "linux")]
+fn randomize_mac_with_reconnect(interface: &str) -> anyhow::Result<rustyjack_evasion::MacState> {
+    use rustyjack_evasion::MacManager;
+
+    let mut manager = MacManager::new().context("creating MacManager")?;
+    manager.set_auto_restore(false);
+
+    let new_mac = generate_vendor_aware_mac(interface)?;
+    let state = manager
+        .set_mac(interface, &new_mac)
+        .context("setting randomized MAC")?;
+
+    renew_dhcp_and_reconnect(interface);
+    Ok(state)
+}
+
+fn shorten_for_display(value: &str, max_len: usize) -> String {
+    if value.len() <= max_len {
+        return value.to_string();
+    }
+    if max_len <= 3 {
+        return value[..max_len.min(value.len())].to_string();
+    }
+    let keep = max_len - 3;
+    let prefix = keep / 2;
+    let suffix = keep - prefix;
+    let start = &value[..prefix.min(value.len())];
+    let end = &value[value.len().saturating_sub(suffix)..];
+    format!("{start}...{end}")
 }
 
 /// Auto-randomize MAC before attack if enabled in settings
@@ -3917,34 +4071,16 @@ pub fn auto_randomize_mac_if_enabled(interface: &str, settings: &crate::config::
     if !settings.mac_randomization_enabled {
         return false;
     }
-    
-    // Bring interface down
-    let _ = std::process::Command::new("ip")
-        .args(["link", "set", interface, "down"])
-        .output();
-    
-    // Generate random MAC
-    let random_mac = format!(
-        "{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
-        (rand_byte() | 0x02) & 0xFE,
-        rand_byte(),
-        rand_byte(),
-        rand_byte(),
-        rand_byte(),
-        rand_byte()
-    );
-    
-    // Set new MAC
-    let result = std::process::Command::new("ip")
-        .args(["link", "set", interface, "address", &random_mac])
-        .output();
-    
-    // Bring interface back up
-    let _ = std::process::Command::new("ip")
-        .args(["link", "set", interface, "up"])
-        .output();
-    
-    result.map(|o| o.status.success()).unwrap_or(false)
+
+    #[cfg(target_os = "linux")]
+    {
+        randomize_mac_with_reconnect(interface).is_ok()
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        false
+    }
 }
 
 /// Restore original MAC from saved settings

@@ -16,19 +16,19 @@
     <em>Pure Rust offensive security toolkit</em>
   </p>
 
-> WARNING: **LEGAL DISCLAIMER**
-> 
-> This tool is for **authorized security testing and educational purposes ONLY**.
-> 
-> Unauthorized access to computer systems is **ILLEGAL** under:
-> - Computer Fraud and Abuse Act (USA)
-> - Computer Misuse Act (UK)
-> - Similar laws worldwide
-> 
-> **Always obtain written permission before testing any network or system.**
-> 
-> The authors accept **NO LIABILITY** for misuse or illegal activities.
-> You are **solely responsible** for your actions.
+  <p><strong>WARNING: LEGAL DISCLAIMER</strong></p>
+
+  <p>This tool is for <strong>authorized security testing and educational purposes ONLY</strong>.</p>
+
+  <p>Unauthorized access to computer systems is <strong>ILLEGAL</strong> under:</p>
+  <p>Computer Fraud and Abuse Act (USA)<br>
+  Computer Misuse Act (UK)<br>
+  Similar laws worldwide</p>
+
+  <p><strong>Always obtain written permission before testing any network or system.</strong></p>
+
+  <p>The authors accept <strong>NO LIABILITY</strong> for misuse or illegal activities.<br>
+  You are <strong>solely responsible</strong> for your actions.</p>
 
 </div>
 
@@ -98,8 +98,8 @@ Notes:
 - Ethernet loot lives under `loot/Ethernet/` (LAN discovery / port scans, timestamped).
 
 **Ethernet recon:**
-- LAN discovery (Rust ICMP sweep) using the active interface
-- Quick port scan (Rust TCP connect, top ports) across the local network
+- LAN discovery (ICMP sweep) on the wired interface
+- Quick TCP connect port scan against a target (defaults to gateway)
 
 **Discord integration:**
 - Manual upload of ZIP loot archives via the UI when configured
@@ -109,16 +109,15 @@ Notes:
 
 ### User Interface
 
-**3 View Modes:**
-- **List View** - Classic vertical list (7 items)
-- **Grid View** - 2×4 grid (8 items)
-- **Carousel View** - Single-item focus with wraparound
+**Interface layout:**
+- Single list-based menu with status toolbar (no grid/carousel modes)
+- Key1 refreshes the current view, Key2 jumps to the main menu, Key3 opens reboot confirmation
 
-**Customization:**
+**Customization and system:**
 - RGB color themes (background, border, text, selection)
-- Save/restore configurations
-- Temperature monitoring
-- System controls (restart, shutdown, update)
+- Save/refresh configuration
+- Temperature and CPU overlay on the toolbar
+- System menu currently exposes restart
 
 ---
 
@@ -156,10 +155,9 @@ Notes:
 | Joystick Left | GPIO 5 | Button input |
 | Joystick Right | GPIO 26 | Button input |
 | Joystick Press | GPIO 13 | Center button |
-| Key 1 | GPIO 21 | View mode toggle |
-| Key 2 | GPIO 20 | Reserved |
-| Key 3 | GPIO 16 | Back button |
-| Activity LED | GPIO 23 | Flashes during offensive/recon tasks |
+| Key 1 | GPIO 21 | Refresh current view |
+| Key 2 | GPIO 20 | Return to main menu |
+| Key 3 | GPIO 16 | Reboot confirmation |
 
 **Wireless radios:** The built-in Pi Zero 2 W radio (CYW43436) supports managed/AP only (no monitor/injection). Deauth/handshake/evil twin/Karma require an external USB adapter that supports monitor + injection (e.g., AR9271/ath9k_htc, MT7612U, RTL8812AU with driver).
 
@@ -175,21 +173,23 @@ The on-HAT buttons and joystick map directly to menu navigation and actions. Bel
 - **Left** (Joystick Left) — Back / return to previous menu.
 - **Right** (Joystick Right) — Select / activate highlighted item.
 - **Center press** (Joystick Press) — Confirm / secondary select.
-- **Key 1** (View toggle) — Cycle UI view modes (List / Grid / Carousel).
-- **Key 2** (Reserved) — Reserved for future use / custom mapping.
-- **Key 3** (Back) — Quick back to menu or cancel dialogs.
+- **Key 1** — Refresh/redraw the current view.
+- **Key 2** — Jump directly to the main menu.
+- **Key 3** — Open reboot confirmation (requires explicit confirmation).
 
 How these controls behave:
 - Short-press Right or Center confirms selections and triggers actions.
 - Left always behaves as a 'Back' while on dialogs or submenus.
-- Key 1 cycles the display mode to let you change how the menu is rendered.
+- Key 1 refreshes the current screen content.
+- Key 2 exits to the main menu.
+- Key 3 asks for reboot confirmation before proceeding.
 
-> Tip: button and view behaviour can be customized by editing `gui_conf.json` (see `config` module in the UI source).
+> Tip: button behaviour and pin mapping can be customized by editing `gui_conf.json` (see `config` module in the UI source).
 
 
 ---
 
-## 📥 Installation
+## Installation
 
 ### Part 1: Flash Operating System
 
@@ -201,7 +201,7 @@ Download from: https://www.raspberrypi.com/software/
 
 - **Device:** Raspberry Pi Zero 2 W (or your model)
 - **OS:** Raspberry Pi OS Lite (32-bit or 64-bit)
-- **Settings (⚙️):**
+- **Settings:**
   - Enable SSH
   - Set username: `pi` (or your choice)
   - Set password
@@ -253,15 +253,12 @@ chmod +x install_rustyjack.sh
 ```
 
 **What it does:**
-- Installs Rust toolchain (rustup)
-- Installs optional system tooling as needed by configured features
-- Enables SPI and I2C in boot configuration
-- Compiles `rustyjack-core` (orchestration engine)
-- Compiles `rustyjack-ui` (LCD interface)
-- Installs binaries to `/usr/local/bin/`
-- Creates systemd service `rustyjack.service`
-- Sets up needed directories (e.g. `loot/`)
-- Starts service automatically
+- Installs Rust toolchain (rustup) and required packages (iproute2, dhclient, iw, wireless-tools, hostapd, dnsmasq, etc.)
+- Enables SPI/I2C overlays and GPIO pull-ups for the Waveshare buttons in `/boot/firmware/config.txt` (or `/boot/config.txt`)
+- Builds and installs the `rustyjack-ui` binary to `/usr/local/bin/` (core/evasion/wireless are linked as libraries)
+- Sets up udev rules for USB Wi-Fi hotplug and installs helper scripts
+- Creates systemd service `rustyjack.service` (runs as root, sets `RUSTYJACK_DISPLAY_ROTATION=landscape`)
+- Creates required directories (loot, wifi profiles) and starts the service
 
 **Time:** ~10-15 minutes (Rust compilation is CPU-intensive)
 
@@ -341,9 +338,9 @@ tar -czf ~/loot_backup_$(date +%Y%m%d).tar.gz loot/
 | **→ Right** | Select / Enter submenu / Confirm |
 | **← Left** | Back / Cancel / Previous menu |
 | **○ Select** | Same as Right (center button) |
-| **KEY1** | Toggle view mode (List/Grid/Carousel) |
-| **KEY2** | Reserved |
-| **KEY3** | Alternative back button |
+| **KEY1** | Refresh / redraw current view |
+| **KEY2** | Jump to main menu |
+| **KEY3** | Reboot confirmation (requires confirm) |
 
 ### Menu Structure (current)
 
@@ -362,23 +359,25 @@ Main Menu
 │  ├─ Crack Handshake
 │  └─ Connect Network
 ├─ Ethernet Recon
-│  ├─ LAN Discovery
-│  └─ Port Scan (quick)
-├─ Obfuscation & Evasion
-│  ├─ MAC Random toggle/now/restore
-│  ├─ Passive Mode
+│  ├─ LAN Discovery (ICMP sweep)
+│  └─ Port Scan (quick TCP connect)
+├─ Obfuscation
+│  ├─ MAC randomize toggle / now / restore
+│  ├─ Passive mode toggle + Passive Recon
 │  └─ TX Power
 ├─ View Dashboards
 ├─ Settings
 │  ├─ Toggle/Upload Discord
 │  ├─ Options (colors, config)
-│  ├─ System (update/restart)
+│  ├─ System (restart)
 │  └─ WiFi Drivers
 └─ Loot
    ├─ Transfer to USB
    ├─ Wireless Captures
    └─ Ethernet Loot
 ```
+
+Note: Ethernet Recon now runs real scans; LAN Discovery auto-detects the wired interface/CIDR, and Port Scan defaults to the gateway if no target is provided.
 
 ### Quick Start Examples
 
@@ -393,7 +392,7 @@ Here are a few things you can do from the device's main menu (keeps the current 
 
 ---
 
-## ⚙️ Core Capabilities
+## Core Capabilities
 
 Rustyjack is now focused on providing a compact UI for the device and a core orchestration process. The following capabilities are maintained in the trimmed-down project:
 
@@ -401,56 +400,14 @@ Rustyjack is now focused on providing a compact UI for the device and a core orc
 - Hardware detection (interface and peripheral detection)
 - Wireless attacks: deauth/handshake, PMKID, probe sniff, evil twin, karma, attack pipelines (via `rustyjack-wireless`)
 - Evasion: MAC randomization, passive mode toggle, TX power adjust (`rustyjack-evasion`)
-- Ethernet recon: ICMP sweep + quick port scan (`rustyjack-ethernet`)
+- Ethernet recon: wired LAN discovery and quick port scan (loot saved under `loot/Ethernet`)
 - Loot viewer and transfer utilities (wireless and ethernet captures)
 - Discord webhook integration for uploading loot and notifications
-- System management (configuration, updates, service control)
-
-These components are the primary surface of the current Rustyjack project.
-```
-
- 
+- System management: restart from the System menu; configuration refresh/save from Options; updates via the installer script
 
 ---
 
-## Performance
-
-### Boot Time
-
-| Device | Rust UI |
-|--------|---------|
-| Raspberry Pi Zero 2 W | (boot time varies) |
-| Raspberry Pi 4 (4GB) | ~8 seconds |
-| Raspberry Pi 5 (8GB) | ~6 seconds |
-
-### Memory Usage
-
-| Component | RAM |
-|-----------|-----|
-| rustyjack-ui (idle) | ~12 MB |
-| rustyjack-core (idle) | ~5 MB |
-| **Total (idle)** | **~17 MB** |
-
-### Response Time
-
-| Action | Time |
-|--------|------|
-| Button press → LCD update | ~20 ms |
-| Menu navigation | ~30 ms |
-| Button press → LCD update | ~20 ms |
-| Menu navigation | ~30 ms |
-
-### Binary Sizes
-
-| Binary | Size |
-|--------|------|
-| rustyjack-core | ~5.2 MB |
-| rustyjack-ui | ~6.8 MB |
-| **Total** | **~12 MB** |
-
----
-
-## 🐛 Troubleshooting
+## Troubleshooting
 
 ### LCD Not Working
 
@@ -539,7 +496,7 @@ mkdir -p loot/Wireless loot/Ethernet
 
 ---
 
-## 📜 Credits
+## Credits
 
 ### Original Project
 

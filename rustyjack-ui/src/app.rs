@@ -4384,7 +4384,7 @@ impl App {
                 ]);
             }
 
-            if !self.is_ethernet_interface(&active_interface)) {
+            if !self.is_ethernet_interface(&active_interface) {
                 return self.show_message("Ethernet", [
                     &format!("Active iface: {}", active_interface),
                     "Not an Ethernet interface",

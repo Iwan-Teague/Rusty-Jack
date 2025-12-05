@@ -791,8 +791,7 @@ impl Display {
         
         match view {
             DashboardView::SystemHealth => self.draw_system_health(status),
-            DashboardView::LootSummary => self.draw_loot_summary(status),
-            DashboardView::NetworkTraffic => self.draw_network_traffic(status),
+            DashboardView::TargetStatus => self.draw_target_status(status),
         }
     }
 
@@ -848,115 +847,67 @@ impl Display {
         Ok(())
     }
 
-    fn draw_loot_summary(&mut self, status: &StatusOverlay) -> Result<()> {
-        self.draw_toolbar_with_title(Some("LOOT SUMMARY"), status)?;
+    fn draw_target_status(&mut self, status: &StatusOverlay) -> Result<()> {
+        self.draw_toolbar_with_title(Some("TARGET STATUS"), status)?;
+
+        let target_label = if !status.target_network.is_empty() {
+            status.target_network.clone()
+        } else if !status.target_bssid.is_empty() {
+            status.target_bssid.clone()
+        } else {
+            "Not set".to_string()
+        };
+
+        let bssid_label = if status.target_bssid.is_empty() {
+            "-".to_string()
+        } else {
+            status.target_bssid.clone()
+        };
+
+        let channel_text = if status.target_channel > 0 {
+            status.target_channel.to_string()
+        } else {
+            "-".to_string()
+        };
+
+        let interface_label = if status.active_interface.is_empty() {
+            "None".to_string()
+        } else {
+            status.active_interface.clone()
+        };
+
+        let real_mac = if status.original_mac.is_empty() {
+            "Unknown".to_string()
+        } else {
+            status.original_mac.clone()
+        };
+
+        let current_mac = if status.current_mac.is_empty() {
+            "Unknown".to_string()
+        } else {
+            status.current_mac.clone()
+        };
+
+        let entries = [
+            format!("Target: {}", target_label),
+            format!("BSSID: {}", bssid_label),
+            format!("Channel: {}", channel_text),
+            format!("Module: {}", interface_label),
+            format!("Real MAC: {}", real_mac),
+            format!("Current MAC: {}", current_mac),
+        ];
 
         let mut y = 16;
-        
-        if y <= 119 {
-            Text::with_baseline("Session Stats:", Point::new(4, y), self.text_style_small, Baseline::Top)
-                .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
-            y += 14;
-        }
-
-        if y <= 119 {
-            Text::with_baseline(&format!("Pkts:{}", status.packets_captured), Point::new(6, y), self.text_style_small, Baseline::Top)
-                .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
-            y += 10;
-        }
-
-        let data_mb = status.net_rx_bytes / 1_048_576;
-        if y <= 119 {
-            Text::with_baseline(&format!("Data:{}MB", data_mb), Point::new(6, y), self.text_style_small, Baseline::Top)
-                .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
-            y += 10;
-        }
-
-        let uptime_hrs = status.uptime_secs / 3600;
-        let uptime_mins = (status.uptime_secs % 3600) / 60;
-        if y <= 119 {
-            Text::with_baseline(&format!("Time:{}h{}m", uptime_hrs, uptime_mins), Point::new(6, y), self.text_style_small, Baseline::Top)
-                .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
-            y += 16;
-        }
-
-        if y <= 119 {
-            Text::with_baseline("Creds Found:", Point::new(4, y), self.text_style_small, Baseline::Top)
-                .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
-            y += 14;
-        }
-
-        if y <= 119 {
-            if status.creds_found > 0 {
-                Text::with_baseline(&format!("• NTLM:{}", status.creds_found), Point::new(6, y), self.text_style_small, Baseline::Top)
+        const MAX_CHARS: usize = 21;
+        for line in entries.iter() {
+            for wrapped in wrap_text(line, MAX_CHARS) {
+                if y > 119 {
+                    break;
+                }
+                Text::with_baseline(&wrapped, Point::new(4, y), self.text_style_small, Baseline::Top)
                     .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
-            } else {
-                Text::with_baseline("• None yet", Point::new(4, y), self.text_style_small, Baseline::Top)
-                    .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
+                y += 12;
             }
-        }
-
-        Text::with_baseline("LEFT=Exit SEL=Next", Point::new(12, 115), self.text_style_small, Baseline::Top)
-            .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
-        
-        Ok(())
-    }
-
-    fn draw_network_traffic(&mut self, status: &StatusOverlay) -> Result<()> {
-        self.draw_toolbar_with_title(Some("NET TRAFFIC"), status)?;
-
-        let mut y = 16;
-        
-        if y <= 119 {
-            Text::with_baseline("Total:", Point::new(4, y), self.text_style_small, Baseline::Top)
-                .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
-            y += 14;
-        }
-
-        let rx_mb = status.net_rx_bytes / 1_048_576;
-        let tx_mb = status.net_tx_bytes / 1_048_576;
-        
-        if y <= 119 {
-            Text::with_baseline(&format!("RX:{}MB", rx_mb), Point::new(6, y), self.text_style_small, Baseline::Top)
-                .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
-            y += 10;
-        }
-        
-        if y <= 119 {
-            Text::with_baseline(&format!("TX:{}MB", tx_mb), Point::new(6, y), self.text_style_small, Baseline::Top)
-                .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
-            y += 16;
-        }
-
-        if y <= 118 {
-            Text::with_baseline("Rate:", Point::new(4, y), self.text_style_small, Baseline::Top)
-                .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
-            y += 14;
-        }
-
-        let rx_kb = status.net_rx_rate / 1024.0;
-        let tx_kb = status.net_tx_rate / 1024.0;
-        
-        if y <= 118 {
-            Text::with_baseline(&format!("RX:{:.1}KB/s", rx_kb), Point::new(6, y), self.text_style_small, Baseline::Top)
-                .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
-            y += 10;
-        }
-        
-        if y <= 118 {
-            Text::with_baseline(&format!("TX:{:.1}KB/s", tx_kb), Point::new(6, y), self.text_style_small, Baseline::Top)
-                .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
-            y += 10;
-        }
-
-        let rate_bars_rx = ((rx_kb / 100.0).min(1.0) * 80.0) as u32;
-        let rate_bars_tx = ((tx_kb / 100.0).min(1.0) * 80.0) as u32;
-        
-        if y <= 111 {
-            y += 4;
-            self.draw_progress_bar(Point::new(4, y), rate_bars_rx)?;
-            y += 8;
-            self.draw_progress_bar(Point::new(4, y), rate_bars_tx)?;
         }
 
         Text::with_baseline("LEFT=Exit SEL=Next", Point::new(12, 115), self.text_style_small, Baseline::Top)
@@ -1077,13 +1028,29 @@ impl Display {
 
     pub fn draw_dashboard(&mut self, view: DashboardView, status: &StatusOverlay) -> Result<()> {
         println!("=== DASHBOARD: {:?} ===", view);
-        println!("CPU: {:.0}% ({:.0}°C)", status.cpu_percent, status.temp_c);
-        println!("MEM: {}/{} MB", status.mem_used_mb, status.mem_total_mb);
-        println!("DISK: {:.1}/{:.1} GB", status.disk_used_gb, status.disk_total_gb);
-        println!("NET RX: {} MB  TX: {} MB", status.net_rx_bytes / 1_048_576, status.net_tx_bytes / 1_048_576);
-        println!("Rate: RX:{:.1} KB/s TX:{:.1} KB/s", status.net_rx_rate / 1024.0, status.net_tx_rate / 1024.0);
-        println!("Packets: {}  Creds: {}", status.packets_captured, status.creds_found);
-        println!("Active: {:?}", status.active_operations);
+        match view {
+            DashboardView::SystemHealth => {
+                println!("CPU: {:.0}% ({:.0}°C)", status.cpu_percent, status.temp_c);
+                println!("MEM: {}/{} MB", status.mem_used_mb, status.mem_total_mb);
+                println!("DISK: {:.1}/{:.1} GB", status.disk_used_gb, status.disk_total_gb);
+                println!("Uptime: {}s", status.uptime_secs);
+            }
+            DashboardView::TargetStatus => {
+                println!(
+                    "Target: {}",
+                    if status.target_network.is_empty() {
+                        status.target_bssid.as_str()
+                    } else {
+                        status.target_network.as_str()
+                    }
+                );
+                println!("BSSID: {}", if status.target_bssid.is_empty() { "-" } else { status.target_bssid.as_str() });
+                println!("Channel: {}", if status.target_channel > 0 { status.target_channel.to_string() } else { "-".to_string() });
+                println!("Module: {}", if status.active_interface.is_empty() { "None" } else { status.active_interface.as_str() });
+                println!("Real MAC: {}", if status.original_mac.is_empty() { "Unknown" } else { status.original_mac.as_str() });
+                println!("Current MAC: {}", if status.current_mac.is_empty() { "Unknown" } else { status.current_mac.as_str() });
+            }
+        }
         println!("========================");
         Ok(())
     }
@@ -1131,22 +1098,19 @@ pub struct StatusOverlay {
     pub mem_total_mb: u64,
     pub disk_used_gb: f32,
     pub disk_total_gb: f32,
-    pub net_rx_bytes: u64,
-    pub net_tx_bytes: u64,
-    pub net_rx_rate: f32,
-    pub net_tx_rate: f32,
     pub uptime_secs: u64,
-    pub packets_captured: u64,
-    pub creds_found: u32,
-    pub active_operations: Vec<String>,
-    pub mitm_victims: u32,
     pub autopilot_running: bool,
     pub autopilot_mode: String,
+    pub target_network: String,
+    pub target_bssid: String,
+    pub target_channel: u8,
+    pub active_interface: String,
+    pub original_mac: String,
+    pub current_mac: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DashboardView {
     SystemHealth,
-    LootSummary,
-    NetworkTraffic,
+    TargetStatus,
 }

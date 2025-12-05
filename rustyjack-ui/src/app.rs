@@ -4,7 +4,7 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
     thread,
-    time::Duration,
+    time::{Duration, SystemTime},
 };
 
 use anyhow::{Result, bail, Context};
@@ -18,6 +18,7 @@ use rustyjack_core::cli::{
 use rustyjack_core::InterfaceSummary;
 use serde::Deserialize;
 use serde_json::{self, Value};
+use chrono::Local;
 use tempfile::{NamedTempFile, TempPath};
 use walkdir::WalkDir;
 use zip::{CompressionMethod, ZipWriter, write::FileOptions};
@@ -25,7 +26,7 @@ use zip::{CompressionMethod, ZipWriter, write::FileOptions};
 use crate::{
     config::GuiConfig,
     core::CoreBridge,
-    display::{Display, DashboardView},
+    display::{Display, DashboardView, StatusOverlay},
     input::{Button, ButtonPad},
     menu::{ColorTarget, LootSection, MenuAction, MenuEntry, MenuTree, PipelineType, TxPowerSetting, menu_title},
     stats::StatsSampler,
@@ -132,6 +133,39 @@ impl App {
             Button::Key2 => ButtonAction::MainMenu,
             Button::Key3 => ButtonAction::Reboot,
         }
+    }
+
+    fn status_overlay(&self) -> StatusOverlay {
+        let mut status = self.stats.snapshot();
+        let settings = &self.config.settings;
+
+        status.target_network = settings.target_network.clone();
+        status.target_bssid = settings.target_bssid.clone();
+        status.target_channel = settings.target_channel;
+        status.active_interface = settings.active_network_interface.clone();
+
+        let interface_mac = self.read_interface_mac(&settings.active_network_interface);
+        let current_mac = interface_mac
+            .clone()
+            .unwrap_or_else(|| settings.current_mac.clone());
+        let original_mac = if !settings.original_mac.is_empty() {
+            settings.original_mac.clone()
+        } else {
+            interface_mac.unwrap_or_else(|| current_mac.clone())
+        };
+
+        status.current_mac = current_mac.to_uppercase();
+        status.original_mac = original_mac.to_uppercase();
+
+        status
+    }
+
+    fn read_interface_mac(&self, interface: &str) -> Option<String> {
+        if interface.is_empty() {
+            return None;
+        }
+        let path = format!("/sys/class/net/{}/address", interface);
+        fs::read_to_string(&path).ok().map(|mac| mac.trim().to_uppercase())
     }
 
     fn confirm_reboot(&mut self) -> Result<()> {
@@ -432,7 +466,7 @@ impl App {
         loop {
             if let Some(view) = self.dashboard_view {
                 // Dashboard mode
-                let status = self.stats.snapshot();
+                let status = self.status_overlay();
                 self.display.draw_dashboard(view, &status)?;
                 
                 let button = self.buttons.wait_for_press()?;
@@ -444,9 +478,8 @@ impl App {
                     ButtonAction::Select => {
                         // Cycle to next dashboard
                         self.dashboard_view = Some(match view {
-                            DashboardView::SystemHealth => DashboardView::LootSummary,
-                            DashboardView::LootSummary => DashboardView::NetworkTraffic,
-                            DashboardView::NetworkTraffic => DashboardView::SystemHealth,
+                            DashboardView::SystemHealth => DashboardView::TargetStatus,
+                            DashboardView::TargetStatus => DashboardView::SystemHealth,
                         });
                     }
                     ButtonAction::Refresh => {
@@ -517,7 +550,7 @@ impl App {
         if self.menu_state.selection >= entries.len() {
             self.menu_state.selection = entries.len().saturating_sub(1);
         }
-        let status = self.stats.snapshot();
+        let status = self.status_overlay();
         // When there are more entries than fit on-screen, show a sliding window
         // so the selected item is always visible. MenuState::offset tracks the
         // first item index in the current view.
@@ -3005,17 +3038,45 @@ impl App {
             }
         }
         
+        let target_dir = self.pipeline_target_dir();
+        let (pipeline_dir, started_at) = self.prepare_pipeline_loot_dir(&target_dir)?;
+        
         // Execute pipeline steps using actual attack implementations
         let result = self.execute_pipeline_steps(pipeline_type, title, &steps)?;
+        let loot_copy = self.capture_pipeline_loot(started_at, &target_dir, &pipeline_dir);
+        let loot_dir_display = pipeline_dir
+            .strip_prefix(&self.root)
+            .unwrap_or(&pipeline_dir)
+            .display()
+            .to_string();
+        let (loot_status_line, loot_detail_line) = match loot_copy {
+            Ok(copied) => (
+                format!("Loot: {}", loot_dir_display),
+                Some(format!("Files copied: {}", copied)),
+            ),
+            Err(e) => {
+                eprintln!("[pipeline] loot copy failed: {e:?}");
+                (
+                    format!("Loot: {} (copy failed)", loot_dir_display),
+                    Some(format!("{e}")),
+                )
+            }
+        };
         
         // Pipeline complete - show results
         if result.cancelled {
-            self.show_message("Pipeline Cancelled", [
-                &format!("Stopped at step {}", result.steps_completed + 1),
-                "",
-                "Partial results may be",
-                "saved in loot folder",
-            ])
+            let mut lines: Vec<String> = vec![
+                format!("Stopped at step {}", result.steps_completed + 1),
+                "".to_string(),
+                "Partial results may be".to_string(),
+                "saved in loot folder".to_string(),
+            ];
+            lines.push("".to_string());
+            lines.push(loot_status_line);
+            if let Some(detail) = loot_detail_line {
+                lines.push(detail);
+            }
+            self.show_message("Pipeline Cancelled", lines)
         } else {
             let mut summary = vec![
                 format!("{} finished", title),
@@ -3039,12 +3100,116 @@ impl App {
             }
             
             summary.push("".to_string());
-            summary.push("Results in loot/Wireless/".to_string());
+            summary.push(loot_status_line);
+            if let Some(detail) = loot_detail_line {
+                summary.push(detail);
+            }
             
             self.show_message("Pipeline Complete", summary.iter().map(|s| s.as_str()))
         }
     }
     
+    fn prepare_pipeline_loot_dir(&self, target_dir: &Path) -> Result<(PathBuf, SystemTime)> {
+        fs::create_dir_all(target_dir)
+            .with_context(|| format!("creating target loot directory {}", target_dir.display()))?;
+        let pipelines_root = target_dir.join("pipelines");
+        fs::create_dir_all(&pipelines_root)
+            .with_context(|| format!("creating pipelines directory {}", pipelines_root.display()))?;
+        let ts = Local::now().format("%Y%m%d_%H%M%S").to_string();
+        let run_dir = pipelines_root.join(ts);
+        fs::create_dir_all(&run_dir)
+            .with_context(|| format!("creating pipeline run directory {}", run_dir.display()))?;
+        Ok((run_dir, SystemTime::now()))
+    }
+
+    fn pipeline_target_dir(&self) -> PathBuf {
+        let settings = &self.config.settings;
+        let name_source = if !settings.target_network.is_empty() {
+            settings.target_network.clone()
+        } else if !settings.target_bssid.is_empty() {
+            settings.target_bssid.clone()
+        } else {
+            "Unknown".to_string()
+        };
+        let safe = Self::sanitize_target_name(&name_source);
+        self.root.join("loot").join("Wireless").join(safe)
+    }
+
+    fn sanitize_target_name(name: &str) -> String {
+        let mut out = String::with_capacity(name.len());
+        for ch in name.chars() {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                out.push(ch);
+            } else {
+                out.push('_');
+            }
+        }
+        let trimmed = out.trim_matches('_').to_string();
+        if trimmed.is_empty() {
+            "Unknown".to_string()
+        } else {
+            trimmed
+        }
+    }
+
+    fn capture_pipeline_loot(
+        &self,
+        started_at: SystemTime,
+        target_dir: &Path,
+        pipeline_dir: &Path,
+    ) -> Result<usize> {
+        let wireless_base = self.root.join("loot").join("Wireless");
+        if !wireless_base.exists() {
+            return Ok(0);
+        }
+
+        let mut copied = 0usize;
+        for entry in WalkDir::new(&wireless_base)
+            .into_iter()
+            .filter_entry(|e| !e.path().starts_with(pipeline_dir))
+        {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_dir() {
+                continue;
+            }
+            let metadata = match entry.metadata() {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
+            let modified = match metadata.modified() {
+                Ok(t) => t,
+                Err(_) => continue,
+            };
+            if modified < started_at {
+                continue;
+            }
+
+            let rel = if path.starts_with(target_dir) {
+                path.strip_prefix(target_dir).unwrap_or(path)
+            } else if path.starts_with(&wireless_base) {
+                path.strip_prefix(&wireless_base).unwrap_or(path)
+            } else {
+                continue;
+            };
+
+            if rel.as_os_str().is_empty() {
+                continue;
+            }
+
+            let dest = pipeline_dir.join(rel);
+            if let Some(parent) = dest.parent() {
+                fs::create_dir_all(parent)
+                    .with_context(|| format!("creating {}", parent.display()))?;
+            }
+            fs::copy(path, &dest)
+                .with_context(|| format!("copying {} to {}", path.display(), dest.display()))?;
+            copied += 1;
+        }
+
+        Ok(copied)
+    }
+
     /// Execute the actual pipeline steps using real attack implementations
     fn execute_pipeline_steps(&mut self, pipeline_type: PipelineType, title: &str, steps: &[&str]) -> Result<PipelineResult> {
         let mut result = PipelineResult {

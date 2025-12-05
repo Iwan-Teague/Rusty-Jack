@@ -125,6 +125,22 @@ pub fn check_privileges() -> bool {
     unsafe { libc::geteuid() == 0 }
 }
 
+/// Global logging toggle driven by the UI.
+/// When disabled, components should avoid writing log files.
+pub fn logs_disabled() -> bool {
+    match std::env::var("RUSTYJACK_LOGS_DISABLED") {
+        Ok(val) => {
+            let normalized = val.trim().to_ascii_lowercase();
+            matches!(normalized.as_str(), "1" | "true" | "yes" | "on")
+        }
+        Err(_) => false,
+    }
+}
+
+pub fn logs_enabled() -> bool {
+    !logs_disabled()
+}
+
 /// Check if an interface exists and is wireless
 pub fn is_wireless_interface(name: &str) -> bool {
     let path = format!("/sys/class/net/{}/wireless", name);

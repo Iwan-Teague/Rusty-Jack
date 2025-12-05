@@ -1210,8 +1210,9 @@ fn handle_wifi_deauth(root: &Path, args: WifiDeauthArgs) -> Result<HandlerResult
         );
     }
 
-    // Create loot directory under network-specific folder
-    let loot_dir = wireless_target_directory(root, args.ssid.clone(), Some(args.bssid.clone()));
+    // Create loot directory under network-specific folder + attack type
+    let loot_dir = wireless_target_directory(root, args.ssid.clone(), Some(args.bssid.clone()))
+        .join("Deauth");
     fs::create_dir_all(&loot_dir)
         .with_context(|| format!("creating loot directory: {}", loot_dir.display()))?;
 
@@ -1235,6 +1236,12 @@ fn handle_wifi_deauth(root: &Path, args: WifiDeauthArgs) -> Result<HandlerResult
         log::debug!("Deauth progress: {:.0}% - {}", progress * 100.0, status);
     })?;
 
+    let log_file = if result.log_file.as_os_str().is_empty() {
+        None
+    } else {
+        Some(result.log_file.display().to_string())
+    };
+
     // Build response data
     let data = json!({
         "bssid": result.bssid,
@@ -1247,7 +1254,7 @@ fn handle_wifi_deauth(root: &Path, args: WifiDeauthArgs) -> Result<HandlerResult
         "deauth_bursts": result.bursts,
         "continuous_mode": args.continuous,
         "target_client": args.client,
-        "log_file": result.log_file.display().to_string(),
+        "log_file": log_file,
         "capture_files": result.capture_files.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
         "handshake_captured": result.handshake_captured,
         "handshake_file": result.handshake_file.as_ref().map(|p| p.display().to_string()),
@@ -1299,9 +1306,9 @@ fn handle_wifi_evil_twin(root: &Path, args: WifiEvilTwinArgs) -> Result<HandlerR
         );
     }
 
-    // Create loot directory for captured credentials under target
-    let loot_dir =
-        wireless_target_directory(root, Some(args.ssid.clone()), args.target_bssid.clone());
+    // Create loot directory for captured credentials under target + attack type
+    let loot_dir = wireless_target_directory(root, Some(args.ssid.clone()), args.target_bssid.clone())
+        .join("EvilTwin");
     fs::create_dir_all(&loot_dir)
         .with_context(|| format!("creating loot directory: {}", loot_dir.display()))?;
 
@@ -1333,6 +1340,12 @@ fn handle_wifi_evil_twin(root: &Path, args: WifiEvilTwinArgs) -> Result<HandlerR
     })
     .map_err(|e| anyhow::anyhow!("Evil Twin attack failed: {}", e))?;
 
+    let log_file = if result.log_path.as_os_str().is_empty() {
+        None
+    } else {
+        Some(result.log_path.display().to_string())
+    };
+
     let data = json!({
         "ssid": args.ssid,
         "interface": args.interface,
@@ -1347,7 +1360,7 @@ fn handle_wifi_evil_twin(root: &Path, args: WifiEvilTwinArgs) -> Result<HandlerR
         "deauth_packets": result.stats.deauth_packets,
         "attack_duration_secs": result.stats.duration.as_secs(),
         "loot_directory": result.loot_path.display().to_string(),
-        "log_file": result.log_path.display().to_string(),
+        "log_file": log_file,
     });
 
     let message = if result.stats.ap_started {
@@ -1386,8 +1399,9 @@ fn handle_wifi_pmkid(root: &Path, args: WifiPmkidArgs) -> Result<HandlerResult> 
         );
     }
 
-    // Create loot directory under target network
-    let loot_dir = wireless_target_directory(root, args.ssid.clone(), args.bssid.clone());
+    // Create loot directory under target network + attack type
+    let loot_dir = wireless_target_directory(root, args.ssid.clone(), args.bssid.clone())
+        .join("PMKID");
     fs::create_dir_all(&loot_dir)?;
 
     // Build config for native implementation

@@ -165,11 +165,19 @@ pub fn start_hotspot(config: HotspotConfig) -> Result<HotspotState> {
     fs::write(&hostapd_path, hostapd_conf)
         .map_err(|e| WirelessError::System(format!("writing hostapd.conf: {e}")))?;
 
+    let logging_enabled = crate::logs_enabled();
+
     // Write dnsmasq.conf
+    let dns_logging = if logging_enabled {
+        "log-queries\nlog-dhcp\n"
+    } else {
+        ""
+    };
     let dns_conf = format!(
-        "interface={}\ndhcp-range=10.20.30.10,10.20.30.200,12h\ndhcp-option=3,{gw}\ndhcp-option=6,{gw}\nlog-queries\nlog-dhcp\n",
+        "interface={}\ndhcp-range=10.20.30.10,10.20.30.200,12h\ndhcp-option=3,{gw}\ndhcp-option=6,{gw}\n{dns_logging}",
         config.ap_interface,
-        gw = AP_GATEWAY
+        gw = AP_GATEWAY,
+        dns_logging = dns_logging
     );
     let dns_path = format!("{CONF_DIR}/dnsmasq.conf");
     fs::write(&dns_path, dns_conf)

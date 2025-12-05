@@ -13,6 +13,7 @@ pub enum MenuAction {
     DiscordUpload,
     ViewDashboards,
     ToggleDiscord,
+    ToggleLogs,
     TransferToUSB,
     HardwareDetect,
     DeauthAttack,
@@ -272,6 +273,7 @@ fn discord_menu() -> Vec<MenuEntry> {
 fn options_menu() -> Vec<MenuEntry> {
     vec![
         MenuEntry::new("Colors", MenuAction::Submenu("aea")),
+        MenuEntry::new("Logs: ???", MenuAction::ToggleLogs),
         MenuEntry::new("Refresh Config", MenuAction::RefreshConfig),
         MenuEntry::new("Save Config", MenuAction::SaveConfig),
     ]
@@ -301,9 +303,9 @@ fn system_menu() -> Vec<MenuEntry> {
 
 fn loot_menu() -> Vec<MenuEntry> {
     vec![
-        MenuEntry::new("Transfer to USB", MenuAction::TransferToUSB),
         MenuEntry::new("Wireless Captures", MenuAction::Loot(LootSection::Wireless)),
         MenuEntry::new("Ethernet Loot", MenuAction::Loot(LootSection::Ethernet)),
+        MenuEntry::new("Transfer to USB", MenuAction::TransferToUSB),
     ]
 }
 

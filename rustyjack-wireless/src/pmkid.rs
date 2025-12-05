@@ -448,11 +448,15 @@ where
         .map(|s| s.replace(|c: char| !c.is_alphanumeric() && c != '-' && c != '_', "_"))
         .unwrap_or_else(|| "passive".to_string());
 
-    let logs_dir = loot_dir.join("logs");
-    fs::create_dir_all(&logs_dir)
-        .map_err(|e| WirelessError::System(format!("Failed to create logs dir: {}", e)))?;
-
-    let log_file = logs_dir.join(format!("pmkid_{}_{}.txt", target_name, timestamp));
+    let logging_enabled = crate::logs_enabled();
+    let log_file = if logging_enabled {
+        let logs_dir = loot_dir.join("logs");
+        fs::create_dir_all(&logs_dir)
+            .map_err(|e| WirelessError::System(format!("Failed to create logs dir: {}", e)))?;
+        logs_dir.join(format!("pmkid_{}_{}.txt", target_name, timestamp))
+    } else {
+        PathBuf::new()
+    };
 
     on_progress(0.10, "Enabling monitor mode...");
 
@@ -567,48 +571,50 @@ where
     }
 
     // Write log file
-    let mut log_content = String::new();
-    log_content.push_str("====================================================\n");
-    log_content.push_str("    RUSTYJACK PMKID CAPTURE LOG                     \n");
-    log_content.push_str("====================================================\n\n");
-    log_content.push_str(&format!(
-        "Timestamp: {}\n",
-        Local::now().format("%Y-%m-%d %H:%M:%S")
-    ));
-    log_content.push_str(&format!("Interface: {}\n", config.interface));
-    log_content.push_str(&format!("Duration: {} seconds\n", config.duration));
-    log_content.push_str(&format!(
-        "Target BSSID: {}\n",
-        config.bssid.as_deref().unwrap_or("(passive)")
-    ));
-    log_content.push_str(&format!(
-        "Target SSID: {}\n",
-        config.ssid.as_deref().unwrap_or("(any)")
-    ));
-    log_content.push_str(&format!("Channel(s): {:?}\n", channels_to_scan));
-    log_content.push_str("\n--- RESULTS ---------------------------------------\n");
-    log_content.push_str(&format!("Packets analyzed: {}\n", packets_analyzed));
-    log_content.push_str(&format!("PMKIDs captured: {}\n", capturer.captures.len()));
+    if logging_enabled {
+        let mut log_content = String::new();
+        log_content.push_str("====================================================\n");
+        log_content.push_str("    RUSTYJACK PMKID CAPTURE LOG                     \n");
+        log_content.push_str("====================================================\n\n");
+        log_content.push_str(&format!(
+            "Timestamp: {}\n",
+            Local::now().format("%Y-%m-%d %H:%M:%S")
+        ));
+        log_content.push_str(&format!("Interface: {}\n", config.interface));
+        log_content.push_str(&format!("Duration: {} seconds\n", config.duration));
+        log_content.push_str(&format!(
+            "Target BSSID: {}\n",
+            config.bssid.as_deref().unwrap_or("(passive)")
+        ));
+        log_content.push_str(&format!(
+            "Target SSID: {}\n",
+            config.ssid.as_deref().unwrap_or("(any)")
+        ));
+        log_content.push_str(&format!("Channel(s): {:?}\n", channels_to_scan));
+        log_content.push_str("\n--- RESULTS ---------------------------------------\n");
+        log_content.push_str(&format!("Packets analyzed: {}\n", packets_analyzed));
+        log_content.push_str(&format!("PMKIDs captured: {}\n", capturer.captures.len()));
 
-    if !capturer.captures.is_empty() {
-        log_content.push_str("\nCaptured PMKIDs:\n");
-        for (i, cap) in capturer.captures.iter().enumerate() {
-            log_content.push_str(&format!(
-                "  {}. BSSID: {} | SSID: {}\n",
-                i + 1,
-                cap.bssid,
-                cap.ssid.as_deref().unwrap_or("(unknown)")
-            ));
-            log_content.push_str(&format!("     Hashcat: {}\n", cap.to_hashcat_22000()));
+        if !capturer.captures.is_empty() {
+            log_content.push_str("\nCaptured PMKIDs:\n");
+            for (i, cap) in capturer.captures.iter().enumerate() {
+                log_content.push_str(&format!(
+                    "  {}. BSSID: {} | SSID: {}\n",
+                    i + 1,
+                    cap.bssid,
+                    cap.ssid.as_deref().unwrap_or("(unknown)")
+                ));
+                log_content.push_str(&format!("     Hashcat: {}\n", cap.to_hashcat_22000()));
+            }
         }
+
+        log_content.push_str("\n====================================================\n");
+        log_content.push_str("Use hashcat -m 22000 to crack the captured PMKIDs\n");
+        log_content.push_str("====================================================\n");
+
+        fs::write(&log_file, &log_content)
+            .map_err(|e| WirelessError::System(format!("Failed to write log: {}", e)))?;
     }
-
-    log_content.push_str("\n====================================================\n");
-    log_content.push_str("Use hashcat -m 22000 to crack the captured PMKIDs\n");
-    log_content.push_str("====================================================\n");
-
-    fs::write(&log_file, &log_content)
-        .map_err(|e| WirelessError::System(format!("Failed to write log: {}", e)))?;
 
     on_progress(1.0, "Complete");
 

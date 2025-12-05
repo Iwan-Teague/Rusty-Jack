@@ -471,7 +471,7 @@ impl MenuState {
             self.selection -= 1;
         }
         // Ensure selection is inside visible window
-        const VISIBLE: usize = 7;
+        const VISIBLE: usize = 9;
         if self.selection < self.offset {
             self.offset = self.selection;
         } else if self.selection >= self.offset + VISIBLE {
@@ -486,7 +486,7 @@ impl MenuState {
         }
         self.selection = (self.selection + 1) % total;
         // Ensure selection is inside visible window
-        const VISIBLE: usize = 7;
+        const VISIBLE: usize = 9;
         if self.selection < self.offset {
             self.offset = self.selection;
         } else if self.selection >= self.offset + VISIBLE {
@@ -530,7 +530,7 @@ impl App {
         // Give splash screen time to be visible (1.5 seconds)
         thread::sleep(Duration::from_millis(1500));
 
-        Ok(Self {
+        let mut app = Self {
             core,
             display,
             buttons,
@@ -540,7 +540,10 @@ impl App {
             stats,
             root,
             dashboard_view: None,
-        })
+        };
+        // Apply log preference from config at startup so the backend honors it
+        app.apply_log_setting();
+        Ok(app)
     }
 
     pub fn run(mut self) -> Result<()> {
@@ -610,6 +613,10 @@ impl App {
                 MenuAction::ToggleDiscord => {
                     let state = if self.config.settings.discord_enabled { "ON" } else { "OFF" };
                     entry.label = format!("Discord [{}]", state);
+                }
+                MenuAction::ToggleLogs => {
+                    let state = if self.config.settings.logs_enabled { "ON" } else { "OFF" };
+                    entry.label = format!("Logs [{}]", state);
                 }
                 MenuAction::ToggleMacRandomization => {
                     let state = if self.config.settings.mac_randomization_enabled { "ON" } else { "OFF" };
@@ -683,6 +690,7 @@ impl App {
             MenuAction::RestartSystem => self.restart_system()?,
             MenuAction::Loot(section) => self.show_loot(section)?,
             MenuAction::DiscordUpload => self.discord_upload()?,
+            MenuAction::ToggleLogs => self.toggle_logs()?,
             MenuAction::ViewDashboards => {
                 self.dashboard_view = Some(DashboardView::SystemHealth);
             }
@@ -836,6 +844,23 @@ impl App {
             }
         }
         self.display.update_palette(&self.config.colors);
+    }
+
+    fn apply_log_setting(&self) {
+        if self.config.settings.logs_enabled {
+            std::env::remove_var("RUSTYJACK_LOGS_DISABLED");
+        } else {
+            std::env::set_var("RUSTYJACK_LOGS_DISABLED", "1");
+        }
+    }
+
+    fn toggle_logs(&mut self) -> Result<()> {
+        self.config.settings.logs_enabled = !self.config.settings.logs_enabled;
+        self.apply_log_setting();
+        let config_path = self.root.join("gui_conf.json");
+        let _ = self.config.save(&config_path);
+        let state = if self.config.settings.logs_enabled { "ON" } else { "OFF" };
+        self.show_message("Logs", [format!("Logging {}", state)])
     }
 
     fn tx_power_label(level: TxPowerSetting) -> (&'static str, &'static str) {
@@ -1147,7 +1172,7 @@ impl App {
             return Ok(None);
         }
 
-        const VISIBLE: usize = 7;
+        const VISIBLE: usize = 9;
         let mut index: usize = 0;
         let mut offset: usize = 0;
 
@@ -1937,41 +1962,72 @@ impl App {
                 if response.networks.is_empty() {
                     return self.show_message("WiFi Scan", ["No networks found"]);
                 }
-                
-                // Build list of networks for selection
+
                 let networks = response.networks;
-                let mut labels = Vec::new();
-                for net in &networks {
-                    let ssid = net.ssid.as_deref().unwrap_or("<hidden>");
-                    // Truncate SSID if too long for display
-                    let ssid_display = if ssid.len() > 10 {
-                        format!("{}...", &ssid[..10])
-                    } else {
-                        ssid.to_string()
-                    };
-                    let signal = net.signal_dbm.map(|s| format!("{}dB", s)).unwrap_or_default();
-                    let ch = net.channel.map(|c| format!("c{}", c)).unwrap_or_default();
-                    // Mark target networks with '*' if the ssid or bssid matches
-                    // the currently configured target; show a lock indicator 'L'
-                    // for encrypted networks so '*' is reserved for the selected target.
-                    let bssid = net.bssid.as_deref().unwrap_or("");
-                    let cur_target_bssid = self.config.settings.target_bssid.as_str();
-                    let is_target = (!cur_target_bssid.is_empty() && cur_target_bssid == bssid)
-                        || (!self.config.settings.target_network.is_empty() && self.config.settings.target_network == ssid);
-                    let target_marker = if is_target { "*" } else { " " };
-                    labels.push(format!("{} {} {} {}", target_marker, ssid_display, signal, ch));
-                }
-                
-                // Interactive network list - loop until user backs out
+
                 loop {
+                    // Build labels each loop so target marker updates after set
+                    let mut labels = Vec::new();
+                    for net in &networks {
+                        let ssid = net.ssid.as_deref().unwrap_or("<hidden>");
+                        let ssid_display = if ssid.len() > 10 {
+                            format!("{}...", &ssid[..10])
+                        } else {
+                            ssid.to_string()
+                        };
+                        let signal = net.signal_dbm.map(|s| format!("{}dB", s)).unwrap_or_default();
+                        let ch = net.channel.map(|c| format!("c{}", c)).unwrap_or_default();
+                        let bssid = net.bssid.as_deref().unwrap_or("");
+                        let cur_target_bssid = self.config.settings.target_bssid.as_str();
+                        let is_target = (!cur_target_bssid.is_empty() && cur_target_bssid == bssid)
+                            || (!self.config.settings.target_network.is_empty()
+                                && self.config.settings.target_network == ssid);
+                        let target_marker = if is_target { "*" } else { " " };
+                        labels.push(format!("{} {} {} {}", target_marker, ssid_display, signal, ch));
+                    }
+
                     let choice = self.choose_from_menu("Select Network", &labels)?;
-                    match choice {
-                        Some(idx) => {
-                            if let Some(network) = networks.get(idx) {
-                                self.handle_network_selection(network)?;
-                            }
+                    let Some(idx) = choice else { break; };
+                    let Some(network) = networks.get(idx) else { continue; };
+                    if let Some(ssid) = network.ssid.as_deref().filter(|s| !s.is_empty()) {
+                        let mut info = vec![format!("SSID: {}", ssid)];
+                        if let Some(bssid) = network.bssid.as_deref() {
+                            info.push(format!("BSSID: {}", bssid));
                         }
-                        None => break, // User pressed back
+                        if let Some(ch) = network.channel {
+                            info.push(format!("Channel: {}", ch));
+                        }
+                        if let Some(sig) = network.signal_dbm {
+                            info.push(format!("Signal: {} dBm", sig));
+                        }
+                        info.push("".to_string());
+                        info.push("Set this as target?".to_string());
+                        self.show_message("Network", info.iter().map(|s| s.as_str()))?;
+
+                        let confirm = self.choose_from_list(
+                            "Set as Target?",
+                            &["Yes".to_string(), "No".to_string()],
+                        )?;
+                        if confirm == Some(0) {
+                            self.config.settings.target_network = ssid.to_string();
+                            self.config.settings.target_bssid = network.bssid.clone().unwrap_or_default();
+                            self.config.settings.target_channel = network.channel.unwrap_or(0) as u8;
+                            let config_path = self.root.join("gui_conf.json");
+                            let _ = self.config.save(&config_path);
+                            let mut result_lines = vec![
+                                format!("SSID: {}", ssid),
+                                format!("Channel: {}", self.config.settings.target_channel),
+                            ];
+                            if self.config.settings.target_bssid.is_empty() {
+                                result_lines.push("BSSID: (none)".to_string());
+                                result_lines.push("Note: deauth needs BSSID".to_string());
+                            } else {
+                                result_lines.push(format!("BSSID: {}", self.config.settings.target_bssid));
+                            }
+                            self.show_message("Target Set", result_lines.iter().map(|s| s.as_str()))?;
+                        }
+                    } else {
+                        self.show_message("Wi-Fi", ["Hidden SSID - configure via CLI"])?;
                     }
                 }
             }
@@ -2692,7 +2748,7 @@ impl App {
 
         let mut cracker = WpaCracker::new(bundle.handshake.clone(), &bundle.ssid).with_config(
             CrackerConfig {
-                progress_interval: 250,
+                progress_interval: 25,
                 max_attempts: 0,
                 throttle_interval: 200,
                 threads: 1,
@@ -2747,6 +2803,9 @@ impl App {
         let mut finished: Option<CrackOutcome> = None;
         let started = Instant::now();
 
+        // Initial draw so user sees 0/N
+        self.draw_crack_progress(attempts, total_attempts, rate, &current)?;
+
         loop {
             match rx.try_recv() {
                 Ok(update) => match update {
@@ -2767,6 +2826,8 @@ impl App {
                         total,
                         cancelled,
                     } => {
+                        // draw final state before exiting
+                        self.draw_crack_progress(a, total, rate, &current)?;
                         finished = Some(CrackOutcome {
                             password,
                             attempts: a,
@@ -4195,17 +4256,22 @@ impl App {
                     let config_path = self.root.join("gui_conf.json");
                     let _ = self.config.save(&config_path);
 
-                    self.show_message("MAC Randomized", [
-                        format!("Interface: {}", active_interface),
-                        "".to_string(),
-                        "New MAC:".to_string(),
-                        new_mac,
-                        "".to_string(),
-                        "Original saved:".to_string(),
-                        original_mac,
-                        "".to_string(),
-                        "DHCP renewed and reconnect signaled.".to_string(),
-                    ])
+                    self.scrollable_text_viewer(
+                        "MAC Randomized",
+                        &[
+                            format!("Interface: {}", active_interface),
+                            "".to_string(),
+                            "New MAC:".to_string(),
+                            new_mac,
+                            "".to_string(),
+                            "Original saved:".to_string(),
+                            original_mac,
+                            "".to_string(),
+                            "DHCP renewed and".to_string(),
+                            "reconnect signaled.".to_string(),
+                        ],
+                        false,
+                    )
                 }
                 Err(e) => {
                     self.show_message("MAC Error", [
@@ -4669,9 +4735,10 @@ impl App {
                             .core
                             .dispatch(Commands::Hotspot(HotspotCommand::Stop));
                     }
-                    (true, Some(1)) | (true, None) => {
+                    (true, Some(1)) => {
                         continue;
                     }
+                    (true, None) => return Ok(()),
                     (false, Some(0)) => {
                         // Select interfaces using hardware detect
                         let (_msg, detect) = self
@@ -4709,16 +4776,48 @@ impl App {
                         let upstream_pref = if ethernet.contains(&"eth0".to_string()) {
                             "eth0".to_string()
                         } else {
-                            ethernet.first().cloned().unwrap_or_else(|| wifi.first().cloned().unwrap_or_default())
+                            ethernet
+                                .first()
+                                .cloned()
+                                .or_else(|| wifi.first().cloned())
+                                .unwrap_or_default()
                         };
 
-                        let upstream_options = if ethernet.is_empty() { wifi.clone() } else { ethernet.clone() };
+                        let mut upstream_options = Vec::new();
+                        upstream_options.extend(ethernet.clone());
+                        upstream_options.extend(wifi.clone());
+
+                        if upstream_options.is_empty() {
+                            return self.show_message("Hotspot", [
+                                "No interfaces detected",
+                                "",
+                                "Run Hardware Detect and",
+                                "ensure adapters are up.",
+                            ]);
+                        }
+
                         let upstream = self.choose_interface_name("Internet (upstream)", &upstream_options)?;
                         let upstream_iface = upstream.unwrap_or(upstream_pref);
 
+                        // Build AP list (WiFi only, excluding upstream if same)
+                        let mut ap_choices: Vec<String> = wifi
+                            .iter()
+                            .filter(|name| **name != upstream_iface)
+                            .cloned()
+                            .collect();
+
+                        if ap_choices.is_empty() {
+                            return self.show_message("Hotspot", [
+                                "No WiFi interface left",
+                                "",
+                                "Select a different",
+                                "upstream interface.",
+                            ]);
+                        }
+
                         let ap_iface = self
-                            .choose_interface_name("Hotspot WiFi (AP)", &wifi)?
-                            .unwrap_or_else(|| wifi.first().cloned().unwrap_or_else(|| "wlan0".to_string()));
+                            .choose_interface_name("Hotspot WiFi (AP)", &ap_choices)?
+                            .unwrap_or_else(|| ap_choices.first().cloned().unwrap_or_else(|| "wlan0".to_string()));
 
                         let args = HotspotStartArgs {
                             ap_interface: ap_iface.clone(),

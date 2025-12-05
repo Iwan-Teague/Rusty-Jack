@@ -34,6 +34,11 @@ pub struct DeauthResult {
 
 impl DeauthResult {
     pub fn to_json(&self) -> Value {
+        let log_value = if self.log_file.as_os_str().is_empty() {
+            serde_json::Value::Null
+        } else {
+            serde_json::Value::String(self.log_file.display().to_string())
+        };
         serde_json::json!({
             "bssid": self.bssid,
             "ssid": self.ssid,
@@ -44,7 +49,7 @@ impl DeauthResult {
             "handshake_captured": self.handshake_captured,
             "handshake_file": self.handshake_file.as_ref().map(|p| p.display().to_string()),
             "capture_files": self.capture_files.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
-            "log_file": self.log_file.display().to_string(),
+            "log_file": log_value,
             "eapol_frames": self.eapol_frames,
         })
     }
@@ -119,16 +124,19 @@ pub fn execute_deauth_attack(
     let ssid_display = config.ssid.clone().unwrap_or_else(|| config.bssid.clone());
     let safe_ssid =
         ssid_display.replace(|c: char| !c.is_alphanumeric() && c != '-' && c != '_', "_");
-    let logs_dir = loot_dir.join("logs");
-    fs::create_dir_all(&logs_dir)
-        .with_context(|| format!("Creating logs directory: {}", logs_dir.display()))?;
-
-    let log_file = logs_dir.join(format!("log_deauth_{}_{}.txt", safe_ssid, timestamp));
-    let capture_file = loot_dir.join(format!("handshake_{}_{}.pcap", safe_ssid, timestamp));
-
-    // Create loot directory
+    // Create loot directory for captures
     fs::create_dir_all(loot_dir)
         .with_context(|| format!("Creating loot directory: {}", loot_dir.display()))?;
+    let logging_enabled = crate::system::logs_enabled();
+    let log_file = if logging_enabled {
+        let logs_dir = loot_dir.join("logs");
+        fs::create_dir_all(&logs_dir)
+            .with_context(|| format!("Creating logs directory: {}", logs_dir.display()))?;
+        logs_dir.join(format!("log_deauth_{}_{}.txt", safe_ssid, timestamp))
+    } else {
+        PathBuf::new()
+    };
+    let capture_file = loot_dir.join(format!("handshake_{}_{}.pcap", safe_ssid, timestamp));
 
     on_progress(0.05, "Initializing wireless interface...");
 
@@ -202,65 +210,67 @@ pub fn execute_deauth_attack(
         log::warn!("Failed to restore managed mode: {}", e);
     }
 
-    // Write detailed log file
-    let mut log_content = String::new();
-    log_content.push_str("====================================================\n");
-    log_content.push_str("    RUSTYJACK NATIVE DEAUTHENTICATION ATTACK LOG   \n");
-    log_content.push_str("====================================================\n\n");
-    log_content.push_str(&format!(
-        "Timestamp: {}\n",
-        Local::now().format("%Y-%m-%d %H:%M:%S")
-    ));
-    log_content.push_str("Implementation: Native Rust (rustyjack-wireless)\n\n");
-    log_content.push_str("--- TARGET INFORMATION ----------------------------\n");
-    log_content.push_str(&format!("Target BSSID: {}\n", config.bssid));
-    log_content.push_str(&format!("Target SSID: {}\n", ssid_display));
-    log_content.push_str(&format!("Target Channel: {}\n", config.channel));
-    log_content.push_str(&format!("Interface: {}\n", config.interface));
-    if let Some(ref c) = config.client {
-        log_content.push_str(&format!("Target Client: {}\n", c));
-    } else {
-        log_content.push_str("Target Client: Broadcast (all clients)\n");
-    }
-    log_content.push_str("\n--- ATTACK CONFIGURATION --------------------------\n");
-    log_content.push_str(&format!("Duration: {} seconds\n", config.duration));
-    log_content.push_str(&format!("Packets per burst: {}\n", config.packets));
-    log_content.push_str(&format!("Burst interval: {} seconds\n", config.interval));
-    log_content.push_str(&format!("Continuous mode: {}\n", config.continuous));
-    log_content.push_str("\n--- ATTACK RESULTS --------------------------------\n");
-    log_content.push_str(&format!(
-        "Attack Duration: {:.1} seconds\n",
-        stats.duration.as_secs_f32()
-    ));
-    log_content.push_str(&format!("Total bursts: {}\n", stats.bursts));
-    log_content.push_str(&format!("Total packets sent: {}\n", stats.packets_sent));
-    log_content.push_str(&format!("Failed packets: {}\n", stats.failed_packets));
-    log_content.push_str(&format!("Bytes sent: {}\n", stats.bytes_sent));
-    log_content.push_str(&format!(
-        "Packets/second: {:.1}\n",
-        stats.packets_per_second()
-    ));
-    log_content.push_str(&format!("EAPOL frames captured: {}\n", stats.eapol_frames));
-    log_content.push_str("\n====================================================\n");
-    log_content.push_str(&format!(
-        "HANDSHAKE CAPTURED: {}\n",
-        if stats.handshake_captured {
-            "YES"
+    // Write detailed log file when logging is enabled
+    if logging_enabled {
+        let mut log_content = String::new();
+        log_content.push_str("====================================================\n");
+        log_content.push_str("    RUSTYJACK NATIVE DEAUTHENTICATION ATTACK LOG   \n");
+        log_content.push_str("====================================================\n\n");
+        log_content.push_str(&format!(
+            "Timestamp: {}\n",
+            Local::now().format("%Y-%m-%d %H:%M:%S")
+        ));
+        log_content.push_str("Implementation: Native Rust (rustyjack-wireless)\n\n");
+        log_content.push_str("--- TARGET INFORMATION ----------------------------\n");
+        log_content.push_str(&format!("Target BSSID: {}\n", config.bssid));
+        log_content.push_str(&format!("Target SSID: {}\n", ssid_display));
+        log_content.push_str(&format!("Target Channel: {}\n", config.channel));
+        log_content.push_str(&format!("Interface: {}\n", config.interface));
+        if let Some(ref c) = config.client {
+            log_content.push_str(&format!("Target Client: {}\n", c));
         } else {
-            "NO"
+            log_content.push_str("Target Client: Broadcast (all clients)\n");
         }
-    ));
-    log_content.push_str("====================================================\n\n");
+        log_content.push_str("\n--- ATTACK CONFIGURATION --------------------------\n");
+        log_content.push_str(&format!("Duration: {} seconds\n", config.duration));
+        log_content.push_str(&format!("Packets per burst: {}\n", config.packets));
+        log_content.push_str(&format!("Burst interval: {} seconds\n", config.interval));
+        log_content.push_str(&format!("Continuous mode: {}\n", config.continuous));
+        log_content.push_str("\n--- ATTACK RESULTS --------------------------------\n");
+        log_content.push_str(&format!(
+            "Attack Duration: {:.1} seconds\n",
+            stats.duration.as_secs_f32()
+        ));
+        log_content.push_str(&format!("Total bursts: {}\n", stats.bursts));
+        log_content.push_str(&format!("Total packets sent: {}\n", stats.packets_sent));
+        log_content.push_str(&format!("Failed packets: {}\n", stats.failed_packets));
+        log_content.push_str(&format!("Bytes sent: {}\n", stats.bytes_sent));
+        log_content.push_str(&format!(
+            "Packets/second: {:.1}\n",
+            stats.packets_per_second()
+        ));
+        log_content.push_str(&format!("EAPOL frames captured: {}\n", stats.eapol_frames));
+        log_content.push_str("\n====================================================\n");
+        log_content.push_str(&format!(
+            "HANDSHAKE CAPTURED: {}\n",
+            if stats.handshake_captured {
+                "YES"
+            } else {
+                "NO"
+            }
+        ));
+        log_content.push_str("====================================================\n\n");
 
-    if !capture_files.is_empty() {
-        log_content.push_str("Capture files:\n");
-        for file in &capture_files {
-            log_content.push_str(&format!("  - {}\n", file.display()));
+        if !capture_files.is_empty() {
+            log_content.push_str("Capture files:\n");
+            for file in &capture_files {
+                log_content.push_str(&format!("  - {}\n", file.display()));
+            }
         }
+
+        fs::write(&log_file, &log_content)
+            .with_context(|| format!("Writing log file: {}", log_file.display()))?;
     }
-
-    fs::write(&log_file, &log_content)
-        .with_context(|| format!("Writing log file: {}", log_file.display()))?;
 
     on_progress(1.0, "Complete");
 

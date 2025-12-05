@@ -207,6 +207,8 @@ pub struct SettingsConfig {
     pub active_network_interface: String,
     #[serde(default = "SettingsConfig::default_target_network")]
     pub target_network: String,
+    #[serde(default = "SettingsConfig::default_logs_enabled")]
+    pub logs_enabled: bool,
     #[serde(default)]
     pub target_bssid: String,
     #[serde(default)]
@@ -240,6 +242,7 @@ impl Default for SettingsConfig {
             discord_enabled: Self::default_discord_enabled(),
             active_network_interface: Self::default_active_interface(),
             target_network: Self::default_target_network(),
+            logs_enabled: Self::default_logs_enabled(),
             target_bssid: String::new(),
             target_channel: 0,
             mac_randomization_enabled: false,
@@ -264,6 +267,10 @@ impl SettingsConfig {
     
     fn default_target_network() -> String {
         String::new()
+    }
+
+    fn default_logs_enabled() -> bool {
+        true
     }
     
     fn default_tx_power() -> String {

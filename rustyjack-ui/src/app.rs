@@ -560,7 +560,8 @@ impl App {
                         // Cycle to next dashboard
                         self.dashboard_view = Some(match view {
                             DashboardView::SystemHealth => DashboardView::TargetStatus,
-                            DashboardView::TargetStatus => DashboardView::SystemHealth,
+                            DashboardView::TargetStatus => DashboardView::MacStatus,
+                            DashboardView::MacStatus => DashboardView::SystemHealth,
                         });
                     }
                     ButtonAction::Refresh => {
@@ -618,6 +619,12 @@ impl App {
                     let state = if self.config.settings.passive_mode_enabled { "ON" } else { "OFF" };
                     entry.label = format!("Passive [{}]", state);
                 }
+                MenuAction::SetTxPower(level) => {
+                    let (base, key) = Self::tx_power_label(*level);
+                    let active = self.config.settings.tx_power_level.eq_ignore_ascii_case(key);
+                    let prefix = if active { "*" } else { " " };
+                    entry.label = format!("{} {}", prefix, base);
+                }
                 _ => {}
             }
         }
@@ -635,7 +642,7 @@ impl App {
         // When there are more entries than fit on-screen, show a sliding window
         // so the selected item is always visible. MenuState::offset tracks the
         // first item index in the current view.
-        const VISIBLE: usize = 7;
+        const VISIBLE: usize = 9;
         let total = entries.len();
         if self.menu_state.selection >= total && total > 0 {
             self.menu_state.selection = total - 1;
@@ -831,6 +838,16 @@ impl App {
         self.display.update_palette(&self.config.colors);
     }
 
+    fn tx_power_label(level: TxPowerSetting) -> (&'static str, &'static str) {
+        match level {
+            TxPowerSetting::Stealth => ("Stealth (1dBm)", "stealth"),
+            TxPowerSetting::Low => ("Low (5dBm)", "low"),
+            TxPowerSetting::Medium => ("Medium (12dBm)", "medium"),
+            TxPowerSetting::High => ("High (18dBm)", "high"),
+            TxPowerSetting::Maximum => ("Maximum", "maximum"),
+        }
+    }
+
     fn show_loot(&mut self, section: LootSection) -> Result<()> {
         let loot_base = match section {
             LootSection::Wireless => self.root.join("loot/Wireless"),
@@ -909,56 +926,67 @@ impl App {
             .and_then(|n| n.to_str())
             .unwrap_or("Unknown");
 
-        // Get all files in this directory (recursively)
+        self.browse_loot_dir(network_name, network_dir)
+    }
+
+    /// Generic directory browser for loot (shows dirs first, then files)
+    fn browse_loot_dir(&mut self, title: &str, dir: &Path) -> Result<()> {
+        let mut dirs: Vec<(String, PathBuf)> = Vec::new();
         let mut files: Vec<(String, PathBuf)> = Vec::new();
-        
-        fn collect_files(dir: &Path, base: &Path, files: &mut Vec<(String, PathBuf)>) {
-            if let Ok(entries) = std::fs::read_dir(dir) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.is_file() {
-                        // Create relative display path
-                        let display = path
-                            .strip_prefix(base)
-                            .map(|p| p.to_string_lossy().to_string())
-                            .unwrap_or_else(|_| {
-                                path.file_name()
-                                    .map(|n| n.to_string_lossy().to_string())
-                                    .unwrap_or_default()
-                            });
-                        files.push((display, path));
-                    } else if path.is_dir() {
-                        collect_files(&path, base, files);
-                    }
+
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let name = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("unknown")
+                    .to_string();
+                if path.is_dir() {
+                    dirs.push((name, path));
+                } else if path.is_file() {
+                    files.push((name, path));
                 }
             }
         }
-        
-        collect_files(network_dir, network_dir, &mut files);
 
-        if files.is_empty() {
-            return self.show_message(network_name, ["No files in this target"]);
+        if dirs.is_empty() && files.is_empty() {
+            return self.show_message(title, ["No files in this target"]);
         }
 
-        // Sort by modification time (newest first)
-        files.sort_by(|a, b| {
-            let time_a = a.1.metadata().and_then(|m| m.modified()).ok();
-            let time_b = b.1.metadata().and_then(|m| m.modified()).ok();
-            time_b.cmp(&time_a)
-        });
+        dirs.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
+        files.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
 
-        let labels: Vec<String> = files.iter().map(|(name, _)| name.clone()).collect();
+        let mut labels = Vec::new();
+        let mut paths = Vec::new();
+        let mut is_dir_flags = Vec::new();
+
+        for (name, path) in &dirs {
+            labels.push(format!("{}/", name));
+            paths.push(path.clone());
+            is_dir_flags.push(true);
+        }
+        for (name, path) in &files {
+            labels.push(name.clone());
+            paths.push(path.clone());
+            is_dir_flags.push(false);
+        }
 
         loop {
-            let Some(index) = self.choose_from_menu(network_name, &labels)? else {
+            let Some(index) = self.choose_from_menu(title, &labels)? else {
                 return Ok(());
             };
 
-            let (_, path) = &files[index];
-            self.view_loot_file(&path.to_string_lossy())?;
+            let path = &paths[index];
+            if is_dir_flags[index] {
+                let next_title = format!("{}/{}", title, path.file_name().and_then(|n| n.to_str()).unwrap_or(""));
+                self.browse_loot_dir(&next_title, path)?;
+            } else {
+                self.view_loot_file(&path.to_string_lossy())?;
+            }
         }
     }
-    
+
     fn view_loot_file(&mut self, path: &str) -> Result<()> {
         // Read the file with a high line limit
         let read_args = LootReadArgs {
@@ -1000,37 +1028,29 @@ impl App {
     }
     
     fn scrollable_text_viewer(&mut self, title: &str, lines: &[String], truncated: bool) -> Result<()> {
-        use std::time::{Duration, Instant};
-        
         const LINES_PER_PAGE: usize = 9; // Reduced slightly to fit position indicator
         const MAX_TITLE_CHARS: usize = 15;
-        const SCROLL_INTERVAL: Duration = Duration::from_millis(300); // Speed of title scroll
-        const PAUSE_AT_END: Duration = Duration::from_secs(2); // Pause when showing end of filename
-        const PAUSE_AT_START: Duration = Duration::from_secs(2); // Pause at start before scrolling
         
         let total_lines = lines.len();
         let mut line_offset = 0;
-        let mut title_offset: usize = 0;
-        let mut last_scroll_time = Instant::now();
-        let mut paused_at_end = false;
-        let mut pause_start: Option<Instant> = Some(Instant::now()); // Start with initial pause
         let mut needs_redraw = true; // Track when redraw is needed
         
-        // Calculate if title needs scrolling
-        let title_needs_scroll = title.len() > MAX_TITLE_CHARS;
-        let scroll_text_len = if title_needs_scroll { title.len() + 3 } else { 0 }; // +3 for padding
+        // Clamp title without animation to avoid constant redraws
+        let display_title = if title.len() > MAX_TITLE_CHARS {
+            format!("{}...", &title[..MAX_TITLE_CHARS.saturating_sub(3)])
+        } else {
+            title.to_string()
+        };
         
         loop {
-            // Only redraw when something has changed
             if needs_redraw {
                 let overlay = self.stats.snapshot();
                 let end = (line_offset + LINES_PER_PAGE).min(total_lines);
                 let visible_lines: Vec<String> = lines[line_offset..end].to_vec();
                 
-                // Draw the file viewer with current scroll positions
                 self.display.draw_file_viewer(
-                    title,
-                    title_offset,
+                    &display_title,
+                    0,
                     &visible_lines,
                     line_offset,
                     total_lines,
@@ -1038,37 +1058,6 @@ impl App {
                     &overlay,
                 )?;
                 needs_redraw = false;
-            }
-            
-            // Handle title scrolling animation
-            if title_needs_scroll {
-                let now = Instant::now();
-                
-                if let Some(pause_time) = pause_start {
-                    // We're in a pause period
-                    let pause_duration = if paused_at_end { PAUSE_AT_END } else { PAUSE_AT_START };
-                    if now.duration_since(pause_time) >= pause_duration {
-                        pause_start = None;
-                        if paused_at_end {
-                            // Reset to start after end pause
-                            title_offset = 0;
-                            paused_at_end = false;
-                            pause_start = Some(now); // Pause at start again
-                            needs_redraw = true;
-                        }
-                    }
-                } else if now.duration_since(last_scroll_time) >= SCROLL_INTERVAL {
-                    // Advance scroll position
-                    title_offset += 1;
-                    last_scroll_time = now;
-                    needs_redraw = true;
-                    
-                    // Check if we've shown the full title (reached end of scroll cycle)
-                    if title_offset >= scroll_text_len {
-                        paused_at_end = true;
-                        pause_start = Some(now);
-                    }
-                }
             }
             
             // Non-blocking button check with short timeout
@@ -1970,8 +1959,7 @@ impl App {
                     let is_target = (!cur_target_bssid.is_empty() && cur_target_bssid == bssid)
                         || (!self.config.settings.target_network.is_empty() && self.config.settings.target_network == ssid);
                     let target_marker = if is_target { "*" } else { " " };
-                    let lock = if net.encrypted { "L" } else { " " };
-                    labels.push(format!("{}{} {} {} {}", target_marker, lock, ssid_display, signal, ch));
+                    labels.push(format!("{} {} {} {}", target_marker, ssid_display, signal, ch));
                 }
                 
                 // Interactive network list - loop until user backs out
@@ -2034,6 +2022,10 @@ impl App {
             "Duration: 120s",
             "Press SELECT to start"
         ])?;
+        let confirm = self.choose_from_list("Start Deauth?", &["Start".to_string(), "Cancel".to_string()])?;
+        if confirm != Some(0) {
+            return Ok(());
+        }
         
         // Show progress stages for 120 second attack
         let progress_stages = vec![
@@ -2443,7 +2435,7 @@ impl App {
             "Cancel".to_string(),
         ];
         
-        let choice = self.choose_from_list("PMKID Mode", &options)?;
+        let choice = self.choose_from_menu("PMKID Mode", &options)?;
         
         let (use_target, duration) = match choice {
             Some(0) if !target_network.is_empty() => (true, 30),
@@ -3203,7 +3195,7 @@ impl App {
             "Active (create fake AP)".to_string(),
             "Cancel".to_string(),
         ];
-        let ap_choice = self.choose_from_list("Karma Mode", &ap_options)?;
+        let ap_choice = self.choose_from_menu("Karma Mode", &ap_options)?;
         
         let with_ap = match ap_choice {
             Some(0) => false,
@@ -4345,6 +4337,10 @@ impl App {
         };
         
         if success {
+            // Save selected power level
+            let (_, key) = Self::tx_power_label(level);
+            self.config.settings.tx_power_level = key.to_string();
+            let _ = self.config.save(&self.root.join("gui_conf.json"));
             self.show_message("TX Power Set", [
                 format!("Interface: {}", active_interface),
                 format!("Power: {}", label),
@@ -4378,13 +4374,43 @@ impl App {
 
         #[cfg(target_os = "linux")]
         {
+            let active_interface = self.config.settings.active_network_interface.clone();
+            if active_interface.is_empty() {
+                return self.show_message("Ethernet", [
+                    "No active interface set",
+                    "",
+                    "Set an Ethernet interface",
+                    "as Active in Settings.",
+                ]);
+            }
+
+            if !self.is_ethernet_interface(&active_interface)) {
+                return self.show_message("Ethernet", [
+                    &format!("Active iface: {}", active_interface),
+                    "Not an Ethernet interface",
+                    "",
+                    "Set an Ethernet interface",
+                    "as Active before scanning.",
+                ]);
+            }
+
+            if !self.interface_has_carrier(&active_interface)) {
+                return self.show_message("Ethernet", [
+                    &format!("Interface: {}", active_interface),
+                    "Link is down / no cable",
+                    "",
+                    "Plug into a network and",
+                    "try again.",
+                ]);
+            }
+
             self.show_progress("Ethernet Discovery", [
                 "ICMP sweep on wired LAN",
                 "Press Back to cancel",
             ])?;
 
             let args = EthernetDiscoverArgs {
-                interface: None,
+                interface: Some(active_interface.clone()),
                 target: None,
                 timeout_ms: 500,
             };
@@ -4647,17 +4673,52 @@ impl App {
                         continue;
                     }
                     (false, Some(0)) => {
-                        // Select interfaces
-                        let upstream = self.choose_interface_prompt("Upstream (internet)")?;
-                        let ap_iface = self.choose_interface_prompt("AP interface")?;
-                        let upstream_iface = upstream.unwrap_or_else(|| "eth0".to_string());
-                        let ap_iface = ap_iface.unwrap_or_else(|| {
-                            if self.config.settings.active_network_interface.is_empty() {
-                                "wlan0".to_string()
-                            } else {
-                                self.config.settings.active_network_interface.clone()
+                        // Select interfaces using hardware detect
+                        let (_msg, detect) = self
+                            .core
+                            .dispatch(Commands::Hardware(HardwareCommand::Detect))?;
+
+                        let mut ethernet = Vec::new();
+                        if let Some(arr) = detect.get("ethernet_ports").and_then(|v| v.as_array()) {
+                            for item in arr {
+                                if let Ok(info) = serde_json::from_value::<InterfaceSummary>(item.clone()) {
+                                    ethernet.push(info.name);
+                                }
                             }
-                        });
+                        }
+
+                        let mut wifi = Vec::new();
+                        if let Some(arr) = detect.get("wifi_modules").and_then(|v| v.as_array()) {
+                            for item in arr {
+                                if let Ok(info) = serde_json::from_value::<InterfaceSummary>(item.clone()) {
+                                    wifi.push(info.name);
+                                }
+                            }
+                        }
+
+                        if wifi.is_empty() {
+                            return self.show_message("Hotspot", [
+                                "No WiFi interface found",
+                                "",
+                                "Plug in or enable a",
+                                "WiFi adapter to host",
+                                "the hotspot.",
+                            ]);
+                        }
+
+                        let upstream_pref = if ethernet.contains(&"eth0".to_string()) {
+                            "eth0".to_string()
+                        } else {
+                            ethernet.first().cloned().unwrap_or_else(|| wifi.first().cloned().unwrap_or_default())
+                        };
+
+                        let upstream_options = if ethernet.is_empty() { wifi.clone() } else { ethernet.clone() };
+                        let upstream = self.choose_interface_name("Internet (upstream)", &upstream_options)?;
+                        let upstream_iface = upstream.unwrap_or(upstream_pref);
+
+                        let ap_iface = self
+                            .choose_interface_name("Hotspot WiFi (AP)", &wifi)?
+                            .unwrap_or_else(|| wifi.first().cloned().unwrap_or_else(|| "wlan0".to_string()));
 
                         let args = HotspotStartArgs {
                             ap_interface: ap_iface.clone(),

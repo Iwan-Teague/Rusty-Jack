@@ -112,6 +112,8 @@ impl MenuTree {
         nodes.insert("asd", MenuNode::Static(discord_menu));
         nodes.insert("ap", MenuNode::Static(pipeline_menu));
         nodes.insert("ao", MenuNode::Static(obfuscation_menu)); // Obfuscation & Evasion
+        nodes.insert("aom", MenuNode::Static(mac_menu)); // MAC address submenu
+        nodes.insert("aopp", MenuNode::Static(operating_menu)); // Operating mode submenu
         nodes.insert("atx", MenuNode::Static(tx_power_menu));
         nodes.insert("aeth", MenuNode::Static(ethernet_menu));
         Self { nodes }
@@ -214,15 +216,24 @@ fn stealth_menu() -> Vec<MenuEntry> {
 /// Obfuscation & Evasion menu - toggles and stealth options
 fn obfuscation_menu() -> Vec<MenuEntry> {
     vec![
-        // Toggle shows current state - actual label built dynamically in app.rs
+        MenuEntry::new("MAC Address", MenuAction::Submenu("aom")),
+        MenuEntry::new("Operating Mode", MenuAction::Submenu("aopp")),
+        MenuEntry::new("TX Power", MenuAction::Submenu("atx")),
+    ]
+}
+
+fn mac_menu() -> Vec<MenuEntry> {
+    vec![
         MenuEntry::new("MAC Random: ???", MenuAction::ToggleMacRandomization),
         MenuEntry::new("Randomize Now", MenuAction::RandomizeMacNow),
         MenuEntry::new("Restore MAC", MenuAction::RestoreMac),
-        MenuEntry::new("", MenuAction::ShowInfo), // Separator
+    ]
+}
+
+fn operating_menu() -> Vec<MenuEntry> {
+    vec![
         MenuEntry::new("Passive: ???", MenuAction::TogglePassiveMode),
         MenuEntry::new("Passive Recon", MenuAction::PassiveRecon),
-        MenuEntry::new("", MenuAction::ShowInfo), // Separator
-        MenuEntry::new("TX Power", MenuAction::Submenu("atx")),
     ]
 }
 
@@ -309,6 +320,8 @@ pub fn menu_title(id: &str) -> &'static str {
         "asd" => "Discord",
         "ap" => "Attack Pipelines",
         "ao" => "Obfuscation & Evasion",
+        "aom" => "MAC Address",
+        "aopp" => "Operating Mode",
         "atx" => "TX Power",
         _ => "Menu",
     }

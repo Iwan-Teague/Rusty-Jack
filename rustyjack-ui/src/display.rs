@@ -545,9 +545,14 @@ impl Display {
         .into_styled(style)
         .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
 
-        // Draw title in top left if provided
+        // Draw title in top left if provided, clipped to avoid overlapping temp
         if let Some(t) = title {
-            Text::with_baseline(t, Point::new(4, 4), self.text_style_small, Baseline::Top)
+            const MAX_TITLE_CHARS: usize = 12; // leave room for temp/autopilot
+            let mut title_text = t.to_string();
+            if title_text.len() > MAX_TITLE_CHARS {
+                title_text.truncate(MAX_TITLE_CHARS);
+            }
+            Text::with_baseline(&title_text, Point::new(4, 4), self.text_style_small, Baseline::Top)
                 .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
         }
 
@@ -792,6 +797,7 @@ impl Display {
         match view {
             DashboardView::SystemHealth => self.draw_system_health(status),
             DashboardView::TargetStatus => self.draw_target_status(status),
+            DashboardView::MacStatus => self.draw_mac_status(status),
         }
     }
 
@@ -876,25 +882,11 @@ impl Display {
             status.active_interface.clone()
         };
 
-        let real_mac = if status.original_mac.is_empty() {
-            "Unknown".to_string()
-        } else {
-            status.original_mac.clone()
-        };
-
-        let current_mac = if status.current_mac.is_empty() {
-            "Unknown".to_string()
-        } else {
-            status.current_mac.clone()
-        };
-
         let entries = [
             format!("Target: {}", target_label),
             format!("BSSID: {}", bssid_label),
             format!("Channel: {}", channel_text),
             format!("Module: {}", interface_label),
-            format!("Real MAC: {}", real_mac),
-            format!("Current MAC: {}", current_mac),
         ];
 
         let mut y = 16;
@@ -913,6 +905,51 @@ impl Display {
         Text::with_baseline("LEFT=Exit SEL=Next", Point::new(12, 115), self.text_style_small, Baseline::Top)
             .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
         
+        Ok(())
+    }
+
+    fn draw_mac_status(&mut self, status: &StatusOverlay) -> Result<()> {
+        self.draw_toolbar_with_title(Some("MAC STATUS"), status)?;
+
+        let interface_label = if status.active_interface.is_empty() {
+            "None".to_string()
+        } else {
+            status.active_interface.clone()
+        };
+
+        let real_mac = if status.original_mac.is_empty() {
+            "Unknown".to_string()
+        } else {
+            status.original_mac.clone()
+        };
+
+        let current_mac = if status.current_mac.is_empty() {
+            "Unknown".to_string()
+        } else {
+            status.current_mac.clone()
+        };
+
+        let entries = [
+            format!("Interface: {}", interface_label),
+            format!("Real MAC: {}", real_mac),
+            format!("Current: {}", current_mac),
+        ];
+
+        let mut y = 16;
+        const MAX_CHARS: usize = 21;
+        for line in entries.iter() {
+            for wrapped in wrap_text(line, MAX_CHARS) {
+                if y > 119 {
+                    break;
+                }
+                Text::with_baseline(&wrapped, Point::new(4, y), self.text_style_small, Baseline::Top)
+                    .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
+                y += 12;
+            }
+        }
+
+        Text::with_baseline("LEFT=Exit SEL=Next", Point::new(12, 115), self.text_style_small, Baseline::Top)
+            .draw(&mut self.lcd).map_err(|_| anyhow::anyhow!("Draw error"))?;
         Ok(())
     }
 
@@ -1047,6 +1084,9 @@ impl Display {
                 println!("BSSID: {}", if status.target_bssid.is_empty() { "-" } else { status.target_bssid.as_str() });
                 println!("Channel: {}", if status.target_channel > 0 { status.target_channel.to_string() } else { "-".to_string() });
                 println!("Module: {}", if status.active_interface.is_empty() { "None" } else { status.active_interface.as_str() });
+            }
+            DashboardView::MacStatus => {
+                println!("Interface: {}", if status.active_interface.is_empty() { "None" } else { status.active_interface.as_str() });
                 println!("Real MAC: {}", if status.original_mac.is_empty() { "Unknown" } else { status.original_mac.as_str() });
                 println!("Current MAC: {}", if status.current_mac.is_empty() { "Unknown" } else { status.current_mac.as_str() });
             }
@@ -1113,4 +1153,5 @@ pub struct StatusOverlay {
 pub enum DashboardView {
     SystemHealth,
     TargetStatus,
+    MacStatus,
 }

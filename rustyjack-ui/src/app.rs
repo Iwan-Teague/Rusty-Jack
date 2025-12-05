@@ -2784,7 +2784,8 @@ impl App {
                         });
                     }
                     CrackUpdate::Error(e) => {
-                        return self.show_message("Crack", [e]);
+                        self.show_message("Crack", [e.clone()])?;
+                        return Err(anyhow!(e));
                     }
                 },
                 Err(TryRecvError::Disconnected) => {

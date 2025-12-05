@@ -116,6 +116,11 @@ impl WpaCracker {
         self.stop_flag.store(true, Ordering::Relaxed);
     }
 
+    /// Get a handle to signal stop from another thread
+    pub fn stop_handle(&self) -> Arc<AtomicBool> {
+        self.stop_flag.clone()
+    }
+
     /// Get current attempt count
     pub fn attempts(&self) -> u64 {
         self.attempts.load(Ordering::Relaxed)

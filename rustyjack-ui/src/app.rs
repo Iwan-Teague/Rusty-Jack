@@ -4394,7 +4394,7 @@ impl App {
                 ]);
             }
 
-            if !self.interface_has_carrier(&active_interface)) {
+            if !self.interface_has_carrier(&active_interface) {
                 return self.show_message("Ethernet", [
                     &format!("Interface: {}", active_interface),
                     "Link is down / no cable",

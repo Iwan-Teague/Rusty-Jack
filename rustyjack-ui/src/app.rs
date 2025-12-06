@@ -4917,7 +4917,7 @@ impl App {
 
         self.show_message("Purge Logs", [
             format!("Removed {} log file(s)", deleted),
-            "Captures/results kept",
+            "Captures/results kept".to_string(),
         ])
     }
 

@@ -47,6 +47,10 @@ pub enum MenuAction {
     EthernetDiscovery,
     /// Ethernet quick port scan
     EthernetPortScan,
+    /// Ethernet device inventory
+    EthernetInventory,
+    /// Purge log files from loot
+    PurgeLogs,
     /// Hotspot management
     Hotspot,
     /// Placeholder for informational entries (no action)
@@ -178,6 +182,7 @@ fn ethernet_menu() -> Vec<MenuEntry> {
     vec![
         MenuEntry::new("LAN Discovery", MenuAction::EthernetDiscovery),
         MenuEntry::new("Port Scan (quick)", MenuAction::EthernetPortScan),
+        MenuEntry::new("Device Inventory", MenuAction::EthernetInventory),
     ]
 }
 
@@ -275,6 +280,7 @@ fn options_menu() -> Vec<MenuEntry> {
     vec![
         MenuEntry::new("Colors", MenuAction::Submenu("aea")),
         MenuEntry::new("Logs: ???", MenuAction::ToggleLogs),
+        MenuEntry::new("Purge Logs", MenuAction::PurgeLogs),
         MenuEntry::new("Refresh Config", MenuAction::RefreshConfig),
         MenuEntry::new("Save Config", MenuAction::SaveConfig),
     ]

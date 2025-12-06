@@ -80,6 +80,8 @@ pub enum EthernetCommand {
     Discover(EthernetDiscoverArgs),
     /// Quick TCP port scan on a target
     PortScan(EthernetPortScanArgs),
+    /// Build an Ethernet device inventory (hostnames/services/OS hints)
+    Inventory(EthernetInventoryArgs),
 }
 
 #[derive(Subcommand, Debug)]
@@ -123,6 +125,21 @@ pub struct EthernetPortScanArgs {
 
     /// Connect timeout per port (ms)
     #[arg(long, default_value_t = 500)]
+    pub timeout_ms: u64,
+}
+
+#[derive(Args, Debug)]
+pub struct EthernetInventoryArgs {
+    /// Optional interface override (defaults to best interface)
+    #[arg(long)]
+    pub interface: Option<String>,
+
+    /// Optional CIDR target (defaults to interface network)
+    #[arg(long)]
+    pub target: Option<String>,
+
+    /// Timeout for probes in milliseconds
+    #[arg(long, default_value_t = 800)]
     pub timeout_ms: u64,
 }
 

@@ -10,7 +10,9 @@ use anyhow::{anyhow, bail, Context, Result};
 use chrono::Local;
 use ipnet::Ipv4Net;
 use regex::Regex;
-use rustyjack_ethernet::{discover_hosts, discover_hosts_arp, quick_port_scan};
+use rustyjack_ethernet::{
+    build_device_inventory, discover_hosts, discover_hosts_arp, quick_port_scan,
+};
 use rustyjack_wireless::{
     start_hotspot, status_hotspot, stop_hotspot, HotspotConfig, HotspotState,
 };
@@ -20,7 +22,7 @@ use walkdir::WalkDir;
 use crate::cli::{
     AutopilotCommand, AutopilotStartArgs, BridgeCommand, BridgeStartArgs, BridgeStopArgs, Commands,
     DiscordCommand, DiscordSendArgs, DnsSpoofCommand, DnsSpoofStartArgs, EthernetCommand,
-    EthernetDiscoverArgs, EthernetPortScanArgs, HardwareCommand, HotspotCommand, HotspotStartArgs,
+    EthernetDiscoverArgs, EthernetInventoryArgs, EthernetPortScanArgs, HardwareCommand, HotspotCommand, HotspotStartArgs,
     LootCommand, LootKind,
     LootListArgs, LootReadArgs, MitmCommand, MitmStartArgs, NotifyCommand, ProcessCommand,
     ProcessKillArgs, ProcessStatusArgs, ResponderArgs, ResponderCommand, ReverseCommand,
@@ -121,6 +123,7 @@ pub fn dispatch_command(root: &Path, command: Commands) -> Result<HandlerResult>
         Commands::Ethernet(sub) => match sub {
             EthernetCommand::Discover(args) => handle_eth_discover(root, args),
             EthernetCommand::PortScan(args) => handle_eth_port_scan(root, args),
+            EthernetCommand::Inventory(args) => handle_eth_inventory(root, args),
         },
         Commands::Hotspot(sub) => match sub {
             HotspotCommand::Start(args) => handle_hotspot_start(args),
@@ -273,6 +276,96 @@ fn handle_eth_port_scan(root: &Path, args: EthernetPortScanArgs) -> Result<Handl
     Ok((
         format!("Port scan complete ({} open)", result.open_ports.len()),
         data,
+    ))
+}
+
+fn handle_eth_inventory(root: &Path, args: EthernetInventoryArgs) -> Result<HandlerResult> {
+    let interface = detect_ethernet_interface(args.interface.clone())?;
+    let cidr = args
+        .target
+        .clone()
+        .unwrap_or_else(|| interface.network_cidr());
+    let net: Ipv4Net = cidr.parse().context("parsing target CIDR")?;
+
+    let timeout = Duration::from_millis(args.timeout_ms.max(200));
+
+    // Combine ARP and ICMP to find hosts
+    let mut details = Vec::new();
+    if let Ok(arp) = discover_hosts_arp(&interface.name, net, Some(50), timeout) {
+        details.extend(arp.details);
+    }
+    if let Ok(icmp) = discover_hosts(net, timeout) {
+        for d in icmp.details {
+            if !details.iter().any(|h| h.ip == d.ip) {
+                details.push(d);
+            }
+        }
+    }
+    let hosts: Vec<Ipv4Addr> = details
+        .iter()
+        .map(|d| d.ip)
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect();
+
+    let discovery = LanDiscoveryResult {
+        network: net,
+        hosts: hosts.clone(),
+        details: details.clone(),
+    };
+
+    let default_ports = vec![22, 80, 443, 445, 139, 3389, 53, 8080, 8000, 8443];
+    let devices = build_device_inventory(&discovery, &default_ports, timeout)?;
+
+    // Save loot under per-network directory
+    let target_name = net
+        .to_string()
+        .replace(|c: char| !c.is_alphanumeric() && c != '-' && c != '_', "_");
+    let loot_dir = root.join("loot").join("Ethernet").join(&target_name);
+    fs::create_dir_all(&loot_dir).context("creating loot/Ethernet")?;
+    let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
+    let path = loot_dir.join(format!("inventory_{}.json", timestamp));
+
+    let serializable: Vec<Value> = devices
+        .iter()
+        .map(|d| {
+            json!({
+                "ip": d.ip.to_string(),
+                "hostname": d.hostname,
+                "os_hint": d.os_hint,
+                "ttl": d.ttl,
+                "open_ports": d.open_ports,
+                "banners": d.banners.iter().map(|b| {
+                    json!({
+                        "port": b.port,
+                        "probe": b.probe,
+                        "banner": b.banner,
+                    })
+                }).collect::<Vec<_>>(),
+                "services": d.services.iter().map(|s| {
+                    json!({
+                        "protocol": s.protocol,
+                        "detail": s.detail,
+                    })
+                }).collect::<Vec<_>>(),
+            })
+        })
+        .collect();
+
+    let output = json!({
+        "interface": interface.name,
+        "network": net.to_string(),
+        "hosts_found": hosts.len(),
+        "devices": serializable,
+        "loot_file": path.display().to_string(),
+    });
+
+    fs::write(&path, serde_json::to_vec_pretty(&serializable)?)
+        .with_context(|| format!("writing {}", path.display()))?;
+
+    Ok((
+        format!("Inventory complete ({} device(s))", devices.len()),
+        output,
     ))
 }
 

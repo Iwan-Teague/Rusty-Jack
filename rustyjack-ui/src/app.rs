@@ -15,7 +15,7 @@ use rustyjack_core::cli::{
     HardwareCommand, LootCommand, 
     LootReadArgs, NotifyCommand,
     WifiCommand, WifiDeauthArgs, WifiRouteCommand, WifiScanArgs, 
-    WifiStatusArgs, WifiProfileCommand, WifiProfileConnectArgs, WifiProfileDeleteArgs, EthernetCommand, EthernetDiscoverArgs, EthernetPortScanArgs, HotspotCommand, HotspotStartArgs,
+    WifiStatusArgs, WifiProfileCommand, WifiProfileConnectArgs, WifiProfileDeleteArgs, EthernetCommand, EthernetDiscoverArgs, EthernetInventoryArgs, EthernetPortScanArgs, HotspotCommand, HotspotStartArgs,
 };
 use rustyjack_core::InterfaceSummary;
 use serde::Deserialize;
@@ -716,6 +716,8 @@ impl App {
             MenuAction::PassiveRecon => self.launch_passive_recon()?,
             MenuAction::EthernetDiscovery => self.launch_ethernet_discovery()?,
             MenuAction::EthernetPortScan => self.launch_ethernet_port_scan()?,
+            MenuAction::EthernetInventory => self.launch_ethernet_inventory()?,
+            MenuAction::PurgeLogs => self.purge_logs()?,
             MenuAction::Hotspot => self.manage_hotspot()?,
             MenuAction::ShowInfo => {} // No-op for informational entries
         }
@@ -4727,6 +4729,204 @@ impl App {
             }
             Ok(())
         }
+    }
+
+    /// Launch Ethernet device inventory (hostnames/services/OS hints)
+    fn launch_ethernet_inventory(&mut self) -> Result<()> {
+        #[cfg(not(target_os = "linux"))]
+        {
+            return self.show_message("Ethernet", [
+                "Available on Linux targets only",
+            ]);
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            let active_interface = self.config.settings.active_network_interface.clone();
+            if active_interface.is_empty() {
+                return self.show_message("Inventory", [
+                    "No active interface set",
+                    "",
+                    "Set an Ethernet interface",
+                    "as Active in Settings.",
+                ]);
+            }
+
+            if !self.is_ethernet_interface(&active_interface) {
+                return self.show_message("Inventory", [
+                    &format!("Active iface: {}", active_interface),
+                    "Not an Ethernet interface",
+                    "",
+                    "Set an Ethernet interface",
+                    "as Active before scanning.",
+                ]);
+            }
+
+            if !self.interface_has_carrier(&active_interface) {
+                return self.show_message("Inventory", [
+                    &format!("Interface: {}", active_interface),
+                    "Link is down / no cable",
+                    "",
+                    "Plug into a network and",
+                    "try again.",
+                ]);
+            }
+
+            self.show_progress("Inventory", [
+                "Building device list...",
+                "mDNS/LLMNR/NetBIOS/WSD",
+            ])?;
+
+            let args = EthernetInventoryArgs {
+                interface: Some(active_interface.clone()),
+                target: None,
+                timeout_ms: 800,
+            };
+            let cmd = Commands::Ethernet(EthernetCommand::Inventory(args));
+
+            if let Some((msg, data)) = self.dispatch_cancellable("Inventory", cmd, 60)? {
+                let devices = data
+                    .get("devices")
+                    .and_then(|v| v.as_array())
+                    .cloned()
+                    .unwrap_or_default();
+                let loot_path = data
+                    .get("loot_file")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+
+                let mut lines = vec![
+                    msg.clone(),
+                    format!("Devices: {}", devices.len()),
+                ];
+                if !loot_path.is_empty() {
+                    lines.push("Saved:".to_string());
+                    lines.push(shorten_for_display(loot_path, 18));
+                }
+                self.show_message("Inventory Done", lines)?;
+
+                if !devices.is_empty() {
+                    self.browse_inventory(devices)?;
+                }
+            }
+            Ok(())
+        }
+    }
+
+    fn browse_inventory(&mut self, devices: Vec<Value>) -> Result<()> {
+        let labels: Vec<String> = devices
+            .iter()
+            .map(|d| {
+                let ip = d.get("ip").and_then(|v| v.as_str()).unwrap_or("?");
+                let host = d.get("hostname").and_then(|v| v.as_str()).unwrap_or("");
+                if host.is_empty() {
+                    format!(" {ip}")
+                } else {
+                    format!(" {ip} ({host})")
+                }
+            })
+            .collect();
+
+        loop {
+            let Some(idx) = self.choose_from_menu("Devices", &labels)? else { break; };
+            if let Some(dev) = devices.get(idx) {
+                let ip = dev.get("ip").and_then(|v| v.as_str()).unwrap_or("?");
+                let host = dev.get("hostname").and_then(|v| v.as_str()).unwrap_or("");
+                let os = dev.get("os_hint").and_then(|v| v.as_str()).unwrap_or("");
+                let ports: Vec<String> = dev
+                    .get("open_ports")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|p| p.as_u64().map(|v| v.to_string()))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let services: Vec<String> = dev
+                    .get("services")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|s| {
+                                let proto = s.get("protocol").and_then(|v| v.as_str()).unwrap_or("");
+                                let detail = s.get("detail").and_then(|v| v.as_str()).unwrap_or("");
+                                if proto.is_empty() && detail.is_empty() {
+                                    None
+                                } else {
+                                    Some(format!("{}{}", proto, if detail.is_empty() { "".into() } else { format!(": {}", detail) }))
+                                }
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let mut lines = Vec::new();
+                lines.push(format!("IP: {}", ip));
+                if !host.is_empty() {
+                    lines.push(format!("Host: {}", host));
+                }
+                if !os.is_empty() {
+                    lines.push(format!("OS: {}", os));
+                }
+                if !ports.is_empty() {
+                    lines.push(format!("Ports: {}", ports.join(", ")));
+                }
+                if !services.is_empty() {
+                    lines.push("Services:".to_string());
+                    for svc in services.iter().take(4) {
+                        lines.push(format!(" - {}", shorten_for_display(svc, 18)));
+                    }
+                    if services.len() > 4 {
+                        lines.push(format!(" +{} more", services.len() - 4));
+                    }
+                }
+                self.show_message("Device", lines)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn purge_logs(&mut self) -> Result<()> {
+        let root = self.root.clone();
+        let paths = vec![
+            root.join("loot"),
+            root.join("Responder").join("logs"),
+        ];
+
+        let confirm = self.choose_from_list("Purge Logs?", &[
+            "Delete all *.log and log* files".to_string(),
+            "Cancel".to_string(),
+        ])?;
+        if confirm != Some(0) {
+            return Ok(());
+        }
+
+        let mut deleted = 0usize;
+        for base in paths {
+            if !base.exists() {
+                continue;
+            }
+            for entry in WalkDir::new(&base).into_iter().filter_map(|e| e.ok()) {
+                let path = entry.path();
+                if path.is_file() && self.is_log_file(path) {
+                    if fs::remove_file(path).is_ok() {
+                        deleted += 1;
+                    }
+                }
+            }
+        }
+
+        self.show_message("Purge Logs", [
+            format!("Removed {} log file(s)", deleted),
+            "Captures/results kept",
+        ])
+    }
+
+    fn is_log_file(&self, path: &Path) -> bool {
+        let name = match path.file_name().and_then(|n| n.to_str()) {
+            Some(n) => n.to_ascii_lowercase(),
+            None => return false,
+        };
+        name.ends_with(".log") || name.starts_with("log_") || name.contains("log")
     }
 
     /// Manage hotspot (start/stop, randomize credentials)

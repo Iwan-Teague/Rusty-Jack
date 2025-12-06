@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::io::{self, Read, Write};
 use std::mem::MaybeUninit;
-use std::net::{Ipv4Addr, SocketAddr, TcpStream};
+use std::net::{Ipv4Addr, SocketAddr, TcpStream, UdpSocket};
 use std::time::{Duration, Instant};
 
 #[cfg(target_os = "linux")]
@@ -16,6 +16,9 @@ use socket2::{Domain, Protocol, Socket, Type};
 const DEFAULT_ARP_PPS: u32 = 50;
 const DEFAULT_BANNER_READ: Duration = Duration::from_millis(750);
 const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_millis(500);
+const MDNS_MULTICAST: &str = "224.0.0.251:5353";
+const LLMNR_MULTICAST: &str = "224.0.0.252:5355";
+const WSD_MULTICAST: &str = "239.255.255.250:3702";
 
 /// Discovery transport used for a host hit.
 #[derive(Debug, Clone, Copy)]
@@ -56,6 +59,25 @@ pub struct PortBanner {
     pub banner: String,
 }
 
+/// Service/hostname information learned via multicast discovery.
+#[derive(Debug, Clone)]
+pub struct ServiceInfo {
+    pub protocol: String,
+    pub detail: String,
+}
+
+/// Device summary combining discovery, banners, and passive service data.
+#[derive(Debug, Clone)]
+pub struct DeviceInfo {
+    pub ip: Ipv4Addr,
+    pub hostname: Option<String>,
+    pub services: Vec<ServiceInfo>,
+    pub os_hint: Option<String>,
+    pub ttl: Option<u8>,
+    pub open_ports: Vec<u16>,
+    pub banners: Vec<PortBanner>,
+}
+
 /// Crude OS guess from an observed TTL value.
 #[must_use]
 pub fn guess_os_from_ttl(ttl: Option<u8>) -> Option<&'static str> {
@@ -66,6 +88,19 @@ pub fn guess_os_from_ttl(ttl: Option<u8>) -> Option<&'static str> {
         Some(t) if t >= 32 => Some("embedded/older stack"),
         _ => None,
     }
+}
+
+fn guess_os_from_ports(ttl_guess: Option<&str>, ports: &[u16]) -> Option<String> {
+    if ports.contains(&445) || ports.contains(&3389) || ports.contains(&139) {
+        return Some("windows (smb/rdp)".to_string());
+    }
+    if ports.contains(&22) && (ports.contains(&80) || ports.contains(&443)) {
+        return Some("linux/unix (ssh+web)".to_string());
+    }
+    if let Some(ttl) = ttl_guess {
+        return Some(ttl.to_string());
+    }
+    None
 }
 
 /// Perform a simple ICMP echo sweep across the given CIDR.
@@ -457,4 +492,451 @@ fn grab_banner(mut stream: TcpStream, port: u16) -> Option<PortBanner> {
         probe,
         banner,
     })
+}
+
+// --- Service discovery helpers ---
+
+fn build_dns_query(name: &str, qtype: u16) -> Vec<u8> {
+    let mut packet = Vec::with_capacity(64);
+    let id: u16 = rand::random();
+    packet.extend_from_slice(&id.to_be_bytes());
+    packet.extend_from_slice(&0x0000u16.to_be_bytes()); // flags
+    packet.extend_from_slice(&0x0001u16.to_be_bytes()); // QDCOUNT
+    packet.extend_from_slice(&0x0000u16.to_be_bytes()); // ANCOUNT
+    packet.extend_from_slice(&0x0000u16.to_be_bytes()); // NSCOUNT
+    packet.extend_from_slice(&0x0000u16.to_be_bytes()); // ARCOUNT
+
+    for label in name.split('.') {
+        let bytes = label.as_bytes();
+        packet.push(bytes.len() as u8);
+        packet.extend_from_slice(bytes);
+    }
+    packet.push(0); // terminator
+    packet.extend_from_slice(&qtype.to_be_bytes());
+    packet.extend_from_slice(&0x0001u16.to_be_bytes()); // class IN
+    packet
+}
+
+fn decode_dns_name(data: &[u8], offset: &mut usize) -> Option<String> {
+    let mut labels = Vec::new();
+    let mut jumped = false;
+    let mut pos = *offset;
+    let mut depth = 0;
+
+    loop {
+        if depth > 10 || pos >= data.len() {
+            return None;
+        }
+        let len = data.get(pos).copied()? as usize;
+        if len == 0 {
+            pos += 1;
+            break;
+        }
+        // compression pointer
+        if len & 0xC0 == 0xC0 {
+            if pos + 1 >= data.len() {
+                return None;
+            }
+            let ptr = (((len & 0x3F) as u16) << 8) | data[pos + 1] as u16;
+            pos += 2;
+            if !jumped {
+                *offset = pos;
+            }
+            pos = ptr as usize;
+            jumped = true;
+            depth += 1;
+            continue;
+        }
+        let start = pos + 1;
+        let end = start + len;
+        if end > data.len() {
+            return None;
+        }
+        let label = std::str::from_utf8(&data[start..end]).ok()?.to_string();
+        labels.push(label);
+        pos = end;
+    }
+    if !jumped {
+        *offset = pos;
+    }
+    Some(labels.join("."))
+}
+
+fn parse_dns_records(data: &[u8]) -> Vec<String> {
+    if data.len() < 12 {
+        return Vec::new();
+    }
+    let ancount = u16::from_be_bytes([data[6], data[7]]);
+    let qdcount = u16::from_be_bytes([data[4], data[5]]);
+    let mut offset = 12usize;
+
+    // Skip questions
+    for _ in 0..qdcount {
+        if decode_dns_name(data, &mut offset).is_none() {
+            return Vec::new();
+        }
+        if offset + 4 > data.len() {
+            return Vec::new();
+        }
+        offset += 4; // type + class
+    }
+
+    let mut names = Vec::new();
+    for _ in 0..ancount {
+        let _ = decode_dns_name(data, &mut offset);
+        if offset + 10 > data.len() {
+            break;
+        }
+        let rtype = u16::from_be_bytes([data[offset], data[offset + 1]]);
+        let rdlen = u16::from_be_bytes([data[offset + 8], data[offset + 9]]) as usize;
+        offset += 10;
+        if offset + rdlen > data.len() {
+            break;
+        }
+        match rtype {
+            1 => {
+                if rdlen == 4 {
+                    let ip = Ipv4Addr::new(data[offset], data[offset + 1], data[offset + 2], data[offset + 3]);
+                    names.push(ip.to_string());
+                }
+            }
+            5 | 12 | 33 => {
+                let mut rptr = offset;
+                if let Some(name) = decode_dns_name(data, &mut rptr) {
+                    names.push(name);
+                }
+            }
+            16 => {
+                if let Ok(txt) = std::str::from_utf8(&data[offset..offset + rdlen]) {
+                    names.push(txt.to_string());
+                }
+            }
+            _ => {}
+        }
+        offset += rdlen;
+    }
+    names
+}
+
+fn query_multicast_dns(multicast: &str, name: &str, qtype: u16, timeout: Duration) -> Result<HashMap<Ipv4Addr, Vec<String>>> {
+    let socket = UdpSocket::bind("0.0.0.0:0").context("binding UDP socket for multicast DNS")?;
+    socket
+        .set_read_timeout(Some(timeout))
+        .context("setting read timeout")?;
+    socket
+        .set_write_timeout(Some(timeout))
+        .context("setting write timeout")?;
+    socket
+        .set_multicast_loop_v4(true)
+        .context("enabling multicast loop")?;
+
+    let packet = build_dns_query(name, qtype);
+    let _ = socket.send_to(&packet, multicast)?;
+
+    let start = Instant::now();
+    let mut results: HashMap<Ipv4Addr, Vec<String>> = HashMap::new();
+    let mut buf = [0u8; 1500];
+    while start.elapsed() < timeout {
+        match socket.recv_from(&mut buf) {
+            Ok((n, addr)) => {
+                if n == 0 {
+                    continue;
+                }
+                let names = parse_dns_records(&buf[..n]);
+                if names.is_empty() {
+                    continue;
+                }
+                if let Some(src) = addr.ip().to_string().parse::<Ipv4Addr>().ok() {
+                    results.entry(src).or_default().extend(names);
+                }
+            }
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut => break,
+            Err(_) => break,
+        }
+    }
+    Ok(results)
+}
+
+fn query_mdns(timeout: Duration) -> Result<HashMap<Ipv4Addr, Vec<String>>> {
+    // Ask for the list of services and general local names
+    let mut results = query_multicast_dns(MDNS_MULTICAST, "_services._dns-sd._udp.local", 12, timeout)?;
+    let extra = query_multicast_dns(MDNS_MULTICAST, "local", 255, timeout)?;
+    for (k, v) in extra {
+        results.entry(k).or_default().extend(v);
+    }
+    Ok(results)
+}
+
+fn query_llmnr(timeout: Duration) -> Result<HashMap<Ipv4Addr, Vec<String>>> {
+    // Query for WORKGROUP to elicit LLMNR responses
+    query_multicast_dns(LLMNR_MULTICAST, "WORKGROUP", 1, timeout)
+}
+
+fn encode_netbios_name(name: &str) -> Vec<u8> {
+    let mut padded = name.to_uppercase();
+    if padded.len() > 15 {
+        padded.truncate(15);
+    }
+    while padded.len() < 15 {
+        padded.push(' ');
+    }
+    padded.push('\0');
+    let mut encoded = Vec::with_capacity(32);
+    for b in padded.bytes() {
+        let high = ((b >> 4) & 0x0F) + b'A';
+        let low = (b & 0x0F) + b'A';
+        encoded.push(high);
+        encoded.push(low);
+    }
+    encoded
+}
+
+fn query_netbios(timeout: Duration) -> Result<HashMap<Ipv4Addr, Vec<String>>> {
+    let socket = UdpSocket::bind("0.0.0.0:0").context("binding UDP socket for NetBIOS")?;
+    socket.set_broadcast(true).ok();
+    socket.set_read_timeout(Some(timeout)).ok();
+
+    let mut packet = Vec::new();
+    let id: u16 = rand::random();
+    packet.extend_from_slice(&id.to_be_bytes());
+    packet.extend_from_slice(&0x0010u16.to_be_bytes()); // flags: recursion desired
+    packet.extend_from_slice(&0x0001u16.to_be_bytes()); // QDCOUNT
+    packet.extend_from_slice(&0x0000u16.to_be_bytes()); // ANCOUNT
+    packet.extend_from_slice(&0x0000u16.to_be_bytes()); // NSCOUNT
+    packet.extend_from_slice(&0x0000u16.to_be_bytes()); // ARCOUNT
+
+    let encoded = encode_netbios_name("*");
+    packet.push(32); // label length
+    packet.extend_from_slice(&encoded);
+    packet.push(0); // terminator
+    packet.extend_from_slice(&0x0020u16.to_be_bytes()); // NB
+    packet.extend_from_slice(&0x0001u16.to_be_bytes()); // IN
+
+    let _ = socket.send_to(&packet, "255.255.255.255:137")?;
+
+    let start = Instant::now();
+    let mut results: HashMap<Ipv4Addr, Vec<String>> = HashMap::new();
+    let mut buf = [0u8; 1500];
+    while start.elapsed() < timeout {
+        match socket.recv_from(&mut buf) {
+            Ok((n, addr)) => {
+                if n < 12 {
+                    continue;
+                }
+                // Look for NBSTAT RDATA name table
+                if let Some(src) = addr.ip().to_string().parse::<Ipv4Addr>().ok() {
+                    if let Some(names) = parse_netbios_names(&buf[..n]) {
+                        results.entry(src).or_default().extend(names);
+                    }
+                }
+            }
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut => break,
+            Err(_) => break,
+        }
+    }
+    Ok(results)
+}
+
+fn parse_netbios_names(data: &[u8]) -> Option<Vec<String>> {
+    // Find NBSTAT answer (type 0x0021)
+    let mut offset = 12usize;
+    let qdcount = u16::from_be_bytes([data[4], data[5]]) as usize;
+    let ancount = u16::from_be_bytes([data[6], data[7]]) as usize;
+
+    for _ in 0..qdcount {
+        while offset < data.len() && data[offset] != 0 {
+            offset += 1;
+        }
+        offset += 1 + 4; // null + type/class
+    }
+
+    for _ in 0..ancount {
+        while offset < data.len() && data[offset] != 0 {
+            offset += 1;
+        }
+        offset += 1;
+        if offset + 10 > data.len() {
+            return None;
+        }
+        let rtype = u16::from_be_bytes([data[offset], data[offset + 1]]);
+        let rdlen = u16::from_be_bytes([data[offset + 8], data[offset + 9]]) as usize;
+        offset += 10;
+        if offset + rdlen > data.len() {
+            return None;
+        }
+        if rtype == 0x0021 && rdlen > 0 {
+            let count = data[offset] as usize;
+            let mut names = Vec::new();
+            let mut pos = offset + 1;
+            for _ in 0..count {
+                if pos + 18 > offset + rdlen {
+                    break;
+                }
+                let raw = &data[pos..pos + 15];
+                if let Ok(s) = std::str::from_utf8(raw) {
+                    names.push(s.trim().to_string());
+                }
+                pos += 18;
+            }
+            return Some(names);
+        }
+        offset += rdlen;
+    }
+    None
+}
+
+fn query_ws_discovery(timeout: Duration) -> Result<HashMap<Ipv4Addr, Vec<String>>> {
+    let socket = UdpSocket::bind("0.0.0.0:0").context("binding UDP socket for WS-Discovery")?;
+    socket
+        .set_read_timeout(Some(timeout))
+        .context("setting WS-Discovery timeout")?;
+    socket
+        .set_write_timeout(Some(timeout))
+        .context("setting WS-Discovery write timeout")?;
+    socket
+        .set_multicast_loop_v4(true)
+        .context("enabling multicast loop")?;
+
+    let uuid = format!("{}", uuid::Uuid::new_v4());
+    let probe = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<e:Envelope xmlns:e="http://www.w3.org/2003/05/soap-envelope" xmlns:w="http://schemas.xmlsoap.org/ws/2004/08/addressing" xmlns:d="http://schemas.xmlsoap.org/ws/2005/04/discovery">
+  <e:Header>
+    <w:MessageID>uuid:{uuid}</w:MessageID>
+    <w:To>urn:schemas-xmlsoap-org:ws:2005:04:discovery</w:To>
+    <w:Action>http://schemas.xmlsoap.org/ws/2005/04/discovery/Probe</w:Action>
+  </e:Header>
+  <e:Body>
+    <d:Probe>
+      <d:Types>dn:NetworkVideoTransmitter</d:Types>
+    </d:Probe>
+  </e:Body>
+</e:Envelope>"#
+    );
+
+    let _ = socket.send_to(probe.as_bytes(), WSD_MULTICAST)?;
+
+    let start = Instant::now();
+    let mut results: HashMap<Ipv4Addr, Vec<String>> = HashMap::new();
+    let mut buf = [0u8; 4096];
+    while start.elapsed() < timeout {
+        match socket.recv_from(&mut buf) {
+            Ok((n, addr)) => {
+                let payload = String::from_utf8_lossy(&buf[..n]);
+                let mut types = Vec::new();
+                for line in payload.lines() {
+                    if line.contains("<d:Types") || line.contains("<Types") {
+                        let clean = line
+                            .replace("<d:Types>", "")
+                            .replace("</d:Types>", "")
+                            .replace("<Types>", "")
+                            .replace("</Types>", "")
+                            .trim()
+                            .to_string();
+                        if !clean.is_empty() {
+                            types.push(clean);
+                        }
+                    }
+                }
+                if let Some(src) = addr.ip().to_string().parse::<Ipv4Addr>().ok() {
+                    if !types.is_empty() {
+                        results.entry(src).or_default().extend(types);
+                    }
+                }
+            }
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut => break,
+            Err(_) => break,
+        }
+    }
+    Ok(results)
+}
+
+/// Build device inventory from discovery + port scans + multicast service probes.
+pub fn build_device_inventory(
+    discovery: &LanDiscoveryResult,
+    ports: &[u16],
+    timeout: Duration,
+) -> Result<Vec<DeviceInfo>> {
+    let mdns = query_mdns(timeout).unwrap_or_default();
+    let llmnr = query_llmnr(timeout).unwrap_or_default();
+    let netbios = query_netbios(timeout).unwrap_or_default();
+    let wsd = query_ws_discovery(timeout).unwrap_or_default();
+
+    let mut devices = Vec::new();
+    for host in &discovery.hosts {
+        let scan = quick_port_scan(*host, ports, timeout).unwrap_or_else(|_| PortScanResult {
+            target: *host,
+            open_ports: Vec::new(),
+            banners: Vec::new(),
+        });
+
+        let ttl_guess = discovery
+            .details
+            .iter()
+            .find(|d| d.ip == *host)
+            .and_then(|d| d.ttl)
+            .and_then(guess_os_from_ttl);
+        let os_hint = guess_os_from_ports(ttl_guess, &scan.open_ports);
+
+        let mut services = Vec::new();
+        if let Some(names) = mdns.get(host) {
+            for n in names {
+                services.push(ServiceInfo {
+                    protocol: "mDNS".to_string(),
+                    detail: n.clone(),
+                });
+            }
+        }
+        if let Some(names) = llmnr.get(host) {
+            for n in names {
+                services.push(ServiceInfo {
+                    protocol: "LLMNR".to_string(),
+                    detail: n.clone(),
+                });
+            }
+        }
+        if let Some(names) = netbios.get(host) {
+            for n in names {
+                services.push(ServiceInfo {
+                    protocol: "NetBIOS".to_string(),
+                    detail: n.clone(),
+                });
+            }
+        }
+        if let Some(types) = wsd.get(host) {
+            for t in types {
+                services.push(ServiceInfo {
+                    protocol: "WS-Discovery".to_string(),
+                    detail: t.clone(),
+                });
+            }
+        }
+
+        let hostname = services
+            .iter()
+            .find_map(|s| {
+                if s.detail.contains(".local") {
+                    Some(s.detail.clone())
+                } else {
+                    None
+                }
+            })
+            .or_else(|| services.get(0).map(|s| s.detail.clone()));
+
+        devices.push(DeviceInfo {
+            ip: *host,
+            hostname,
+            services,
+            os_hint,
+            ttl: discovery
+                .details
+                .iter()
+                .find(|d| d.ip == *host)
+                .and_then(|d| d.ttl),
+            open_ports: scan.open_ports.clone(),
+            banners: scan.banners.clone(),
+        });
+    }
+
+    Ok(devices)
 }

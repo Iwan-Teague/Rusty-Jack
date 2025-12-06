@@ -801,7 +801,7 @@ impl App {
     }
 
     fn pick_color(&mut self, target: ColorTarget) -> Result<()> {
-        // use common, unambiguous hex values so picked colours match names
+        // List-based selection to keep navigation consistent
         let choices = [
             ("White", "#FFFFFF"),
             ("Black", "#000000"),
@@ -811,29 +811,18 @@ impl App {
             ("Navy", "#000080"),
             ("Purple", "#AA00FF"),
         ];
-        let mut index = 0;
-        loop {
-            let overlay = self.stats.snapshot();
-            let (name, hex) = choices[index];
-            let label = format!("{:?}: {}", target, name);
-            self.display.draw_dialog(&[label.clone()], &overlay)?;
-            let button = self.buttons.wait_for_press()?;
-            match self.map_button(button) {
-                ButtonAction::Back => index = (index + choices.len() - 1) % choices.len(),
-                ButtonAction::Select => {
-                    self.apply_color(target.clone(), hex);
-                    self.display
-                        .draw_dialog(&["Color updated".into()], &overlay)?;
-                    thread::sleep(Duration::from_millis(600));
-                    break;
-                }
-                ButtonAction::Reboot => {
-                    self.confirm_reboot()?;
-                }
-                _ => {}
-            }
+        let labels: Vec<String> = choices
+            .iter()
+            .map(|(name, _)| format!(" {}: {}", format!("{:?}", target), name))
+            .collect();
+
+        if let Some(idx) = self.choose_from_menu("Pick Color", &labels)? {
+            let (_name, hex) = choices[idx];
+            self.apply_color(target, hex);
+            self.show_message("Colors", ["Updated"])
+        } else {
+            Ok(())
         }
-        Ok(())
     }
 
     fn apply_color(&mut self, target: ColorTarget, value: &str) {
@@ -845,6 +834,7 @@ impl App {
             ColorTarget::SelectedBackground => {
                 self.config.colors.selected_background = value.to_string()
             }
+            ColorTarget::Toolbar => self.config.colors.toolbar = value.to_string(),
         }
         self.display.update_palette(&self.config.colors);
     }
@@ -1910,7 +1900,7 @@ impl App {
                 for port in &ethernet_ports {
                     if let Some(name) = port.get("name").and_then(|v| v.as_str()) {
                         let label = if name == active_interface {
-                            format!("{} *", name)
+                            format!("* {}", name)
                         } else {
                             name.to_string()
                         };
@@ -1921,7 +1911,7 @@ impl App {
                 for module in &wifi_modules {
                     if let Some(name) = module.get("name").and_then(|v| v.as_str()) {
                         let label = if name == active_interface {
-                            format!("{} *", name)
+                            format!("* {}", name)
                         } else {
                             name.to_string()
                         };
@@ -1975,14 +1965,14 @@ impl App {
                                     let active = self.config.settings.active_network_interface.clone();
                                     for port in &ethernet_ports {
                                         if let Some(name) = port.get("name").and_then(|v| v.as_str()) {
-                                            let label = if name == active { format!("{} *", name) } else { name.to_string() };
+                                            let label = if name == active { format!("* {}", name) } else { name.to_string() };
                                             labels.push(label);
                                             all_interfaces.push(port.clone());
                                         }
                                     }
                                     for module in &wifi_modules {
                                         if let Some(name) = module.get("name").and_then(|v| v.as_str()) {
-                                            let label = if name == active { format!("{} *", name) } else { name.to_string() };
+                                            let label = if name == active { format!("* {}", name) } else { name.to_string() };
                                             labels.push(label);
                                             all_interfaces.push(module.clone());
                                         }
@@ -2059,7 +2049,7 @@ impl App {
                         self.show_message("Network", info.iter().map(|s| s.as_str()))?;
 
                         let confirm = self.choose_from_list(
-                            "Set as Target?",
+                            "Set Target",
                             &["Yes".to_string(), "No".to_string()],
                         )?;
                         if confirm == Some(0) {
@@ -2802,7 +2792,8 @@ impl App {
 
         let mut cracker = WpaCracker::new(bundle.handshake.clone(), &bundle.ssid).with_config(
             CrackerConfig {
-                progress_interval: 25,
+                // Update UI on every attempt so the progress bar moves consistently
+                progress_interval: 1,
                 max_attempts: 0,
                 throttle_interval: 200,
                 threads: 1,
@@ -4646,18 +4637,31 @@ impl App {
 
             self.show_progress("Ethernet Port Scan", [
                 "Scanning target (gateway if unset)",
-                "Press Back to cancel",
+                "Select duration next",
             ])?;
+
+            let duration_options = vec![
+                ("Quick (0.5s/port)", 500u64),
+                ("Normal (1s/port)", 1_000u64),
+                ("Thorough (2s/port)", 2_000u64),
+                ("Deep (5s/port)", 5_000u64),
+            ];
+            let labels: Vec<String> = duration_options.iter().map(|(label, _)| label.to_string()).collect();
+            let Some(choice) = self.choose_from_menu("Port Scan", &labels)? else { return Ok(()); };
+            let timeout_ms = duration_options.get(choice).map(|(_, t)| *t).unwrap_or(1_000);
 
             let args = EthernetPortScanArgs {
                 target: None,       // defaults to gateway
                 interface: Some(active_interface.clone()),
                 ports: None,        // default common ports
-                timeout_ms: 500,
+                timeout_ms: timeout_ms,
             };
             let cmd = Commands::Ethernet(EthernetCommand::PortScan(args));
 
-            if let Some((_, data)) = self.dispatch_cancellable("Port Scan", cmd, 40)? {
+            // rough estimate: ports count * timeout + buffer (default ports ~15)
+            let estimated_secs = ((15u64 * timeout_ms) / 1000).saturating_add(10);
+
+            if let Some((_, data)) = self.dispatch_cancellable("Port Scan", cmd, estimated_secs)? {
                 let target = data
                     .get("target")
                     .and_then(|v| v.as_str())
@@ -4887,13 +4891,34 @@ impl App {
 
     fn purge_logs(&mut self) -> Result<()> {
         let root = self.root.clone();
-        let paths = vec![
+        let bases = vec![
             root.join("loot"),
             root.join("Responder").join("logs"),
         ];
 
-        let confirm = self.choose_from_list("Purge Logs?", &[
-            "Delete all *.log and log* files".to_string(),
+        // Collect candidates first for confirmation
+        let mut candidates = Vec::new();
+        for base in &bases {
+            if !base.exists() {
+                continue;
+            }
+            for entry in WalkDir::new(base).into_iter().filter_map(|e| e.ok()) {
+                let path = entry.path();
+                if path.is_file() && self.is_log_file(path) {
+                    candidates.push(path.to_path_buf());
+                }
+            }
+        }
+
+        if candidates.is_empty() {
+            return self.show_message("Purge Logs", [
+                "No log files found",
+                "Nothing to delete",
+            ]);
+        }
+
+        let confirm = self.choose_from_list("Delete Logs?", &[
+            format!("Delete {} log file(s)", candidates.len()),
             "Cancel".to_string(),
         ])?;
         if confirm != Some(0) {
@@ -4901,17 +4926,9 @@ impl App {
         }
 
         let mut deleted = 0usize;
-        for base in paths {
-            if !base.exists() {
-                continue;
-            }
-            for entry in WalkDir::new(&base).into_iter().filter_map(|e| e.ok()) {
-                let path = entry.path();
-                if path.is_file() && self.is_log_file(path) {
-                    if fs::remove_file(path).is_ok() {
-                        deleted += 1;
-                    }
-                }
+        for path in candidates {
+            if fs::remove_file(&path).is_ok() {
+                deleted += 1;
             }
         }
 
@@ -4922,11 +4939,17 @@ impl App {
     }
 
     fn is_log_file(&self, path: &Path) -> bool {
+        // Delete anything inside a directory named "logs"
+        if path.ancestors().any(|p| p.file_name().and_then(|n| n.to_str()) == Some("logs")) {
+            return true;
+        }
         let name = match path.file_name().and_then(|n| n.to_str()) {
             Some(n) => n.to_ascii_lowercase(),
             None => return false,
         };
-        name.ends_with(".log") || name.starts_with("log_") || name.contains("log")
+        name.ends_with(".log")
+            || name.starts_with("log_")
+            || name.contains("log")
     }
 
     /// Manage hotspot (start/stop, randomize credentials)

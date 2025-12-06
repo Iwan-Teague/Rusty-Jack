@@ -143,6 +143,7 @@ pub enum ColorTarget {
     Text,
     SelectedText,
     SelectedBackground,
+    Toolbar,
 }
 
 #[derive(Clone, Copy)]
@@ -181,7 +182,7 @@ fn wifi_menu() -> Vec<MenuEntry> {
 fn ethernet_menu() -> Vec<MenuEntry> {
     vec![
         MenuEntry::new("LAN Discovery", MenuAction::EthernetDiscovery),
-        MenuEntry::new("Port Scan (quick)", MenuAction::EthernetPortScan),
+        MenuEntry::new("Port Scan", MenuAction::EthernetPortScan),
         MenuEntry::new("Device Inventory", MenuAction::EthernetInventory),
     ]
 }
@@ -298,7 +299,7 @@ fn colors_menu() -> Vec<MenuEntry> {
             "Selected BG",
             MenuAction::SetColor(ColorTarget::SelectedBackground),
         ),
-        MenuEntry::new("Border", MenuAction::SetColor(ColorTarget::Border)),
+        MenuEntry::new("Toolbar", MenuAction::SetColor(ColorTarget::Toolbar)),
     ]
 }
 

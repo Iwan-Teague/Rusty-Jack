@@ -133,6 +133,8 @@ pub struct ColorScheme {
     pub gamepad: String,
     #[serde(default = "ColorScheme::default_gamepad_fill")]
     pub gamepad_fill: String,
+    #[serde(default = "ColorScheme::default_toolbar")]
+    pub toolbar: String,
 }
 
 impl Default for ColorScheme {
@@ -145,6 +147,7 @@ impl Default for ColorScheme {
             selected_background: "#330055".into(),
             gamepad: "#440066".into(),
             gamepad_fill: "#AA00FF".into(),
+            toolbar: "#141414".into(),
         }
     }
 }
@@ -170,6 +173,9 @@ impl ColorScheme {
     }
     fn default_gamepad_fill() -> String {
         "#AA00FF".to_string()
+    }
+    fn default_toolbar() -> String {
+        "#141414".to_string()
     }
 }
 

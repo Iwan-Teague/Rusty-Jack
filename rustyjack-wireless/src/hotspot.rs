@@ -77,6 +77,10 @@ pub fn start_hotspot(config: HotspotConfig) -> Result<HotspotState> {
     ensure_upstream_ready(&config.upstream_interface)?;
     fs::create_dir_all(CONF_DIR).map_err(|e| WirelessError::System(format!("mkdir: {e}")))?;
 
+    // Ensure previous instances are stopped to avoid dhcp bind failures
+    let _ = Command::new("pkill").args(["-f", "hostapd"]).status();
+    let _ = Command::new("pkill").args(["-f", "dnsmasq"]).status();
+
     // Bring AP interface up with static IP
     run_cmd("ip", &["link", "set", &config.ap_interface, "down"])?;
     run_cmd(
@@ -174,7 +178,17 @@ pub fn start_hotspot(config: HotspotConfig) -> Result<HotspotState> {
         ""
     };
     let dns_conf = format!(
-        "interface={}\ndhcp-range=10.20.30.10,10.20.30.200,12h\ndhcp-option=3,{gw}\ndhcp-option=6,{gw}\n{dns_logging}",
+        "interface={}\n\
+         bind-interfaces\n\
+         listen-address={gw}\n\
+         dhcp-range=10.20.30.10,10.20.30.200,255.255.255.0,12h\n\
+         dhcp-option=1,255.255.255.0\n\
+         dhcp-option=3,{gw}\n\
+         dhcp-option=6,{gw}\n\
+         dhcp-authoritative\n\
+         no-resolv\n\
+         domain-needed\n\
+{dns_logging}",
         config.ap_interface,
         gw = AP_GATEWAY,
         dns_logging = dns_logging

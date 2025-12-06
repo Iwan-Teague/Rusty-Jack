@@ -130,6 +130,7 @@ pub struct Palette {
     pub text: Rgb565,
     pub selected_text: Rgb565,
     pub selected_background: Rgb565,
+    pub toolbar: Rgb565,
 }
 
 #[cfg(target_os = "linux")]
@@ -537,7 +538,7 @@ impl Display {
     }
 
     pub fn draw_toolbar_with_title(&mut self, title: Option<&str>, status: &StatusOverlay) -> Result<()> {
-        let style = PrimitiveStyle::with_fill(Rgb565::new(20, 20, 20));
+        let style = PrimitiveStyle::with_fill(self.palette.toolbar);
         Rectangle::new(
             Point::new(0, 0),
             Size::new((LCD_WIDTH as u32) + 1, 14)
@@ -547,7 +548,8 @@ impl Display {
 
         // Draw title in top left if provided, clipped to avoid overlapping temp
         if let Some(t) = title {
-            const MAX_TITLE_CHARS: usize = 12; // leave room for temp/autopilot
+            // Leave room for temp/autopilot but allow longer labels
+            const MAX_TITLE_CHARS: usize = 16;
             let mut title_text = t.to_string();
             if title_text.len() > MAX_TITLE_CHARS {
                 title_text.truncate(MAX_TITLE_CHARS);
@@ -620,13 +622,20 @@ impl Display {
 
     pub fn draw_dialog(&mut self, lines: &[String], status: &StatusOverlay) -> Result<()> {
         self.clear()?;
-        self.draw_toolbar(status)?;
-        // No border for cleaner look
-        
-        let mut y = 22;
         const MAX_CHARS: usize = 20;
-        
-        for line in lines {
+
+        // Use first line as the toolbar title when available
+        let (title, body) = if let Some((first, rest)) = lines.split_first() {
+            (Some(first.as_str()), rest)
+        } else {
+            (None, &[][..])
+        };
+
+        self.draw_toolbar_with_title(title, status)?;
+
+        // Body content below the toolbar
+        let mut y = 22;
+        for line in body {
             // Wrap each line if it's longer than MAX_CHARS characters
             let wrapped = wrap_text(line, MAX_CHARS);
             for wrapped_line in wrapped {
@@ -1041,11 +1050,17 @@ impl Display {
     }
 
     pub fn draw_dialog(&mut self, lines: &[String], _: &StatusOverlay) -> Result<()> {
-        println!("--- dialog ---");
-        for line in lines {
-            println!("{line}");
+        if let Some((first, rest)) = lines.split_first() {
+            println!("--- {first} ---");
+            for line in rest {
+                println!("{line}");
+            }
+            println!("--------------");
+        } else {
+            println!("--- dialog ---");
+            println!("(empty)");
+            println!("--------------");
         }
-        println!("--------------");
         Ok(())
     }
 
@@ -1111,6 +1126,7 @@ impl Palette {
             text: parse_color(&colors.text, Rgb565::WHITE),
             selected_text: parse_color(&colors.selected_text, Rgb565::WHITE),
             selected_background: parse_color(&colors.selected_background, Rgb565::BLACK),
+            toolbar: parse_color(&colors.toolbar, Rgb565::new(20, 20, 20)),
         }
     }
 }

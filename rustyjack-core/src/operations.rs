@@ -11,7 +11,7 @@ use chrono::Local;
 use ipnet::Ipv4Net;
 use regex::Regex;
 use rustyjack_ethernet::{
-    build_device_inventory, discover_hosts, discover_hosts_arp, quick_port_scan,
+    build_device_inventory, discover_hosts, discover_hosts_arp, quick_port_scan, LanDiscoveryResult,
 };
 use rustyjack_wireless::{
     start_hotspot, status_hotspot, stop_hotspot, HotspotConfig, HotspotState,

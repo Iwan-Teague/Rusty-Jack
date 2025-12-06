@@ -9,6 +9,7 @@ pub enum MenuAction {
     SaveConfig,
     SetColor(ColorTarget),
     RestartSystem,
+    SecureShutdown,
     Loot(LootSection),
     DiscordUpload,
     ViewDashboards,
@@ -298,6 +299,7 @@ fn colors_menu() -> Vec<MenuEntry> {
 fn system_menu() -> Vec<MenuEntry> {
     vec![
         MenuEntry::new("Restart", MenuAction::RestartSystem),
+        MenuEntry::new("Secure Shutdown", MenuAction::SecureShutdown),
     ]
 }
 

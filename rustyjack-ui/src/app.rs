@@ -688,6 +688,7 @@ impl App {
             MenuAction::SaveConfig => self.save_config()?,
             MenuAction::SetColor(target) => self.pick_color(target)?,
             MenuAction::RestartSystem => self.restart_system()?,
+            MenuAction::SecureShutdown => self.secure_shutdown()?,
             MenuAction::Loot(section) => self.show_loot(section)?,
             MenuAction::DiscordUpload => self.discord_upload()?,
             MenuAction::ToggleLogs => self.toggle_logs()?,
@@ -1133,37 +1134,88 @@ impl App {
         Ok(())
     }
 
-    fn choose_from_list(&mut self, title: &str, items: &[String]) -> Result<Option<usize>> {
-        if items.is_empty() {
-            return Ok(None);
+    /// Attempt to wipe free memory then power off the device.
+    /// This is best-effort: it overwrites available RAM pages before shutdown.
+    fn secure_shutdown(&mut self) -> Result<()> {
+        // Explain what will happen
+        self.show_message("Secure Shutdown", [
+            "Attempt to overwrite free RAM",
+            "and power off the device.",
+            "",
+            "Use on the Pi only. This",
+            "will stop all services.",
+        ])?;
+
+        let options = vec![
+            "Wipe RAM + Power Off".to_string(),
+            "Cancel".to_string(),
+        ];
+        let choice = self.choose_from_list("Confirm", &options)?;
+        if choice != Some(0) {
+            return Ok(());
         }
-        let mut index = 0usize;
-        loop {
-            let overlay = self.stats.snapshot();
-            let content = vec![title.to_string(), items[index].clone()];
-            self.display.draw_dialog(&content, &overlay)?;
-            let button = self.buttons.wait_for_press()?;
-            match self.map_button(button) {
-                ButtonAction::Up => {
-                    if index == 0 {
-                        index = items.len() - 1;
-                    } else {
-                        index -= 1;
-                    }
-                }
-                ButtonAction::Down => index = (index + 1) % items.len(),
-                ButtonAction::Select => return Ok(Some(index)),
-                ButtonAction::Back => return Ok(None),
-                ButtonAction::MainMenu => {
-                    self.menu_state.home();
-                    return Ok(None);
-                }
-                ButtonAction::Reboot => {
-                    self.confirm_reboot()?;
-                }
-                _ => {}
+
+        // Sync disks before wiping
+        self.show_progress("Secure Shutdown", ["Syncing disks...", ""])?;
+        let _ = Command::new("sync").status();
+
+        // Best-effort memory wipe
+        self.show_progress("Secure Shutdown", ["Wiping memory...", "This may take a few seconds"])?;
+        let _ = self.best_effort_ram_wipe();
+
+        // Power off
+        self.show_progress("Secure Shutdown", ["Powering off now...", ""])?;
+        let _ = Command::new("systemctl")
+            .arg("poweroff")
+            .status()
+            .or_else(|_| Command::new("shutdown").args(["-h", "now"]).status());
+
+        Ok(())
+    }
+
+    /// Overwrite available RAM to reduce residual data.
+    fn best_effort_ram_wipe(&self) -> Result<()> {
+        // Parse MemAvailable from /proc/meminfo
+        let meminfo = fs::read_to_string("/proc/meminfo").unwrap_or_default();
+        let available_kb = meminfo
+            .lines()
+            .find(|l| l.starts_with("MemAvailable:"))
+            .and_then(|line| line.split_whitespace().nth(1))
+            .and_then(|kb| kb.parse::<u64>().ok())
+            .unwrap_or(64 * 1024); // fall back to 64MB if parsing fails
+
+        // Use ~95% of available RAM; keep a small buffer to avoid the OOM killer
+        let target_bytes = available_kb.saturating_mul(1024) * 95 / 100;
+        let chunk_size: usize = 1 * 1024 * 1024; // 1MB chunks for tighter coverage
+
+        let mut allocated = 0u64;
+        let mut buffers: Vec<Vec<u8>> = Vec::new();
+
+        while allocated < target_bytes {
+            let remaining = target_bytes - allocated;
+            let size = std::cmp::min(chunk_size as u64, remaining) as usize;
+            if size == 0 {
+                break;
             }
+
+            // Allocate and touch the memory so pages are actually written
+            let mut buf = Vec::with_capacity(size);
+            buf.resize(size, 0u8);
+            for chunk in buf.chunks_mut(4096) {
+                chunk[0] = 0;
+            }
+            allocated += size as u64;
+            buffers.push(buf);
         }
+
+        // Drop buffers to release memory before shutdown
+        drop(buffers);
+        Ok(())
+    }
+
+    fn choose_from_list(&mut self, title: &str, items: &[String]) -> Result<Option<usize>> {
+        // Reuse the menu-style selector so options are visible as a list.
+        self.choose_from_menu(title, items)
     }
 
     /// Show a paginated menu (styled like the main menu) and return index

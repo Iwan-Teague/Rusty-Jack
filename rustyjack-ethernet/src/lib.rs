@@ -870,12 +870,12 @@ pub fn build_device_inventory(
             banners: Vec::new(),
         });
 
-        let ttl_guess = discovery
+        let ttl_raw = discovery
             .details
             .iter()
             .find(|d| d.ip == *host)
-            .and_then(|d| d.ttl)
-            .and_then(guess_os_from_ttl);
+            .and_then(|d| d.ttl);
+        let ttl_guess = ttl_raw.and_then(|t| guess_os_from_ttl(Some(t)));
         let os_hint = guess_os_from_ports(ttl_guess, &scan.open_ports);
 
         let mut services = Vec::new();
@@ -928,11 +928,7 @@ pub fn build_device_inventory(
             hostname,
             services,
             os_hint,
-            ttl: discovery
-                .details
-                .iter()
-                .find(|d| d.ip == *host)
-                .and_then(|d| d.ttl),
+            ttl: ttl_raw,
             open_ports: scan.open_ports.clone(),
             banners: scan.banners.clone(),
         });

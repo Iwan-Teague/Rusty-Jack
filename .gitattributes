@@ -1,1 +1,2 @@
+install_raspyjack.sh text eol=lf
 prebuilt/arm32/rustyjack-ui filter=lfs diff=lfs merge=lfs -text

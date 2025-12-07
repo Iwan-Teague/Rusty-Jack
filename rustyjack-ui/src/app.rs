@@ -853,6 +853,7 @@ impl App {
             MenuAction::ToggleMacRandomization => self.toggle_mac_randomization()?,
             MenuAction::ToggleHostnameRandomization => self.toggle_hostname_randomization()?,
             MenuAction::RandomizeMacNow => self.randomize_mac_now()?,
+            MenuAction::SetVendorMac => self.set_vendor_mac()?,
             MenuAction::RandomizeHostnameNow => self.randomize_hostname_now()?,
             MenuAction::RestoreMac => self.restore_mac()?,
             MenuAction::SetTxPower(level) => self.set_tx_power(level)?,
@@ -5291,6 +5292,73 @@ impl App {
     }
 
     /// Restore original MAC address
+    fn set_vendor_mac(&mut self) -> Result<()> {
+        let interface = self.config.settings.active_network_interface.clone();
+        if interface.is_empty() {
+            return self.show_message("MAC Address", ["No interface selected"]);
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            use rustyjack_evasion::{MacGenerationStrategy, MacManager, VENDOR_DATABASE};
+
+            // Create vendor list for selection
+            let mut vendors: Vec<String> = VENDOR_DATABASE
+                .iter()
+                .map(|v| format!("{} ({})", v.name, v.description))
+                .collect();
+            vendors.sort();
+
+            let choice = self.choose_from_list("Select Vendor", &vendors)?;
+            let Some(idx) = choice else {
+                return Ok(());
+            };
+
+            // Find the selected vendor (since we sorted the display list, we need to find it again or sort the source)
+            // Simpler: just sort the source list of references first
+            let mut sorted_vendors: Vec<&rustyjack_evasion::VendorOui> =
+                VENDOR_DATABASE.iter().collect();
+            sorted_vendors.sort_by_key(|v| v.name);
+            let selected_vendor = sorted_vendors[idx];
+
+            self.show_progress("MAC Address", ["Setting vendor MAC...", "Please wait"]);
+
+            let mut manager = MacManager::new().context("creating MacManager")?;
+            manager.set_auto_restore(false);
+
+            match manager.set_with_strategy(
+                &interface,
+                MacGenerationStrategy::Vendor(selected_vendor.name),
+            ) {
+                Ok(state) => {
+                    renew_dhcp_and_reconnect(&interface);
+                    
+                    // Update config
+                    let new_mac = state.current_mac.to_string();
+                    self.config.settings.current_mac = new_mac.clone();
+                    let config_path = self.root.join("gui_conf.json");
+                    let _ = self.config.save(&config_path);
+
+                    self.show_message(
+                        "MAC Address",
+                        [
+                            &format!("Set to {}", selected_vendor.name),
+                            &format!("New: {}", new_mac),
+                        ],
+                    )?;
+                }
+                Err(e) => {
+                    self.show_message("MAC Error", [shorten_for_display(&e.to_string(), 20)])?;
+                }
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            self.show_message("MAC Address", ["Linux-only operation"])?;
+        }
+        Ok(())
+    }
+
     fn restore_mac(&mut self) -> Result<()> {
         let active_interface = self.config.settings.active_network_interface.clone();
 

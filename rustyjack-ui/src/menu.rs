@@ -134,6 +134,8 @@ impl MenuTree {
         nodes.insert("af", MenuNode::Static(system_menu));
         nodes.insert("ah", MenuNode::Static(loot_menu));
         nodes.insert("aw", MenuNode::Static(wifi_menu));
+        nodes.insert("awa", MenuNode::Static(wifi_access_menu));
+        nodes.insert("awc", MenuNode::Static(wifi_connected_menu));
         nodes.insert("aops", MenuNode::Static(operation_mode_menu));
         nodes.insert("as", MenuNode::Static(settings_menu));
         nodes.insert("asd", MenuNode::Static(discord_menu));
@@ -178,18 +180,25 @@ pub enum LootSection {
 fn main_menu() -> Vec<MenuEntry> {
     vec![
         MenuEntry::new("Hardware Detect", MenuAction::HardwareDetect),
-        MenuEntry::new("WiFi Attacks", MenuAction::Submenu("aw")),
+        MenuEntry::new("Wireless Access", MenuAction::Submenu("awa")),
+        MenuEntry::new("Connected Actions", MenuAction::Submenu("awc")),
         MenuEntry::new("Ethernet Recon", MenuAction::Submenu("aeth")),
-        MenuEntry::new("Operation Mode", MenuAction::Submenu("aops")),
-        MenuEntry::new("Reports", MenuAction::BuildNetworkReport),
         MenuEntry::new("Obfuscation", MenuAction::Submenu("ao")),
-        MenuEntry::new("View Dashboards", MenuAction::ViewDashboards),
-        MenuEntry::new("Settings", MenuAction::Submenu("as")),
         MenuEntry::new("Loot", MenuAction::Submenu("ah")),
+        MenuEntry::new("Dashboards", MenuAction::ViewDashboards),
+        MenuEntry::new("Settings", MenuAction::Submenu("as")),
     ]
 }
 
 fn wifi_menu() -> Vec<MenuEntry> {
+    // Legacy menu, kept for safety but replaced by awa/awc
+    vec![
+        MenuEntry::new("Scan Networks", MenuAction::ScanNetworks),
+        MenuEntry::new("Attack Pipelines", MenuAction::Submenu("ap")),
+    ]
+}
+
+fn wifi_access_menu() -> Vec<MenuEntry> {
     vec![
         MenuEntry::new("Scan Networks", MenuAction::ScanNetworks),
         MenuEntry::new("Attack Pipelines", MenuAction::Submenu("ap")),
@@ -199,6 +208,11 @@ fn wifi_menu() -> Vec<MenuEntry> {
         MenuEntry::new("PMKID Capture", MenuAction::PmkidCapture),
         MenuEntry::new("Probe Sniff", MenuAction::ProbeSniff),
         MenuEntry::new("Crack Handshake", MenuAction::CrackHandshake),
+    ]
+}
+
+fn wifi_connected_menu() -> Vec<MenuEntry> {
+    vec![
         MenuEntry::new("Connect Network", MenuAction::ConnectKnownNetwork),
         MenuEntry::new("Hotspot", MenuAction::Hotspot),
     ]
@@ -371,6 +385,7 @@ fn loot_menu() -> Vec<MenuEntry> {
     vec![
         MenuEntry::new("Wireless Captures", MenuAction::Loot(LootSection::Wireless)),
         MenuEntry::new("Ethernet Loot", MenuAction::Loot(LootSection::Ethernet)),
+        MenuEntry::new("Reports", MenuAction::BuildNetworkReport),
         MenuEntry::new("Transfer to USB", MenuAction::TransferToUSB),
     ]
 }
@@ -383,6 +398,8 @@ pub fn menu_title(id: &str) -> &'static str {
         "af" => "System",
         "ah" => "Loot",
         "aw" => "WiFi Attacks",
+        "awa" => "Wireless Access",
+        "awc" => "Connected Actions",
         "aeth" => "Ethernet Recon",
         "aethp" => "Ethernet Pipelines",
         "as" => "Settings",

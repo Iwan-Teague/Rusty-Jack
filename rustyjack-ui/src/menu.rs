@@ -35,6 +35,8 @@ pub enum MenuAction {
     ToggleMacRandomization,
     /// Randomize MAC address now
     RandomizeMacNow,
+    /// Set MAC to a specific vendor OUI
+    SetVendorMac,
     /// Restore original MAC
     RestoreMac,
     /// Toggle hostname randomization on/off
@@ -129,7 +131,6 @@ impl MenuTree {
     pub fn new() -> Self {
         let mut nodes = HashMap::new();
         nodes.insert("a", MenuNode::Static(main_menu));
-        nodes.insert("ae", MenuNode::Static(options_menu));
         nodes.insert("aea", MenuNode::Static(colors_menu));
         nodes.insert("af", MenuNode::Static(system_menu));
         nodes.insert("ah", MenuNode::Static(loot_menu));
@@ -179,6 +180,7 @@ pub enum LootSection {
 
 fn main_menu() -> Vec<MenuEntry> {
     vec![
+        MenuEntry::new("Operation Mode", MenuAction::Submenu("aops")),
         MenuEntry::new("Hardware Detect", MenuAction::HardwareDetect),
         MenuEntry::new("Wireless Access", MenuAction::Submenu("awa")),
         MenuEntry::new("Connected Actions", MenuAction::Submenu("awc")),
@@ -276,7 +278,6 @@ fn obfuscation_menu() -> Vec<MenuEntry> {
     vec![
         MenuEntry::new("MAC Address", MenuAction::Submenu("aom")),
         MenuEntry::new("Hostname", MenuAction::Submenu("aoh")),
-        MenuEntry::new("Operating Mode", MenuAction::Submenu("aopp")),
         MenuEntry::new("TX Power", MenuAction::Submenu("atx")),
     ]
 }
@@ -285,6 +286,7 @@ fn mac_menu() -> Vec<MenuEntry> {
     vec![
         MenuEntry::new("MAC Random: ???", MenuAction::ToggleMacRandomization),
         MenuEntry::new("Randomize Now", MenuAction::RandomizeMacNow),
+        MenuEntry::new("Set Vendor MAC", MenuAction::SetVendorMac),
         MenuEntry::new("Restore MAC", MenuAction::RestoreMac),
     ]
 }
@@ -334,7 +336,11 @@ fn tx_power_menu() -> Vec<MenuEntry> {
 fn settings_menu() -> Vec<MenuEntry> {
     vec![
         MenuEntry::new("Discord", MenuAction::Submenu("asd")),
-        MenuEntry::new("Options", MenuAction::Submenu("ae")),
+        MenuEntry::new("Colors", MenuAction::Submenu("aea")),
+        MenuEntry::new("Logs: ???", MenuAction::ToggleLogs),
+        MenuEntry::new("Purge Logs", MenuAction::PurgeLogs),
+        MenuEntry::new("Refresh Config", MenuAction::RefreshConfig),
+        MenuEntry::new("Save Config", MenuAction::SaveConfig),
         MenuEntry::new("System", MenuAction::Submenu("af")),
         MenuEntry::new("WiFi Drivers", MenuAction::InstallWifiDrivers),
     ]
@@ -344,16 +350,6 @@ fn discord_menu() -> Vec<MenuEntry> {
     vec![
         MenuEntry::new("Toggle Discord", MenuAction::ToggleDiscord),
         MenuEntry::new("Upload Loot", MenuAction::DiscordUpload),
-    ]
-}
-
-fn options_menu() -> Vec<MenuEntry> {
-    vec![
-        MenuEntry::new("Colors", MenuAction::Submenu("aea")),
-        MenuEntry::new("Logs: ???", MenuAction::ToggleLogs),
-        MenuEntry::new("Purge Logs", MenuAction::PurgeLogs),
-        MenuEntry::new("Refresh Config", MenuAction::RefreshConfig),
-        MenuEntry::new("Save Config", MenuAction::SaveConfig),
     ]
 }
 
@@ -393,7 +389,6 @@ fn loot_menu() -> Vec<MenuEntry> {
 pub fn menu_title(id: &str) -> &'static str {
     match id {
         "a" => "Main Menu",
-        "ae" => "Options",
         "aea" => "Colors",
         "af" => "System",
         "ah" => "Loot",

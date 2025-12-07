@@ -2410,6 +2410,30 @@ impl App {
         let target_bssid = self.config.settings.target_bssid.clone();
         let target_channel = self.config.settings.target_channel;
 
+        if active_interface.is_empty() {
+            return self.show_message(
+                "Deauth Attack",
+                [
+                    "No WiFi interface set",
+                    "",
+                    "Run Hardware Detect",
+                    "to configure interface",
+                ],
+            );
+        }
+
+        if !check_monitor_mode_support(&active_interface) {
+            return self.show_message(
+                "Hardware Error",
+                [
+                    "Interface does not",
+                    "support monitor mode.",
+                    "",
+                    "External adapter required",
+                ],
+            );
+        }
+
         // Validate we have all required target info
         if target_bssid.is_empty() {
             return self.show_message(
@@ -2734,6 +2758,23 @@ impl App {
             );
         }
 
+        if !check_monitor_mode_support(&active_interface) {
+            return self.show_message(
+                "Hardware Error",
+                [
+                    "Interface does not",
+                    "support monitor mode.",
+                    "",
+                    "External adapter required",
+                ],
+            );
+        }
+                    "Run Hardware Detect",
+                    "to configure interface",
+                ],
+            );
+        }
+
         // Show attack configuration
         self.show_message(
             "Evil Twin Attack",
@@ -2835,6 +2876,18 @@ impl App {
             );
         }
 
+        if !check_monitor_mode_support(&active_interface) {
+            return self.show_message(
+                "Hardware Error",
+                [
+                    "Interface does not",
+                    "support monitor mode.",
+                    "",
+                    "External adapter required",
+                ],
+            );
+        }
+
         // Duration selection
         let durations = vec![
             "30 seconds".to_string(),
@@ -2906,6 +2959,18 @@ impl App {
             return self.show_message(
                 "PMKID Capture",
                 ["No WiFi interface set", "", "Run Hardware Detect first"],
+            );
+        }
+
+        if !check_monitor_mode_support(&active_interface) {
+            return self.show_message(
+                "Hardware Error",
+                [
+                    "Interface does not",
+                    "support monitor mode.",
+                    "",
+                    "External adapter required",
+                ],
             );
         }
 
@@ -3704,6 +3769,18 @@ impl App {
             );
         }
 
+        if !check_monitor_mode_support(&active_interface) {
+            return self.show_message(
+                "Hardware Error",
+                [
+                    "Interface does not",
+                    "support monitor mode.",
+                    "",
+                    "External adapter required",
+                ],
+            );
+        }
+
         // Explain what Karma does
         self.show_message(
             "Karma Attack",
@@ -3825,6 +3902,18 @@ impl App {
                     "",
                     "Run Hardware Detect",
                     "to configure interface",
+                ],
+            );
+        }
+
+        if !check_monitor_mode_support(&active_interface) {
+            return self.show_message(
+                "Hardware Error",
+                [
+                    "Interface does not",
+                    "support monitor mode.",
+                    "",
+                    "External adapter required",
                 ],
             );
         }
@@ -5078,6 +5167,18 @@ impl App {
                     "",
                     "Run Hardware Detect",
                     "to select an interface.",
+                ],
+            );
+        }
+
+        if !check_monitor_mode_support(&active_interface) {
+            return self.show_message(
+                "Hardware Error",
+                [
+                    "Interface does not",
+                    "support monitor mode.",
+                    "",
+                    "External adapter required",
                 ],
             );
         }
@@ -8216,4 +8317,45 @@ pub fn restore_original_mac(interface: &str, original_mac: &str) -> bool {
         .output();
 
     result.map(|o| o.status.success()).unwrap_or(false)
+}
+
+#[cfg(target_os = "linux")]
+fn interface_wiphy(interface: &str) -> Option<String> {
+    let output = std::process::Command::new("iw")
+        .args(["dev", interface, "info"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for line in stdout.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("wiphy ") {
+            return Some(rest.trim().to_string());
+        }
+    }
+    None
+}
+
+#[cfg(target_os = "linux")]
+fn check_monitor_mode_support(interface: &str) -> bool {
+    if let Some(phy) = interface_wiphy(interface) {
+        return std::process::Command::new("iw")
+            .args(["phy", &format!("phy{}", phy), "info"])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).contains("monitor"))
+            .unwrap_or(false);
+    }
+    // Fallback
+    std::process::Command::new("iw")
+        .arg("list")
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).contains("monitor"))
+        .unwrap_or(false)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn check_monitor_mode_support(_interface: &str) -> bool {
+    true
 }

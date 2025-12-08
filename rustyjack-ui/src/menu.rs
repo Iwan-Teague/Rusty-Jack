@@ -143,6 +143,7 @@ impl MenuTree {
         nodes.insert("af", MenuNode::Static(system_menu));
         nodes.insert("ah", MenuNode::Static(loot_menu));
         nodes.insert("aw", MenuNode::Static(wifi_menu));
+        nodes.insert("aw", MenuNode::Static(wireless_menu));
         nodes.insert("awa", MenuNode::Static(wifi_access_menu));
         nodes.insert("awar", MenuNode::Static(wifi_access_recon_menu));
         nodes.insert("awao", MenuNode::Static(wifi_access_offence_menu));
@@ -196,10 +197,9 @@ fn main_menu() -> Vec<MenuEntry> {
     vec![
         MenuEntry::new("Operation Mode", MenuAction::Submenu("aops")),
         MenuEntry::new("Hardware Detect", MenuAction::HardwareDetect),
-        MenuEntry::new("Autopilot", MenuAction::Submenu("apt")),
-        MenuEntry::new("Wireless Access", MenuAction::Submenu("awa")),
-        MenuEntry::new("Connected Actions", MenuAction::Submenu("awc")),
+        MenuEntry::new("Wireless", MenuAction::Submenu("aw")),
         MenuEntry::new("Ethernet Recon", MenuAction::Submenu("aeth")),
+        MenuEntry::new("Autopilot", MenuAction::Submenu("apt")),
         MenuEntry::new("Obfuscation", MenuAction::Submenu("ao")),
         MenuEntry::new("Loot", MenuAction::Submenu("ah")),
         MenuEntry::new("Dashboards", MenuAction::ViewDashboards),
@@ -212,6 +212,14 @@ fn wifi_menu() -> Vec<MenuEntry> {
     vec![
         MenuEntry::new("Scan Networks", MenuAction::ScanNetworks),
         MenuEntry::new("Attack Pipelines", MenuAction::Submenu("ap")),
+    ]
+}
+
+fn wireless_menu() -> Vec<MenuEntry> {
+    vec![
+        MenuEntry::new("Get Connected", MenuAction::Submenu("awa")),
+        MenuEntry::new("Post Connection", MenuAction::Submenu("awc")),
+        MenuEntry::new("Hotspot", MenuAction::Hotspot),
     ]
 }
 
@@ -466,11 +474,11 @@ pub fn menu_title(id: &str) -> &'static str {
         "aea" => "Colors",
         "af" => "System",
         "ah" => "Loot",
-        "aw" => "WiFi Attacks",
-        "awa" => "Wireless Access",
+        "aw" => "Wireless",
+        "awa" => "Get Connected",
         "awar" => "Wireless Recon",
         "awao" => "Wireless Offence",
-        "awc" => "Connected Actions",
+        "awc" => "Post Connection",
         "awcr" => "Connected Recon",
         "awco" => "Connected Offence",
         "aeth" => "Ethernet Recon",

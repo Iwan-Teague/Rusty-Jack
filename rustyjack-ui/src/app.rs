@@ -2541,15 +2541,15 @@ impl App {
                     .get("mode")
                     .and_then(|v| v.as_str())
                     .unwrap_or("unknown");
+                let mut lines = Vec::new();
+                lines.push("Already running.".to_string());
+                lines.push(format!("Mode: {}", mode_text));
+                lines.push("".to_string());
+                lines.push("Stop it first, then".to_string());
+                lines.push("start a new run.".to_string());
                 return self.show_message(
                     "Autopilot",
-                    [
-                        "Already running.",
-                        &format!("Mode: {}", mode_text),
-                        "".to_string(),
-                        "Stop it first, then",
-                        "start a new run.",
-                    ],
+                    lines.iter().map(|s| s.as_str()),
                 );
             }
         }
@@ -2619,19 +2619,19 @@ impl App {
             .dispatch(Commands::Autopilot(AutopilotCommand::Start(args)))
         {
             Ok((msg, _data)) => {
+                let mut lines = Vec::new();
+                lines.push(msg);
+                lines.push(format!("Mode: {}", mode_label));
+                lines.push(format!("Iface: {}", active_interface));
+                lines.push(format!(
+                    "DNS spoof: {}",
+                    dns_choice.as_deref().unwrap_or("None")
+                ));
+                lines.push("".to_string());
+                lines.push("Toolbar shows AP status.".to_string());
                 self.show_message(
                     "Autopilot",
-                    [
-                        msg,
-                        format!("Mode: {}", mode_label),
-                        format!("Iface: {}", active_interface),
-                        format!(
-                            "DNS spoof: {}",
-                            dns_choice.as_deref().unwrap_or("None")
-                        ),
-                        "",
-                        "Toolbar shows AP status.",
-                    ],
+                    lines.iter().map(|s| s.as_str()),
                 )
             }
             Err(e) => self.show_message("Autopilot", [format!("Start failed: {}", e)]),

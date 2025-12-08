@@ -17,9 +17,10 @@ use chrono::Local;
 use rustyjack_core::cli::{
     Commands, DiscordCommand, DiscordSendArgs, DnsSpoofCommand, DnsSpoofStartArgs, EthernetCommand,
     EthernetDiscoverArgs, EthernetInventoryArgs, EthernetPortScanArgs, EthernetSiteCredArgs,
-    HardwareCommand, HotspotCommand, HotspotStartArgs, LootCommand, LootReadArgs, MitmCommand,
-    MitmStartArgs, NotifyCommand, SystemCommand, WifiCommand, WifiDeauthArgs, WifiProfileCommand,
-    WifiProfileConnectArgs, WifiProfileDeleteArgs, WifiRouteCommand,
+    AutopilotCommand, AutopilotMode, AutopilotStartArgs, HardwareCommand, HotspotCommand,
+    HotspotStartArgs, LootCommand, LootReadArgs, MitmCommand, MitmStartArgs, NotifyCommand,
+    SystemCommand, WifiCommand, WifiDeauthArgs, WifiDisconnectArgs, WifiProfileCommand,
+    WifiProfileConnectArgs, WifiProfileDeleteArgs, WifiRouteCommand, WifiRouteEnsureArgs,
     WifiScanArgs, WifiStatusArgs,
 };
 use rustyjack_core::InterfaceSummary;
@@ -274,6 +275,161 @@ impl App {
             Button::Key1 => ButtonAction::Refresh,
             Button::Key2 => ButtonAction::MainMenu,
             Button::Key3 => ButtonAction::Reboot,
+        }
+    }
+
+    fn show_wifi_status(&mut self) -> Result<()> {
+        let status = self.fetch_wifi_status()?;
+        let route = self.fetch_route_snapshot().ok();
+
+        let mut lines = Vec::new();
+        lines.push(format!(
+            "Connected: {}",
+            if status.connected { "YES" } else { "NO" }
+        ));
+        if let Some(ssid) = status.ssid {
+            lines.push(format!("SSID: {}", ssid));
+        }
+        if let Some(intf) = status.interface {
+            lines.push(format!("Iface: {}", intf));
+        }
+        if let Some(sig) = status.signal_dbm {
+            lines.push(format!("Signal: {} dBm", sig));
+        }
+        if let Some(rt) = route {
+            if let Some(gw) = rt.default_gateway {
+                lines.push(format!("Gateway: {}", gw));
+            }
+            if let Some(di) = rt.default_interface {
+                lines.push(format!("Default: {}", di));
+            }
+        }
+
+        if lines.len() == 1 {
+            lines.push("No WiFi info found".to_string());
+        }
+
+        self.show_message("WiFi Status", lines.iter().map(|s| s.as_str()))
+    }
+
+    fn disconnect_wifi(&mut self) -> Result<()> {
+        let active_interface = self.config.settings.active_network_interface.clone();
+        if active_interface.is_empty() {
+            return self.show_message("WiFi", ["No active interface set"]);
+        }
+        match self.core.dispatch(Commands::Wifi(WifiCommand::Disconnect(
+            WifiDisconnectArgs {
+                interface: Some(active_interface.clone()),
+            },
+        ))) {
+            Ok((msg, _)) => self.show_message("WiFi", [msg]),
+            Err(e) => self.show_message("WiFi", [format!("Disconnect failed: {}", e)]),
+        }
+    }
+
+    fn ensure_route(&mut self) -> Result<()> {
+        let active_interface = self.config.settings.active_network_interface.clone();
+        if active_interface.is_empty() {
+            return self.show_message("Route", ["No active interface set"]);
+        }
+
+        // Require a live connection to avoid breaking connectivity
+        let status = self.fetch_wifi_status()?;
+        if !status.connected {
+            return self.show_message(
+                "Route",
+                [
+                    "Not connected to WiFi.",
+                    "Connect first, then ensure",
+                    "default route.",
+                ],
+            );
+        }
+
+        let args = WifiRouteEnsureArgs {
+            interface: active_interface.clone(),
+        };
+
+        match self.ensure_route_for_interface(&active_interface) {
+            Ok(Some(msg)) => self.show_message("Route", [msg]),
+            Ok(None) => Ok(()),
+            Err(e) => self.show_message("Route", [format!("Route failed: {}", e)]),
+        }
+    }
+
+    fn ensure_route_for_interface(&mut self, interface: &str) -> Result<Option<String>> {
+        let args = WifiRouteEnsureArgs {
+            interface: interface.to_string(),
+        };
+
+        match self
+            .core
+            .dispatch(Commands::Wifi(WifiCommand::Route(WifiRouteCommand::Ensure(
+                args,
+            ))))
+        {
+            Ok((msg, _)) => Ok(Some(msg)),
+            Err(e) => {
+                self.show_message("Route", [format!("Route failed: {}", e)])?;
+                Ok(None)
+            }
+        }
+    }
+
+    fn apply_interface_isolation(&mut self, allowed: &[String]) -> Result<()> {
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = allowed;
+            return Ok(());
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            use std::collections::HashSet;
+
+            let allowed_set: HashSet<String> = allowed
+                .iter()
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string())
+                .collect();
+
+            if allowed_set.is_empty() {
+                return Ok(()); // Do not shut everything down if nothing is selected
+            }
+
+            let entries = match fs::read_dir("/sys/class/net") {
+                Ok(e) => e,
+                Err(_) => return Ok(()),
+            };
+
+            for entry in entries.flatten() {
+                let iface = entry.file_name().to_string_lossy().to_string();
+                if iface == "lo" {
+                    continue;
+                }
+                let is_allowed = allowed_set.contains(&iface);
+                let is_wireless =
+                    Path::new(&format!("/sys/class/net/{}/wireless", iface)).exists();
+
+                if is_allowed {
+                    let _ = Command::new("ip").args(["link", "set", &iface, "up"]).status();
+                    if is_wireless {
+                        if let Some(idx) = rfkill_index_for_interface(&iface) {
+                            let _ = Command::new("rfkill")
+                                .args(["unblock", &idx])
+                                .status();
+                        }
+                    }
+                } else {
+                    let _ = Command::new("ip").args(["link", "set", &iface, "down"]).status();
+                    if is_wireless {
+                        if let Some(idx) = rfkill_index_for_interface(&iface) {
+                            let _ = Command::new("rfkill").args(["block", &idx]).status();
+                        }
+                    }
+                }
+            }
+            Ok(())
         }
     }
 
@@ -847,6 +1003,12 @@ impl App {
             MenuAction::PmkidCapture => self.launch_pmkid_capture()?,
             MenuAction::CrackHandshake => self.launch_crack_handshake()?,
             MenuAction::KarmaAttack => self.launch_karma_attack()?,
+            MenuAction::WifiStatus => self.show_wifi_status()?,
+            MenuAction::WifiDisconnect => self.disconnect_wifi()?,
+            MenuAction::WifiEnsureRoute => self.ensure_route()?,
+            MenuAction::AutopilotStart(mode) => self.start_autopilot(mode)?,
+            MenuAction::AutopilotStop => self.stop_autopilot()?,
+            MenuAction::AutopilotStatus => self.show_autopilot_status()?,
             MenuAction::AttackPipeline(pipeline_type) => {
                 self.launch_attack_pipeline(pipeline_type)?
             }
@@ -1048,6 +1210,15 @@ impl App {
             TxPowerSetting::Medium => ("Medium (12dBm)", "medium"),
             TxPowerSetting::High => ("High (18dBm)", "high"),
             TxPowerSetting::Maximum => ("Maximum", "maximum"),
+        }
+    }
+
+    fn autopilot_mode_label(mode: AutopilotMode) -> &'static str {
+        match mode {
+            AutopilotMode::Standard => "Standard",
+            AutopilotMode::Aggressive => "Aggressive",
+            AutopilotMode::Stealth => "Stealth",
+            AutopilotMode::Harvest => "Harvest",
         }
     }
 
@@ -2230,15 +2401,25 @@ impl App {
                                     self.config.settings.active_network_interface =
                                         interface_name.clone();
                                     let config_path = self.root.join("gui_conf.json");
+                                    let mut lines = vec![format!("Set to: {}", interface_name)];
+
                                     if let Err(e) = self.config.save(&config_path) {
                                         self.show_message(
                                             "Error",
                                             [format!("Failed to save: {}", e)],
                                         )?;
                                     } else {
+                                        let _ = self.apply_interface_isolation(
+                                            &[interface_name.clone()],
+                                        );
+                                        if let Some(route_msg) =
+                                            self.ensure_route_for_interface(&interface_name)?
+                                        {
+                                            lines.push(route_msg);
+                                        }
                                         self.show_message(
                                             "Active Interface",
-                                            [format!("Set to: {}", interface_name)],
+                                            lines.iter().map(|s| s.as_str()),
                                         )?;
                                     }
                                     // Refresh the labels to show new active indicator
@@ -2294,6 +2475,247 @@ impl App {
             }
         }
         Ok(())
+    }
+
+    fn start_autopilot(&mut self, mode: AutopilotMode) -> Result<()> {
+        // Block noisy modes if user has selected Stealth operation mode
+        if self
+            .config
+            .settings
+            .operation_mode
+            .eq_ignore_ascii_case("stealth")
+            && mode != AutopilotMode::Stealth
+        {
+            return self.show_message(
+                "Autopilot",
+                [
+                    "Stealth mode active.",
+                    "Switch mode or run",
+                    "Stealth autopilot only.",
+                ],
+            );
+        }
+
+        let active_interface = self.config.settings.active_network_interface.clone();
+        if active_interface.is_empty() {
+            return self.show_message(
+                "Autopilot",
+                [
+                    "No active interface set",
+                    "",
+                    "Run Hardware Detect and",
+                    "select a wired interface.",
+                ],
+            );
+        }
+
+        if !self.is_ethernet_interface(&active_interface) {
+            return self.show_message(
+                "Autopilot",
+                [
+                    &format!("Interface: {}", active_interface),
+                    "Requires wired interface",
+                    "with link for reliability.",
+                ],
+            );
+        }
+
+        if !self.interface_has_carrier(&active_interface) {
+            return self.show_message(
+                "Autopilot",
+                [
+                    &format!("Interface: {}", active_interface),
+                    "Link is down / no cable.",
+                    "Plug Ethernet and retry.",
+                ],
+            );
+        }
+
+        // Refuse to start if already running
+        if let Ok((_, data)) = self
+            .core
+            .dispatch(Commands::Autopilot(AutopilotCommand::Status))
+        {
+            if data
+                .get("running")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+            {
+                let mode_text = data
+                    .get("mode")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
+                return self.show_message(
+                    "Autopilot",
+                    [
+                        "Already running.",
+                        &format!("Mode: {}", mode_text),
+                        "",
+                        "Stop it first, then",
+                        "start a new run.",
+                    ],
+                );
+            }
+        }
+
+        // Optional DNS spoof site
+        let dns_sites = self.list_dnsspoof_sites();
+        let mut dns_choice: Option<String> = None;
+        if !dns_sites.is_empty() {
+            let mut labels = vec!["No DNS spoof".to_string()];
+            labels.extend(dns_sites.iter().cloned());
+            if let Some(idx) = self.choose_from_menu("DNS Spoof (optional)", &labels)? {
+                if idx > 0 {
+                    dns_choice = dns_sites.get(idx - 1).cloned();
+                }
+            } else {
+                return Ok(()); // cancelled
+            }
+        }
+
+        let mode_label = Self::autopilot_mode_label(mode);
+        let confirm_lines = vec![
+            format!("Mode: {}", mode_label),
+            format!("Interface: {}", active_interface),
+            format!(
+                "DNS spoof: {}",
+                dns_choice.as_deref().unwrap_or("None")
+            ),
+            "".to_string(),
+            "Start autopilot?".to_string(),
+        ];
+        self.show_message(
+            "Autopilot",
+            confirm_lines.iter().map(|s| s.as_str()),
+        )?;
+        let confirm = self.choose_from_list(
+            "Confirm",
+            &["Start".to_string(), "Cancel".to_string()],
+        )?;
+        if confirm != Some(0) {
+            return Ok(());
+        }
+
+        // Apply identity hardening if enabled
+        self.apply_identity_hardening();
+
+        self.show_progress(
+            "Autopilot",
+            [
+                &format!("Starting {}", mode_label),
+                &format!("Interface: {}", active_interface),
+            ],
+        )?;
+
+        let args = AutopilotStartArgs {
+            mode,
+            interface: Some(active_interface.clone()),
+            scan: true,
+            mitm: true,
+            responder: true,
+            dns_spoof: dns_choice.clone(),
+            duration: 0,
+            check_interval: 30,
+        };
+
+        match self
+            .core
+            .dispatch(Commands::Autopilot(AutopilotCommand::Start(args)))
+        {
+            Ok((msg, _data)) => {
+                self.show_message(
+                    "Autopilot",
+                    [
+                        msg,
+                        format!("Mode: {}", mode_label),
+                        format!("Iface: {}", active_interface),
+                        format!(
+                            "DNS spoof: {}",
+                            dns_choice.as_deref().unwrap_or("None")
+                        ),
+                        "",
+                        "Toolbar shows AP status.",
+                    ],
+                )
+            }
+            Err(e) => self.show_message("Autopilot", [format!("Start failed: {}", e)]),
+        }
+    }
+
+    fn stop_autopilot(&mut self) -> Result<()> {
+        match self.core.dispatch(Commands::Autopilot(AutopilotCommand::Stop)) {
+            Ok((msg, _)) => self.show_message("Autopilot", [msg]),
+            Err(e) => self.show_message("Autopilot", [format!("Stop failed: {}", e)]),
+        }
+    }
+
+    fn show_autopilot_status(&mut self) -> Result<()> {
+        match self
+            .core
+            .dispatch(Commands::Autopilot(AutopilotCommand::Status))
+        {
+            Ok((msg, data)) => {
+                let running = data
+                    .get("running")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let mode = data
+                    .get("mode")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("none");
+                let phase = data
+                    .get("phase")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("idle");
+                let elapsed = data
+                    .get("elapsed_secs")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                let hosts = data
+                    .get("hosts_found")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                let creds = data
+                    .get("credentials_captured")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                let packets = data
+                    .get("packets_captured")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+
+                let mut lines = vec![
+                    format!("Running: {}", if running { "YES" } else { "NO" }),
+                    format!("Mode: {}", mode),
+                    format!("Phase: {}", phase),
+                    format!("Elapsed: {}s", elapsed),
+                    format!("Hosts: {}", hosts),
+                    format!("Creds: {}", creds),
+                    format!("Packets: {}", packets),
+                ];
+
+                if let Some(errs) = data.get("errors").and_then(|v| v.as_array()) {
+                    if !errs.is_empty() {
+                        lines.push("Errors:".to_string());
+                        for err in errs.iter().take(3) {
+                            if let Some(e) = err.as_str() {
+                                lines.push(shorten_for_display(e, 18));
+                            }
+                        }
+                        if errs.len() > 3 {
+                            lines.push(format!("+{} more", errs.len() - 3));
+                        }
+                    }
+                }
+
+                lines.push("".to_string());
+                lines.push("Select=Close".to_string());
+                lines.push("Back=Close".to_string());
+
+                self.show_message("Autopilot", lines.iter().map(|s| s.as_str()))
+            }
+            Err(e) => self.show_message("Autopilot", [format!("Status error: {}", e)]),
+        }
     }
 
     fn scan_wifi_networks(&mut self) -> Result<()> {
@@ -8009,6 +8431,16 @@ impl App {
                     .get("running")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
+                let ap_iface = data
+                    .get("ap_interface")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let upstream_iface = data
+                    .get("upstream_interface")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
                 let current_ssid = data
                     .get("ssid")
                     .and_then(|v| v.as_str())
@@ -8019,6 +8451,16 @@ impl App {
                     .and_then(|v| v.as_str())
                     .unwrap_or(&self.config.settings.hotspot_password)
                     .to_string();
+
+                // Enforce isolation: keep active + hotspot interfaces alive
+                let mut allow_list = vec![self.config.settings.active_network_interface.clone()];
+                if !ap_iface.is_empty() {
+                    allow_list.push(ap_iface.clone());
+                }
+                if !upstream_iface.is_empty() {
+                    allow_list.push(upstream_iface.clone());
+                }
+                let _ = self.apply_interface_isolation(&allow_list);
 
                 let mut lines = vec![
                     format!("SSID: {}", current_ssid),
@@ -8174,6 +8616,15 @@ impl App {
                                 let config_path = self.root.join("gui_conf.json");
                                 let _ = self.config.save(&config_path);
 
+                                // Keep AP/upstream/active interfaces alive, block others
+                                let mut allow_list = vec![
+                                    self.config.settings.active_network_interface.clone(),
+                                    ap_iface.clone(),
+                                    upstream_iface.clone(),
+                                ];
+                                allow_list.retain(|s| !s.is_empty());
+                                let _ = self.apply_interface_isolation(&allow_list);
+
                                 self.show_message(
                                     "Hotspot started",
                                     [
@@ -8271,6 +8722,27 @@ fn randomize_mac_with_reconnect(interface: &str) -> anyhow::Result<rustyjack_eva
 
     renew_dhcp_and_reconnect(interface);
     Ok(state)
+}
+
+#[cfg(target_os = "linux")]
+fn rfkill_index_for_interface(interface: &str) -> Option<String> {
+    let phy = Path::new("/sys/class/net").join(interface).join("phy80211");
+    if !phy.exists() {
+        return None;
+    }
+    let entries = fs::read_dir(phy).ok()?;
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.starts_with("rfkill") {
+            return Some(name.trim_start_matches("rfkill").to_string());
+        }
+    }
+    None
+}
+
+#[cfg(not(target_os = "linux"))]
+fn rfkill_index_for_interface(_: &str) -> Option<String> {
+    None
 }
 
 fn shorten_for_display(value: &str, max_len: usize) -> String {

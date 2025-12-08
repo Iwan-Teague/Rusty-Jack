@@ -29,6 +29,14 @@ pub enum MenuAction {
     InstallWifiDrivers,
     /// Karma attack - respond to all probes
     KarmaAttack,
+    /// WiFi status/route actions (post-connection)
+    WifiStatus,
+    WifiDisconnect,
+    WifiEnsureRoute,
+    /// Autopilot control
+    AutopilotStart(rustyjack_core::cli::AutopilotMode),
+    AutopilotStop,
+    AutopilotStatus,
     /// Attack pipelines - automated sequences
     AttackPipeline(PipelineType),
     /// Toggle MAC randomization on/off
@@ -136,7 +144,11 @@ impl MenuTree {
         nodes.insert("ah", MenuNode::Static(loot_menu));
         nodes.insert("aw", MenuNode::Static(wifi_menu));
         nodes.insert("awa", MenuNode::Static(wifi_access_menu));
+        nodes.insert("awar", MenuNode::Static(wifi_access_recon_menu));
+        nodes.insert("awao", MenuNode::Static(wifi_access_offence_menu));
         nodes.insert("awc", MenuNode::Static(wifi_connected_menu));
+        nodes.insert("awcr", MenuNode::Static(wifi_connected_recon_menu));
+        nodes.insert("awco", MenuNode::Static(wifi_connected_offence_menu));
         nodes.insert("aops", MenuNode::Static(operation_mode_menu));
         nodes.insert("as", MenuNode::Static(settings_menu));
         nodes.insert("asl", MenuNode::Static(logs_menu));
@@ -149,6 +161,7 @@ impl MenuTree {
         nodes.insert("atx", MenuNode::Static(tx_power_menu));
         nodes.insert("aeth", MenuNode::Static(ethernet_menu));
         nodes.insert("aethp", MenuNode::Static(ethernet_pipeline_menu));
+        nodes.insert("apt", MenuNode::Static(autopilot_menu));
         Self { nodes }
     }
 
@@ -183,6 +196,7 @@ fn main_menu() -> Vec<MenuEntry> {
     vec![
         MenuEntry::new("Operation Mode", MenuAction::Submenu("aops")),
         MenuEntry::new("Hardware Detect", MenuAction::HardwareDetect),
+        MenuEntry::new("Autopilot", MenuAction::Submenu("apt")),
         MenuEntry::new("Wireless Access", MenuAction::Submenu("awa")),
         MenuEntry::new("Connected Actions", MenuAction::Submenu("awc")),
         MenuEntry::new("Ethernet Recon", MenuAction::Submenu("aeth")),
@@ -203,22 +217,51 @@ fn wifi_menu() -> Vec<MenuEntry> {
 
 fn wifi_access_menu() -> Vec<MenuEntry> {
     vec![
-        MenuEntry::new("Scan Networks", MenuAction::ScanNetworks),
-        MenuEntry::new("Attack Pipelines", MenuAction::Submenu("ap")),
-        MenuEntry::new("Deauth Attack", MenuAction::DeauthAttack),
-        MenuEntry::new("Evil Twin AP", MenuAction::EvilTwinAttack),
-        MenuEntry::new("Karma Attack", MenuAction::KarmaAttack),
-        MenuEntry::new("PMKID Capture", MenuAction::PmkidCapture),
-        MenuEntry::new("Probe Sniff", MenuAction::ProbeSniff),
-        MenuEntry::new("Crack Handshake", MenuAction::CrackHandshake),
+        MenuEntry::new("Recon", MenuAction::Submenu("awar")),
+        MenuEntry::new("Offence", MenuAction::Submenu("awao")),
+        MenuEntry::new("Connect Network", MenuAction::ConnectKnownNetwork),
+        MenuEntry::new("Hotspot", MenuAction::Hotspot),
     ]
 }
 
 fn wifi_connected_menu() -> Vec<MenuEntry> {
     vec![
-        MenuEntry::new("Connect Network", MenuAction::ConnectKnownNetwork),
-        MenuEntry::new("Hotspot", MenuAction::Hotspot),
+        MenuEntry::new("Recon", MenuAction::Submenu("awcr")),
+        MenuEntry::new("Offence", MenuAction::Submenu("awco")),
+        MenuEntry::new("Ensure Route", MenuAction::WifiEnsureRoute),
+        MenuEntry::new("Disconnect WiFi", MenuAction::WifiDisconnect),
     ]
+}
+
+fn wifi_access_recon_menu() -> Vec<MenuEntry> {
+    vec![
+        MenuEntry::new("Scan Networks", MenuAction::ScanNetworks),
+        MenuEntry::new("Probe Sniff", MenuAction::ProbeSniff),
+        MenuEntry::new("PMKID Capture", MenuAction::PmkidCapture),
+    ]
+}
+
+fn wifi_access_offence_menu() -> Vec<MenuEntry> {
+    vec![
+        MenuEntry::new("Attack Pipelines", MenuAction::Submenu("ap")),
+        MenuEntry::new("Deauth Attack", MenuAction::DeauthAttack),
+        MenuEntry::new("Evil Twin AP", MenuAction::EvilTwinAttack),
+        MenuEntry::new("Karma Attack", MenuAction::KarmaAttack),
+        MenuEntry::new("Crack Handshake", MenuAction::CrackHandshake),
+    ]
+}
+
+fn wifi_connected_recon_menu() -> Vec<MenuEntry> {
+    vec![
+        MenuEntry::new("WiFi Status", MenuAction::WifiStatus),
+    ]
+}
+
+fn wifi_connected_offence_menu() -> Vec<MenuEntry> {
+    vec![MenuEntry::new(
+        "No offensive actions",
+        MenuAction::ShowInfo,
+    )]
 }
 
 fn ethernet_menu() -> Vec<MenuEntry> {
@@ -262,6 +305,30 @@ fn pipeline_menu() -> Vec<MenuEntry> {
             "Full Pentest",
             MenuAction::AttackPipeline(PipelineType::FullPentest),
         ),
+    ]
+}
+
+fn autopilot_menu() -> Vec<MenuEntry> {
+    use rustyjack_core::cli::AutopilotMode;
+    vec![
+        MenuEntry::new(
+            "Start Standard",
+            MenuAction::AutopilotStart(AutopilotMode::Standard),
+        ),
+        MenuEntry::new(
+            "Start Aggressive",
+            MenuAction::AutopilotStart(AutopilotMode::Aggressive),
+        ),
+        MenuEntry::new(
+            "Start Stealth",
+            MenuAction::AutopilotStart(AutopilotMode::Stealth),
+        ),
+        MenuEntry::new(
+            "Start Harvest",
+            MenuAction::AutopilotStart(AutopilotMode::Harvest),
+        ),
+        MenuEntry::new("Stop Autopilot", MenuAction::AutopilotStop),
+        MenuEntry::new("Status / Refresh", MenuAction::AutopilotStatus),
     ]
 }
 
@@ -401,9 +468,14 @@ pub fn menu_title(id: &str) -> &'static str {
         "ah" => "Loot",
         "aw" => "WiFi Attacks",
         "awa" => "Wireless Access",
+        "awar" => "Wireless Recon",
+        "awao" => "Wireless Offence",
         "awc" => "Connected Actions",
+        "awcr" => "Connected Recon",
+        "awco" => "Connected Offence",
         "aeth" => "Ethernet Recon",
         "aethp" => "Ethernet Pipelines",
+        "apt" => "Autopilot",
         "as" => "Settings",
         "asl" => "Logs",
         "asd" => "Discord",

@@ -1,571 +1,209 @@
-<p align="center">
-  <img src="https://img.shields.io/badge/platform-Raspberry%20Pi-red?style=flat-square&logo=raspberry-pi">
-  <img src="https://img.shields.io/badge/language-Rust-orange?style=flat-square&logo=rust">
-  <img src="https://img.shields.io/badge/LCD-ST7735%20128x128-blue?style=flat-square">
-  <img src="https://img.shields.io/badge/license-Educational%20Use-green?style=flat-square">
-</p>
+# Rustyjack
 
-<div align="center">
-  <h1>Rustyjack</h1>
+Portable Raspberry Pi Zero 2 W network toolkit with a Waveshare 1.44" LCD + joystick UI. Written in Rust, shipped as a root systemd service for on-device use.
 
-  <img src="img/rustyjack.bmp" alt="Rustyjack Logo" width="300"/>
-
-  <p>
-    <strong>Portable Network Offensive Security Toolkit</strong><br>
-    100% Rust • LCD Interface • Raspberry Pi<br>
-    <em>Pure Rust offensive security toolkit</em>
-  </p>
-
-  <p><strong>WARNING: LEGAL DISCLAIMER</strong></p>
-
-  <p>This tool is for <strong>authorized security testing and educational purposes ONLY</strong>.</p>
-
-  <p>Unauthorized access to computer systems is <strong>ILLEGAL</strong> under:</p>
-  <p>Computer Fraud and Abuse Act (USA)<br>
-  Computer Misuse Act (UK)<br>
-  Similar laws worldwide</p>
-
-  <p><strong>Always obtain written permission before testing any network or system.</strong></p>
-
-  <p>The authors accept <strong>NO LIABILITY</strong> for misuse or illegal activities.<br>
-  You are <strong>solely responsible</strong> for your actions.</p>
-
-</div>
-
----
+> Authorized testing and education only. Verify permissions before running any operation.
 
 ## Table of Contents
 
-- [What is Rustyjack?](#what-is-rustyjack)
-- [Features](#features)
-- [Hardware Requirements](#hardware-requirements)
+- [Project Overview](#project-overview)
+- [Architecture](#architecture)
+- [Hardware & Wiring](#hardware--wiring)
+- [Controls](#controls)
+- [UI Features](#ui-features)
 - [Installation](#installation)
-- [Usage](#usage)
-- [Loot & Data](#loot--data)
+- [Configuration & Paths](#configuration--paths)
+- [Usage Tips](#usage-tips)
 - [Troubleshooting](#troubleshooting)
-- [Credits](#credits)
+- [Legal](#legal)
 
----
+## Project Overview
 
-## What is Rustyjack?
+- Linux-only UI (compile guard in `rustyjack-ui/src/main.rs`); designed for a Pi Zero 2 W with an Ethernet HAT.
+- Runs as `rustyjack.service` (root) with `RUSTYJACK_DISPLAY_ROTATION=landscape` by default.
+- Status overlay shows CPU temp/load, memory, disk, uptime, target SSID/BSSID/channel, active interface, current/original MAC, and autopilot status if the CLI autopilot is running.
+- Built-in Cypress/Infineon radio cannot monitor/inject; all wireless attacks require an external adapter that supports monitor + injection.
 
-**Rustyjack** is a self-contained offensive security platform that runs on a Raspberry Pi with an LCD screen. It provides penetration testing tools accessible through a simple joystick interface—no keyboard, monitor, or external computer needed.
-
-### What Makes It Special?
-
-- **100% Rust** - Standalone Rust toolkit
-- **Standalone** - LCD screen, buttons, all tools built-in
-- **Portable** - Pocket-sized, battery-powered option
-- **Complete** - Recon, credential capture, phishing, and other integrated tools
-- **On-device hotspot** - Start a NATed hotspot with configurable SSID/password
-
-### Architecture
-
-A high-level, current view of the project's structure. Rustyjack is split into two focused components — a compact UI for the on-device display and a separate core that runs orchestration and long-lived tasks.
+## Architecture
 
 ```
-┌────────────────────────────────────────┐
-│               Rustyjack                │
-├──────────────┬─────────────────────────┤
-│ rustyjack-ui │     rustyjack-core      │
-│ (LCD + GPIO) │     (Orchestration)     │
-│ - Menu / UX  │ - Task runner / CLI     │
-│ - Display    │ - Loot management       │
-│ - Button I/O │ - System actions        │
-└──────────────┴─────────────────────────┘
-
-UI → dispatches commands to → Core → interacts with OS and filesystem
-
-Notes:
-- The UI process (`rustyjack-ui`) owns the display, button handling and menu presentation.
-- The core process (`rustyjack-core`) executes longer-running actions, maintains loot, and performs system operations. It calls:
-  - `rustyjack-wireless` for nl80211/monitor/injection/handshakes
-  - `rustyjack-evasion` for MAC randomization and TX power helpers
-  - `rustyjack-ethernet` for ICMP sweep + TCP port scan
+rustyjack-ui/          LCD UI: menus, rendering, GPIO buttons, dashboards
+rustyjack-core/        Orchestrator CLI: Wi-Fi/Ethernet ops, hotspot, MITM, loot, autopilot, system update
+rustyjack-wireless/    Native wireless ops (nl80211 monitor/injection, deauth, PMKID, karma, evil twin, hotspot, cracking helpers)
+rustyjack-evasion/     MAC/hostname evasion, vendor-aware MAC generation, TX power/passive helpers
+rustyjack-ethernet/    LAN discovery, TCP port scan, banner grabs, inventory helpers
+DNSSpoof/              Captive portal templates for DNS spoof/MITM pipelines
+scripts/               Wi-Fi driver installer + USB hotplug helper (udev rule included)
+wordlists/             Bundled password lists for handshake cracking
+img/                   Splash assets for the LCD (`rustyjack.png`)
+rustyjack.service      Systemd unit (root, sets display rotation and RUSTYJACK_ROOT)
+install_rustyjack*.sh  Production/dev installers for Pi OS targets
 ```
 
----
+Runtime directories are created by the installers:
+`loot/` (Wireless, Ethernet, Reports), `wifi/profiles/`, `DNSSpoof/captures/`, and `gui_conf.json` (pins, colors, settings).
 
-## Features
+## Hardware & Wiring
 
+- Target: Raspberry Pi Zero 2 W + Ethernet HAT + Waveshare 1.44" LCD HAT (ST7735S, 128x128).
+- Display rotation: `RUSTYJACK_DISPLAY_ROTATION=landscape` (default); set to `portrait` to rotate back.
+- Backlight: BCM24 held high by the UI; you can test with `gpioset gpiochip0 24=1`.
+- Buttons are active-low; installers add GPIO pull-ups via `/boot/firmware/config.txt` (or `/boot/config.txt`): `gpio=6,19,5,26,13,21,20,16=pu`.
 
-### Loot & Data
+**Display pins (from `rustyjack-ui/src/display.rs`):**
 
-**On-device loot viewer:**
-- Browse captured output and logs (Wireless and Ethernet)
-- View device-generated logs and export files
-- Navigate and open files using LCD buttons
-- Wireless loot is grouped per target under `loot/Wireless/<target>/` (target = SSID, else BSSID). Files are timestamped and prefixed by type (e.g., `handshake_<target>_<timestamp>.pcap`, `log_deauth_<target>_<timestamp>.txt`).
-- Ethernet loot lives under `loot/Ethernet/` (LAN discovery / port scans, timestamped).
+| Signal | BCM GPIO |          Notes          |
+|--------|----------|-------------------------|
+| DC     | 25       | Data/command select     |
+| RST    | 27       | Reset (active low)      |
+| BL     | 24       | Backlight control       |
+| SPI    | spidev0.0 (SCLK 11, MOSI 10, CS 8) | 
 
-**Ethernet recon:**
-- LAN discovery on the wired interface (ARP + ICMP, TTL-based OS hints)
-- Quick TCP connect port scan (defaults to gateway) with basic banner grabs
+**Input pins (defaults from `rustyjack-ui/src/config.rs`):**
 
-**Hotspot:**
-- Start/stop a NATed hotspot (hostapd + dnsmasq) from the UI
-- Defaults to SSID/password `rustyjack`, with quick randomize buttons
-- Choose upstream (internet) interface and AP interface at launch
+| Control | BCM GPIO |           Purpose           |
+|---------|----------|-----------------------------|
+| UP      | 6        | Joystick up                 |
+| DOWN    | 19       | Joystick down               |
+| LEFT    | 5        | Back                        |
+| RIGHT   | 26.      | Select/forward              |
+| PRESS   | 13       | Center press (select)       |
+| KEY1    | 21       | Refresh/redraw              |
+| KEY2    | 20       | Jump to main menu           |
+| KEY3    | 16       | Reboot confirmation dialog  |
 
-**Discord integration:**
-- Manual upload of ZIP loot archives via the UI when configured
-- Formatted embeds for notifications and metadata
-- File attachments up to configured size limits
+Pins and colors can be customized in `gui_conf.json`; defaults are created automatically.
 
+## Controls
 
-### User Interface
+|        Button        |                     Action in UI                     |
+|----------------------|------------------------------------------------------|
+| Up / Down            | Move selection                                       |
+| Left                 | Back/exit dialog                                     |
+| Right / Center press | Select/confirm                                       |
+| Key1                 | Refresh current view                                 |
+| Key2                 | Jump to main menu                                    |
+| Key3                 | Open reboot confirmation (requires explicit confirm) |
 
-**Interface layout:**
-- Single list-based menu with status toolbar (no grid/carousel modes)
-- Key1 refreshes the current view, Key2 jumps to the main menu, Key3 opens reboot confirmation
+## UI Features
 
-**Customization and system:**
-- RGB color themes (background, border, text, selection)
-- Save/refresh configuration
-- Temperature and CPU overlay on the toolbar
-- System menu currently exposes restart
+### System, modes, and dashboards
 
----
+- **Operation Mode**: Stealth (blocks active ops, forces MAC/hostname randomization + 1 dBm TX), Default, Aggressive (max TX), Custom (keep manual toggles).
+- **Dashboards**: Cycle System Health, Target Status, and MAC Status views from the main menu.
+- **Colors**: Pick palette entries directly from the UI.
+- **Logs toggle**: Enables/disables logging by setting/clearing `RUSTYJACK_LOGS_DISABLED`; **Purge Logs** removes log files under loot/Responder.
+- **System**: Restart, Secure Shutdown (best-effort RAM wipe then poweroff), Complete Purge (removes binaries, service, loot, udev helpers; exits UI).
+- **Wi-Fi driver installer**: Runs `scripts/wifi_driver_installer.sh`, detecting USB chipsets and installing/compiling drivers; progress is shown in the UI (`/var/log/rustyjack_wifi_driver.log`).
+- **Autopilot (main menu)**: Start Standard/Aggressive/Stealth/Harvest runs or stop/view status. Requires an active wired interface with link; blocked when Operation Mode is Stealth unless you choose the Stealth autopilot. Optional DNS spoof site selection when starting. Toolbar shows `AP:<mode>` while running.
+- **Wireless menus split**: Pre-connection (`Wireless Access`) now has Recon (scan/probe/PMKID) and Offence (pipelines/deauth/evil twin/karma/crack) folders, plus Connect/Hotspot. Post-connection (`Connected Actions`) has Recon (status), an Offence placeholder, and top-level Ensure Route + Disconnect. Selecting an active interface in Hardware Detect enforces the default route and brings other interfaces down; non-selected Wi-Fi adapters are rfkill-blocked. Hotspot temporarily unblocks/uses its AP + upstream interfaces while running.
 
-## Hardware Requirements
+### Hardware Detect
 
-### Required Components
+- Calls `HardwareCommand::Detect` to list wired and wireless interfaces with state and IP.
+- Lets you set the active interface used by Wi-Fi/Ethernet features (saved to `gui_conf.json`).
 
-| Item | Specification | Purpose |
-|------|---------------|---------|
-| **Raspberry Pi** | Zero 2 W (recommended)<br>or Pi 4 / Pi 5 | Main computer |
-| **LCD HAT** | Waveshare 1.44" LCD HAT<br>ST7735, 128×128, SPI | Display + buttons |
-| **MicroSD Card** | 16GB+ (Class 10) | Operating system |
-| **Power Supply** | 5V 2.5A USB-C/Micro-USB | Power |
+### Wireless Access (external monitor/injection adapter required)
 
-### Optional Components
+- **Scan Networks**: Shows SSID/BSSID/channel/signal, lets you set the target (SSID/BSSID/channel saved). Hidden SSIDs are not configurable via the UI. Also allows connecting to a saved profile if one matches the SSID.
+- **Connect Known Network**: Lists `wifi/profiles/*.json` (connect or delete). The UI does not create new profiles; edit JSON or use the core CLI to add them.
+- **Deauth Attack**: 120s run with handshake capture, progress + cancel, writes PCAP/log/JSON to `loot/Wireless/<target>/`.
+- **PMKID Capture**: Targeted (if a target is set) or passive capture with durations 30/60s.
+- **Probe Sniff**: 30/60/300s channel-hopping probe capture; shows total probes, unique clients/networks, and top SSIDs.
+- **Karma Attack**: Responds to probes (2/5/10 minute options) with optional fake AP using the same interface.
+- **Evil Twin Attack**: Open AP impersonation of the selected target (5 minutes). Reports connected clients, handshakes, credentials, loot directory, and duration.
+- **Crack Handshake**: Uses JSON handshake exports in `loot/Wireless`; dictionaries include quick (common + SSID-derived), SSID patterns only, and bundled `wordlists/wifi_common.txt` + `wordlists/common_top.txt`.
+- **Attack Pipelines** (blocked in Stealth except Stealth Recon):
+  - *Get WiFi Password*: Scan -> targeted PMKID -> deauth/handshake capture -> quick crack.
+  - *Mass Capture*: Scan twice (hop) -> PMKID harvest -> probe sniff for clients.
+  - *Stealth Recon*: Randomize MAC -> 1 dBm TX -> passive sniff (no TX).
+  - *Credential Harvest*: Probe sniff -> Karma -> Evil Twin open portal -> captive wait.
+  - *Full Pentest*: MAC randomize + passive recon -> scan -> PMKID harvest -> deauth -> Karma -> quick crack.
+  - Pipeline loot is copied to `loot/Wireless/<target>/pipelines/<timestamp>/` for artifacts created after the start time.
+- **Passive Recon**: UI-only informational dialog today (no capture is launched).
+- **Hotspot** (Wireless Access menu): Select upstream + AP interfaces from detected hardware, start/stop hostapd+dnsmasq, randomize SSID/password (`rustyjack_wireless::random_*`). Status view shows running SSID/password and lets you turn it off.
 
-| Item | Purpose |
-|------|---------|
-| **Ethernet HAT** | 3 USB + 1 Ethernet (Pi Zero) |
-| **Battery Pack** | Portable power |
-| **USB Storage / Drive** | Attach external storage for backup or loot export |
+### Obfuscation & Identity
 
-### Pin Configuration
+- **MAC controls**: Auto MAC toggle, Randomize Now (vendor-aware: reuses interface OUI when possible, sets locally administered bit, renews DHCP and signals `wpa_cli`/`nmcli`), Set Vendor MAC (pick from `rustyjack-evasion` vendor table), Restore MAC (uses saved original or hardware address).
+- **Hostname**: Auto toggle + Randomize Now (via `SystemCommand::RandomizeHostname`).
+- **TX Power**: Stealth 1 dBm, Low 5 dBm, Medium 12 dBm, High 18 dBm, Maximum (via `iw`/`iwconfig`).
+- **Passive mode toggle**: Stores preference (used for mode presets); Passive Recon action is informational.
 
-**Waveshare 1.44" LCD HAT Pinout:**
+### Ethernet Recon (active interface must be wired and have link)
 
-| Component | GPIO Pin | Function |
-|-----------|----------|----------|
-| LCD Data/Command | GPIO 25 | DC (data/command select) |
-| LCD Reset | GPIO 27 | RST (hardware reset) |
-| LCD Backlight | GPIO 24 | BL (backlight control) |
-| LCD SPI | `/dev/spidev0.0` | Data transfer |
-| Joystick Up | GPIO 6 | Button input |
-| Joystick Down | GPIO 19 | Button input |
-| Joystick Left | GPIO 5 | Button input |
-| Joystick Right | GPIO 26 | Button input |
-| Joystick Press | GPIO 13 | Center button |
-| Key 1 | GPIO 21 | Refresh current view |
-| Key 2 | GPIO 20 | Return to main menu |
-| Key 3 | GPIO 16 | Reboot confirmation |
+- **LAN Discovery**: ICMP/ARP sweep with TTL OS hints; saves loot path and host list.
+- **Port Scan**: TCP connect scan (defaults to gateway if no target) with banner grabs; timeout presets 0.5/1/2/5s per port; saves loot/banners.
+- **Device Inventory**: mDNS/LLMNR/NetBIOS/WSD probes + port data; saves inventory JSON/text to loot.
+- **MITM Capture**: ARP spoof + tcpdump PCAP under `loot/Ethernet/<label>/`; optional DNS spoof using `DNSSpoof/sites/<site>` templates; shows victim counts/pcap paths. **MITM Status** tracks visit/credential logs for the chosen site; **Stop MITM/DNS** tears down both.
+- **Site Credential Capture pipeline**: Classifies "human" hosts, ARP poisons up to the chosen cap, launches DNS spoof site, captures PCAP/visit/credential logs; loot and PCAP paths are reported.
 
-**Wireless radios:** The built-in Pi Zero 2 W radio (CYW43436) supports managed/AP only (no monitor/injection). Deauth/handshake/evil twin/Karma require an external USB adapter that supports monitor + injection (e.g., AR9271/ath9k_htc, MT7612U, RTL8812AU with driver).
+### Loot, reports, and export
 
-**All pins configured in:** `/root/Rustyjack/gui_conf.json`
+- **Loot browser**: Navigate `loot/Wireless` and `loot/Ethernet` targets, drill into folders, and view files with a scrollable viewer.
+- **Reports**: Builds combined Ethernet/Wi-Fi report to `loot/Reports/<network>/report_<ts>.txt` (summaries, insights, next steps, artifact sweep, MAC usage notes).
+- **Discord upload**: Zips `loot/`, `loot/Reports/`, and `Responder/logs` into a temp archive and posts to the webhook in `discord_webhook.txt`.
+- **Transfer to USB**: Copies loot and Responder logs to `Rustyjack_Loot` on the first writable USB block device mount.
+- **Logs toggle/purge**: Logging can be disabled globally; Purge Logs removes `.log` files and log-like artifacts under loot/Responder.
 
----
+### CLI-only extras (via `rustyjack-core`)
 
-## Button controls
-
-The on-HAT buttons and joystick map directly to menu navigation and actions. Below is a concise mapping of logical controls (and the GPIO pins used — see the Pin Configuration table above).
-
-- **Up / Down** (Joystick Up / Down) — Navigate lists and menus.
-- **Left** (Joystick Left) — Back / return to previous menu.
-- **Right** (Joystick Right) — Select / activate highlighted item.
-- **Center press** (Joystick Press) — Confirm / secondary select.
-- **Key 1** — Refresh/redraw the current view.
-- **Key 2** — Jump directly to the main menu.
-- **Key 3** — Open reboot confirmation (requires explicit confirmation).
-
-How these controls behave:
-- Short-press Right or Center confirms selections and triggers actions.
-- Left always behaves as a 'Back' while on dialogs or submenus.
-- Key 1 refreshes the current screen content.
-- Key 2 exits to the main menu.
-- Key 3 asks for reboot confirmation before proceeding.
-
-> Tip: button behaviour and pin mapping can be customized by editing `gui_conf.json` (see `config` module in the UI source).
-
-
----
+Responder on/off, DNS spoof start/stop, reverse shell launcher, and transparent bridge start/stop exist in the core CLI but are not exposed as LCD menu items.
 
 ## Installation
 
-### Part 1: Flash Operating System
+**Requirements**
 
-**1. Download Raspberry Pi Imager**
+- Raspberry Pi OS Lite (32/64-bit) on a Pi Zero 2 W (or Pi 4/5).
+- External Wi-Fi adapter with monitor + injection for wireless attacks.
+- Root privileges (systemd service runs as root; wireless ops need CAP_NET_ADMIN/RAW).
 
-Download from: https://www.raspberrypi.com/software/
+**Steps**
 
-**2. Configure in Imager**
+1. Flash Raspberry Pi OS Lite and enable SSH if needed.
+2. SSH to the Pi, become root: `sudo su -`.
+3. Clone the project: `git clone https://github.com/Iwan-Teague/Rusty-Jack.git Rustyjack && cd Rustyjack`.
+4. Run the installer: `chmod +x install_rustyjack.sh && ./install_rustyjack.sh`
+   - Installs packages: build-essential, pkg-config, libssl-dev, DKMS toolchain, `nmap`, `ncat`, `tcpdump`, `arp-scan`, `dsniff`, `ettercap-text-only`, `php`, `procps`, `iproute2`, `isc-dhcp-client`, `network-manager`, `wireless-tools`, `wpa_supplicant`, `iw`, `hostapd`, `dnsmasq`, `iptables`, firmware for Realtek/Atheros/Ralink, git, i2c-tools, curl.
+   - Enables I2C/SPI overlays, `dtoverlay=spi0-2cs`, and GPIO pull-ups for all buttons.
+   - Ensures ~2 GB swap for compilation, builds `rustyjack-ui` (release), installs to `/usr/local/bin/`.
+   - Creates `loot/{Wireless,Ethernet,Reports}`, `wifi/profiles/sample.json`, and keeps WLAN interfaces up.
+   - Installs Wi-Fi driver helper scripts + udev rule, sets `RUSTYJACK_ROOT`, installs/enables `rustyjack.service` (root, landscape rotation), starts the service, and reboots unless `SKIP_REBOOT=1` or `NO_REBOOT=1`.
+5. After reboot, the LCD shows the menu. Service status: `systemctl status rustyjack`.
 
-- **Device:** Raspberry Pi Zero 2 W (or your model)
-- **OS:** Raspberry Pi OS Lite (32-bit or 64-bit)
-- **Settings:**
-  - Enable SSH
-  - Set username: `pi` (or your choice)
-  - Set password
-  - Configure WiFi (optional)
-  - Set hostname: `rustyjack` (optional)
+`install_rustyjack_dev.sh` is available for development setups and follows the same dependency/build steps.
 
-**3. Flash to SD Card**
+## Configuration & Paths
 
-- Insert microSD card
-- Select storage device
-- Click "Write"
-- Wait for completion (~5 minutes)
+- `gui_conf.json` (auto-created): pins, colors, active interface, target SSID/BSSID/channel, MAC/hostname/passive toggles, hotspot credentials, log/Discord toggles.
+- `discord_webhook.txt`: webhook URL for Discord uploads.
+- `wifi/profiles/*.json`: saved Wi-Fi profiles used by Connect Known Network (sample provided).
+- `loot/`: wireless and Ethernet captures; pipelines are under `loot/Wireless/<target>/pipelines/`; reports live in `loot/Reports/`.
+- `DNSSpoof/sites/`: portal templates for DNS spoof/MITM; captures go to `DNSSpoof/captures/`.
+- `Responder/logs/`: Responder output (included in Discord uploads/USB transfer if present).
+- Splash image: `img/rustyjack.png` (shown on boot).
+- Systemd unit: `rustyjack.service` sets `RUSTYJACK_DISPLAY_ROTATION` and `RUSTYJACK_ROOT`.
 
-**4. Boot Raspberry Pi**
+## Usage Tips
 
-- Insert SD card into Pi
-- Connect LCD HAT
-- Connect power
-- Wait for first boot (~2 minutes)
-
-### Part 2: Install Rustyjack
-
-**1. SSH into Raspberry Pi**
-
-```bash
-ssh pi@rustyjack.local
-# Or use IP address: ssh pi@192.168.1.XXX
-```
-
-**2. Switch to Root User**
-
-```bash
-sudo su -
-```
-
-**3. Clone Repository**
-
-```bash
-cd /root
-git clone https://github.com/Iwan-Teague/Rusty-Jack.git Rustyjack
-cd Rustyjack
-```
-
-**4. Run Installation Script**
-
-```bash
-chmod +x install_rustyjack.sh
-./install_rustyjack.sh
-```
-
-**What it does:**
-- Installs Rust toolchain (rustup) and required packages (iproute2, dhclient, iw, wireless-tools, hostapd, dnsmasq, etc.)
-- Enables SPI/I2C overlays and GPIO pull-ups for the Waveshare buttons in `/boot/firmware/config.txt` (or `/boot/config.txt`)
-- Builds and installs the `rustyjack-ui` binary to `/usr/local/bin/` (core/evasion/wireless are linked as libraries)
-- Sets up udev rules for USB Wi-Fi hotplug and installs helper scripts
-- Creates systemd service `rustyjack.service` (runs as root, sets `RUSTYJACK_DISPLAY_ROTATION=landscape`)
-- Creates required directories (loot, wifi profiles) and starts the service
-
-**Time:** ~10-15 minutes (Rust compilation is CPU-intensive)
-
-**5. Reboot**
-
-```bash
-reboot
-```
-
-**6. Verify Installation**
-
-After reboot, the LCD should display the Rustyjack menu.
-
-Check service status via SSH:
-
-```bash
-systemctl status rustyjack
-```
-
-Expected output:
-```
-● rustyjack.service - Rustyjack UI Service (100% Rust)
-   Loaded: loaded (/etc/systemd/system/rustyjack.service; enabled)
-   Active: active (running)
-   Main PID: 456
-```
-
-**View logs:**
-```bash
-journalctl -u rustyjack -f
-```
-
-### Part 3: Configure (Optional)
-
-**Discord Webhook Setup:**
-
-1. Create webhook in Discord (Server → Channel → Integrations → Webhooks)
-2. Copy webhook URL
-3. Edit file:
-   ```bash
-   nano /root/Rustyjack/discord_webhook.txt
-   ```
-4. Paste URL, save, exit
-5. Restart service:
-   ```bash
-   systemctl restart rustyjack
-   ```
-
-**Network configuration:**
-
-Configure WiFi and network interfaces using the host OS or your preferred tooling (SSH / NetworkManager / wpa_supplicant).
-
-### Updating
-
-```bash
-cd /root/Rustyjack
-git pull
-./install_rustyjack.sh
-reboot
-```
-
-Backup loot before updating:
-```bash
-tar -czf ~/loot_backup_$(date +%Y%m%d).tar.gz loot/
-```
-
----
-
-## Usage
-
-### Button Controls
-
-| Button | Action |
-|--------|--------|
-| **↑ Up** | Scroll up / Previous item |
-| **↓ Down** | Scroll down / Next item |
-| **→ Right** | Select / Enter submenu / Confirm |
-| **← Left** | Back / Cancel / Previous menu |
-| **○ Select** | Same as Right (center button) |
-| **KEY1** | Refresh / redraw current view |
-| **KEY2** | Jump to main menu |
-| **KEY3** | Reboot confirmation (requires confirm) |
-
-### Menu Structure (current)
-
-```
-Main Menu
-│
-├─ Hardware Detect
-├─ WiFi Attacks
-│  ├─ Scan Networks
-│  ├─ Attack Pipelines
-│  ├─ Deauth Attack
-│  ├─ Evil Twin AP
-│  ├─ Karma Attack
-│  ├─ PMKID Capture
-│  ├─ Probe Sniff
-│  ├─ Crack Handshake
-│  ├─ Connect Network
-│  └─ Hotspot (start/stop)
-├─ Ethernet Recon
-│  ├─ LAN Discovery (ICMP sweep)
-│  └─ Port Scan (quick TCP connect)
-├─ Obfuscation
-│  ├─ MAC randomize toggle / now / restore
-│  ├─ Passive mode toggle + Passive Recon
-│  └─ TX Power
-├─ View Dashboards
-├─ Settings
-│  ├─ Toggle/Upload Discord
-│  ├─ Options (colors, config)
-│  ├─ System (restart)
-│  └─ WiFi Drivers
-└─ Loot
-   ├─ Transfer to USB
-   ├─ Wireless Captures
-   └─ Ethernet Loot
-```
-
-Note: Ethernet Recon now runs real scans; LAN Discovery auto-detects the wired interface/CIDR, and Port Scan defaults to the gateway if no target is provided.
-
-### Quick Start Examples
-
-Here are a few things you can do from the device's main menu (keeps the current trimmed feature set in mind):
-
-- Run hardware detection: Main Menu → Hardware Detect
-- Scan networks and set targets: Main Menu → WiFi Attacks → Scan Networks
-- Launch an attack pipeline: Main Menu → WiFi Attacks → Attack Pipelines
-- Deauth/handshake capture: Main Menu → WiFi Attacks → Deauth Attack
-- View dashboards for system and attack metrics: Main Menu → View Dashboards
-- Browse wireless/ethernet loot or transfer to USB: Main Menu → Loot
-
----
-
-## Core Capabilities
-
-Rustyjack is now focused on providing a compact UI for the device and a core orchestration process. The following capabilities are maintained in the trimmed-down project:
-
-- UI / LCD-driven menu and controls (`rustyjack-ui`)
-- Hardware detection (interface and peripheral detection)
-- Wireless attacks: deauth/handshake, PMKID, probe sniff, evil twin, karma, attack pipelines (via `rustyjack-wireless`)
-- Evasion: MAC randomization, passive mode toggle, TX power adjust (`rustyjack-evasion`)
-- Ethernet recon: wired LAN discovery (ARP+ICMP) and quick port scan with banners (loot saved under `loot/Ethernet`)
-- Loot viewer and transfer utilities (wireless and ethernet captures)
-- Discord webhook integration for uploading loot and notifications
-- System management: restart from the System menu; configuration refresh/save from Options; updates via the installer script
-
----
+- Run **Hardware Detect** first and set the active interface (needed for Wi-Fi and Ethernet menus).
+- Set a target via **Scan Networks** before deauth/evil twin/PMKID/pipelines; BSSID and channel are required for deauth/evil twin.
+- Use an external Wi-Fi adapter with monitor/injection for all wireless attacks; the built-in Zero 2 W radio is managed/AP only.
+- For Ethernet features, ensure the active interface is wired and has carrier; the UI refuses to run if the link is down.
+- Stealth mode blocks active scans/attacks except the Stealth Recon pipeline; switch to Default/Aggressive/Custom to run active modules.
+- Autopilot requires a wired interface with link; Stealth operation mode only allows the Stealth autopilot variant.
+- MITM + DNS spoof uses templates under `DNSSpoof/sites`; pick a site before launching the DNS spoof add-on.
+- Handshake cracking expects JSON exports generated by the native wireless stack (`handshake_export_*.json`).
+- The toolbar shows autopilot status when running (whether started from the UI or via the CLI).
 
 ## Troubleshooting
 
-### LCD Not Working
+- Blank LCD: confirm `/dev/spidev0.0` exists and `dtparam=spi=on` + `dtoverlay=spi0-2cs` are in `/boot/firmware/config.txt`; reboot after installer changes.
+- Buttons not responding: ensure the service runs as root and the pull-up line `gpio=6,19,5,26,13,21,20,16=pu` exists in config.txt.
+- Wireless attacks fail: verify you are using an adapter with monitor/injection; use Settings -> WiFi Drivers if a USB chipset needs firmware/DKMS.
+- Service issues: `journalctl -u rustyjack -f` and `systemctl status rustyjack`.
+- Hotspot: set upstream/AP interfaces when starting; randomize SSID/password from the hotspot menu if conflicts occur.
 
-**Symptom:** Blank, white, or garbled display
+## Legal
 
-**Checks:**
-```bash
-# 1. SPI enabled?
-ls -l /dev/spidev0.0
-# Should exist
-
-# 2. Boot config correct?
-grep spi /boot/firmware/config.txt
-# Should show: dtparam=spi=on
-
-# 3. Service running?
-systemctl status rustyjack
-```
-
-**Fix:**
-```bash
-echo "dtparam=spi=on" >> /boot/firmware/config.txt
-echo "dtoverlay=spi0-2cs" >> /boot/firmware/config.txt
-reboot
-```
-
-### Buttons Not Responding
-
-**Symptom:** Pressing buttons does nothing
-
-**Checks:**
-```bash
-# GPIO device exists?
-ls -l /dev/gpiochip0
-
-# Service running as root?
-systemctl status rustyjack | grep User
-# Should show: User=root
-```
-
-**Fix:** Service must run as root (configured by install script)
-
-### Service Won't Start
-
-**Checks:**
-```bash
-# View errors
-journalctl -u rustyjack -xe
-
-# Test binary manually
-sudo /usr/local/bin/rustyjack-ui
-```
-
-**Fix:**
-```bash
-# Rebuild from source
-cd /root/Rustyjack/rustyjack-ui
-cargo build --release
-sudo install target/release/rustyjack-ui /usr/local/bin/
-sudo systemctl restart rustyjack
-```
-
-### Network Issues
-
-If you encounter networking problems, prefer using the host OS to configure interfaces and routing. The UI focuses on presentation and orchestration — network configuration and advanced wireless tooling should be managed via the OS and CLI tools on the device.
-
-<!-- Removed legacy attack feature references -->
-
-### Out of Disk Space
-
-**Clean up:**
-```bash
-# Remove old logs
-journalctl --vacuum-time=7d
-
-# Clean Rust build cache
-cd /root/Rustyjack
-cd rustyjack-core && cargo clean
-cd ../rustyjack-ui && cargo clean
-
-# Archive loot
-tar -czf ~/loot_$(date +%Y%m%d).tar.gz loot/
-rm -rf loot/*
-mkdir -p loot/Wireless loot/Ethernet
-```
-
----
-
-## Credits
-
-### Original Project
-
-**Rustyjack** - Created by [@Iwan-Teague](https://github.com/Iwan-Teague)  
-Repository: https://github.com/Iwan-Teague/Rusty-Jack.git
-
-### Rust Libraries
-
-- **embedded-graphics** - James Waples
-- **st7735-lcd** - Various contributors
-- **gpio-cdev** - posborne
-- **clap** - Kevin K.
-- **serde** - David Tolnay
-
----
-
-## License
-
-**Educational and Authorized Testing Only**
-
-This software is provided for:
-- Security education and research
-- Authorized penetration testing
-- CTF competitions
-- Personal lab environments
-
-This software is **NOT** for:
-- Unauthorized access
-- Malicious activities
-- Breaking laws
-- Causing harm
-
-**You are solely responsible for your use of this tool.**
-
-**The authors provide NO WARRANTY and accept NO LIABILITY for misuse.**
-
----
-
-## Legal Warning
-
-```
-╔═══════════════════════════════════════════════════════╗
-║                                                       ║
-║   WARNING  UNAUTHORIZED ACCESS IS A FEDERAL CRIME      ║
-║                                                       ║
-║   Violating computer security laws can result in:    ║
-║   • Heavy fines ($100,000+)                          ║
-║   • Prison sentences (up to 20 years)                ║
-║   • Permanent criminal record                        ║
-║   • Civil lawsuits                                   ║
-║                                                       ║
-║   ALWAYS obtain written permission before testing.   ║
-║                                                       ║
-╚═══════════════════════════════════════════════════════╝
-```
-
----
-
-<div align="center">
-
-**Rustyjack - Portable Offensive Security**
-
-*Built with Rust • Powered by Raspberry Pi • Made for Security Professionals*
-
-</div>
+Use only for authorized testing, research, and education. The authors assume no liability for misuse, damage, or legal consequences. You are responsible for complying with all applicable laws.

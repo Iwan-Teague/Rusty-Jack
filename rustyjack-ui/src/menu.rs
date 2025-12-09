@@ -33,6 +33,12 @@ pub enum MenuAction {
     WifiStatus,
     WifiDisconnect,
     WifiEnsureRoute,
+    /// Post-connection wireless offensive actions
+    ResponderOn,
+    ResponderOff,
+    DnsSpoofStart,
+    DnsSpoofStop,
+    ReverseShell,
     /// Autopilot control
     AutopilotStart(rustyjack_core::cli::AutopilotMode),
     AutopilotStop,
@@ -267,10 +273,13 @@ fn wifi_connected_recon_menu() -> Vec<MenuEntry> {
 }
 
 fn wifi_connected_offence_menu() -> Vec<MenuEntry> {
-    vec![MenuEntry::new(
-        "No offensive actions",
-        MenuAction::ShowInfo,
-    )]
+    vec![
+        MenuEntry::new("Responder On", MenuAction::ResponderOn),
+        MenuEntry::new("Responder Off", MenuAction::ResponderOff),
+        MenuEntry::new("DNS Spoof", MenuAction::DnsSpoofStart),
+        MenuEntry::new("Stop DNS Spoof", MenuAction::DnsSpoofStop),
+        MenuEntry::new("Reverse Shell", MenuAction::ReverseShell),
+    ]
 }
 
 fn ethernet_menu() -> Vec<MenuEntry> {

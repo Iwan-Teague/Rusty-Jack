@@ -412,6 +412,7 @@ fn handle_hotspot_start(args: HotspotStartArgs) -> Result<HandlerResult> {
         "ap_interface": state.ap_interface,
         "upstream_interface": state.upstream_interface,
         "channel": state.channel,
+        "upstream_ready": state.upstream_ready,
     });
     Ok(("Hotspot started".to_string(), data))
 }
@@ -429,6 +430,7 @@ fn handle_hotspot_status() -> Result<HandlerResult> {
         ap_interface,
         upstream_interface,
         channel,
+        upstream_ready,
         ..
     }) = status_hotspot()
     {
@@ -439,6 +441,7 @@ fn handle_hotspot_status() -> Result<HandlerResult> {
             "ap_interface": ap_interface,
             "upstream_interface": upstream_interface,
             "channel": channel,
+            "upstream_ready": upstream_ready,
         });
         Ok(("Hotspot running".to_string(), data))
     } else {
@@ -1323,8 +1326,11 @@ fn handle_wifi_route_ensure(root: &Path, args: WifiRouteEnsureArgs) -> Result<Ha
     let WifiRouteEnsureArgs { interface } = args;
     let interface_info = detect_interface(Some(interface.clone()))?;
 
-    let gateway = interface_gateway(&interface)?
-        .ok_or_else(|| anyhow!("No gateway found for {interface}"))?;
+    let gateway = interface_gateway(&interface)?.ok_or_else(|| {
+        anyhow!(
+            "No gateway found for {interface}. Ensure the interface is connected before setting the default route."
+        )
+    })?;
 
     set_default_route(&interface, gateway)?;
     let _ = rewrite_dns_servers(&interface, gateway);

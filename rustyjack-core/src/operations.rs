@@ -1426,6 +1426,16 @@ fn handle_bridge_start(root: &Path, args: BridgeStartArgs) -> Result<HandlerResu
     start_bridge_pair(&args.interface_a, &args.interface_b)?;
     let label = format!("bridge_{}_{}", args.interface_a, args.interface_b);
     let pcap_path = build_mitm_pcap_path(root, Some(&label))?;
+    let _ = append_payload_log(
+        root,
+        &format!(
+            "[{}] bridge start: {} <-> {} (pcap {})",
+            chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
+            args.interface_a,
+            args.interface_b,
+            pcap_path.to_string_lossy()
+        ),
+    );
     start_tcpdump_capture("br0", &pcap_path)?;
     let data = json!({
         "bridge": "br0",
@@ -1442,6 +1452,15 @@ fn handle_bridge_stop(root: &Path, args: BridgeStopArgs) -> Result<HandlerResult
     if let Err(err) = restore_routing_state(root) {
         log::warn!("bridge stop: failed to restore routing: {err}");
     }
+    let _ = append_payload_log(
+        root,
+        &format!(
+            "[{}] bridge stop: {} <-> {}",
+            chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
+            args.interface_a,
+            args.interface_b,
+        ),
+    );
     let data = json!({
         "bridge": "br0",
         "interfaces": [args.interface_a, args.interface_b],

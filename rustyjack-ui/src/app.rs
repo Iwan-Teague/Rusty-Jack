@@ -282,7 +282,21 @@ impl App {
     }
 
     fn show_wifi_status(&mut self) -> Result<()> {
-        let status = self.fetch_wifi_status()?;
+        let Some(iface) = self.require_connected_wireless("WiFi Status")? else {
+            return Ok(());
+        };
+        let status = match self.fetch_wifi_status(Some(iface.clone())) {
+            Ok(s) => s,
+            Err(e) => {
+                return self.show_message(
+                    "WiFi Status",
+                    [
+                        "Failed to read WiFi status",
+                        &shorten_for_display(&e.to_string(), 90),
+                    ],
+                );
+            }
+        };
         let route = self.fetch_route_snapshot().ok();
 
         let mut lines = Vec::new();
@@ -306,6 +320,9 @@ impl App {
             if let Some(di) = rt.default_interface {
                 lines.push(format!("Default: {}", di));
             }
+        }
+        if !status.connected {
+            lines.push("No active connection detected.".to_string());
         }
 
         if lines.len() == 1 {
@@ -336,15 +353,14 @@ impl App {
             return self.show_message("Route", ["No active interface set"]);
         }
 
-        // Require a live connection to avoid breaking connectivity
-        let status = self.fetch_wifi_status()?;
-        if !status.connected {
+        // Require link + IP to avoid breaking connectivity
+        if !self.interface_has_carrier(&active_interface) {
             return self.show_message(
                 "Route",
                 [
-                    "Not connected.",
-                    "Route changes skipped",
-                    "until a link is up.",
+                    &format!("Interface: {}", active_interface),
+                    "Link is down / no carrier.",
+                    "Connect first, then retry.",
                 ],
             );
         }
@@ -423,6 +439,17 @@ impl App {
         if interface.is_empty() {
             return Ok(None);
         }
+        if !self.interface_has_carrier(interface) {
+            return self.show_message(
+                "Route",
+                [
+                    &format!("Interface: {}", interface),
+                    "Link is down / no carrier.",
+                    "Connect first, then retry.",
+                ],
+            )
+            .map(|_| None);
+        }
         if !interface_has_ip(interface) {
             return Ok(None);
         }
@@ -431,15 +458,51 @@ impl App {
             interface: interface.to_string(),
         };
 
-        match self
+        let result = self
             .core
             .dispatch(Commands::Wifi(WifiCommand::Route(WifiRouteCommand::Ensure(
                 args,
-            ))))
-        {
-            Ok((msg, _)) => Ok(Some(msg)),
+            ))));
+
+        match result {
+            Ok((msg, _)) => {
+                // Keep only the active interface alive (plus hotspot if running)
+                let mut allow_list = vec![interface.to_string()];
+                if let Ok((_, hs_data)) =
+                    self.core
+                        .dispatch(Commands::Hotspot(HotspotCommand::Status))
+                {
+                    let running = hs_data
+                        .get("running")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+                    if running {
+                        if let Some(ap) = hs_data.get("ap_interface").and_then(|v| v.as_str()) {
+                            if !ap.is_empty() {
+                                allow_list.push(ap.to_string());
+                            }
+                        }
+                        if let Some(up) =
+                            hs_data.get("upstream_interface").and_then(|v| v.as_str())
+                        {
+                            if !up.is_empty() {
+                                allow_list.push(up.to_string());
+                            }
+                        }
+                    }
+                }
+                allow_list.retain(|s| !s.is_empty());
+                let _ = self.apply_interface_isolation(&allow_list);
+                Ok(Some(msg))
+            }
             Err(e) => {
-                self.show_message("Route", [format!("Route failed: {}", e)])?;
+                let err = e.to_string();
+                let mut lines = vec![format!("Route failed for {}", interface)];
+                lines.push(shorten_for_display(&err, 90));
+                if err.contains("No gateway found") {
+                    lines.push("No gateway detected; connect first.".to_string());
+                }
+                self.show_message("Route", lines)?;
                 Ok(None)
             }
         }
@@ -1876,8 +1939,8 @@ impl App {
         Ok(resp)
     }
 
-    fn fetch_wifi_status(&mut self) -> Result<WifiStatusOverview> {
-        let args = WifiStatusArgs { interface: None };
+    fn fetch_wifi_status(&mut self, interface: Option<String>) -> Result<WifiStatusOverview> {
+        let args = WifiStatusArgs { interface };
         let (_, data) = self
             .core
             .dispatch(Commands::Wifi(WifiCommand::Status(args)))?;
@@ -8976,6 +9039,10 @@ impl App {
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
+                let upstream_ready = data
+                    .get("upstream_ready")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true);
                 let current_ssid = data
                     .get("ssid")
                     .and_then(|v| v.as_str())
@@ -9003,6 +9070,17 @@ impl App {
                     "".to_string(),
                     format!("Status: {}", if running { "ON" } else { "OFF" }),
                 ];
+                if running {
+                    lines.push(format!("AP: {}", ap_iface));
+                    let upstream_line = if upstream_iface.is_empty() {
+                        "Upstream: none (offline)".to_string()
+                    } else if upstream_ready {
+                        format!("Upstream: {} (internet)", upstream_iface)
+                    } else {
+                        format!("Upstream: {} (offline/no IP)", upstream_iface)
+                    };
+                    lines.push(upstream_line);
+                }
 
                 let options = if running {
                     lines.push("Turn off to exit this view".to_string());
@@ -9077,6 +9155,7 @@ impl App {
                         };
 
                         let mut upstream_options = Vec::new();
+                        upstream_options.push("None (offline)".to_string());
                         upstream_options.extend(ethernet.clone());
                         upstream_options.extend(wifi.clone());
 
@@ -9092,13 +9171,25 @@ impl App {
                             );
                         }
 
-                        let upstream =
-                            self.choose_interface_name("Internet (upstream)", &upstream_options)?;
-                        let upstream_iface = upstream.as_ref().cloned().unwrap_or(upstream_pref);
+                        let upstream_choice =
+                            self.choose_from_menu("Internet (upstream)", &upstream_options)?;
+                        let upstream_iface = match upstream_choice {
+                            Some(0) => "".to_string(),
+                            Some(idx) => upstream_options
+                                .get(idx)
+                                .cloned()
+                                .unwrap_or_else(|| upstream_pref.clone()),
+                            None => upstream_pref.clone(),
+                        };
                         let mut upstream_note = String::new();
-                        if upstream.is_none() {
+                        if upstream_choice == Some(0) {
                             upstream_note = "No upstream selected; hotspot will have no internet."
                                 .to_string();
+                        } else if !upstream_iface.is_empty() && !self.interface_has_ip(&upstream_iface) {
+                            upstream_note = format!(
+                                "{} has no IP; hotspot will be local-only until it connects.",
+                                upstream_iface
+                            );
                         }
 
                         // Build AP list (WiFi only, excluding upstream if same)
@@ -9165,6 +9256,18 @@ impl App {
                                 allow_list.retain(|s| !s.is_empty());
                                 let _ = self.apply_interface_isolation(&allow_list);
 
+                                let upstream_line = if upstream_iface.is_empty() {
+                                    "Upstream: none (offline)".to_string()
+                                } else if data
+                                    .get("upstream_ready")
+                                    .and_then(|v| v.as_bool())
+                                    .unwrap_or(true)
+                                {
+                                    format!("Upstream: {} (internet)", upstream_iface)
+                                } else {
+                                    format!("Upstream: {} (offline/no IP)", upstream_iface)
+                                };
+
                                 self.show_message(
                                     "Hotspot started",
                                     [
@@ -9172,7 +9275,7 @@ impl App {
                                         format!("SSID: {}", ssid),
                                         format!("Password: {}", password),
                                         format!("AP: {}", ap_iface),
-                                        format!("Upstream: {}", upstream_iface),
+                                        upstream_line,
                                         if upstream_note.is_empty() {
                                             "".to_string()
                                         } else {
@@ -9184,10 +9287,21 @@ impl App {
                                 )?;
                             }
                             Err(e) => {
-                                self.show_message(
-                                    "Hotspot error",
-                                    ["Failed to start hotspot", &format!("{e}")],
-                                )?;
+                                let err = e.to_string();
+                                let mut lines = vec![
+                                    "Failed to start hotspot".to_string(),
+                                    shorten_for_display(&err, 90),
+                                ];
+                                if err.contains("AP mode") {
+                                    lines.push("Selected AP interface may not support AP mode.".to_string());
+                                }
+                                if err.contains("Required tool missing") {
+                                    lines.push("Install hostapd, dnsmasq, and iptables (installer covers this).".to_string());
+                                }
+                                if err.contains("Interface") {
+                                    lines.push("Check interface selection/cabling or pick a different adapter.".to_string());
+                                }
+                                self.show_message("Hotspot error", lines)?;
                             }
                         }
                     }

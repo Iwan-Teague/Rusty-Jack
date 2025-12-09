@@ -41,8 +41,14 @@ pub struct HotspotState {
     pub ap_interface: String,
     pub upstream_interface: String,
     pub channel: u8,
+    #[serde(default = "default_true")]
+    pub upstream_ready: bool,
     pub hostapd_pid: Option<i32>,
     pub dnsmasq_pid: Option<i32>,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 const STATE_PATH: &str = "/tmp/rustyjack_hotspot/state.json";
@@ -72,9 +78,22 @@ pub fn random_password() -> String {
 pub fn start_hotspot(config: HotspotConfig) -> Result<HotspotState> {
     ensure_tools_present()?;
     ensure_interface_exists(&config.ap_interface)?;
-    ensure_interface_exists(&config.upstream_interface)?;
+    if !config.upstream_interface.is_empty() {
+        ensure_interface_exists(&config.upstream_interface)?;
+    }
     ensure_ap_capability(&config.ap_interface)?;
-    ensure_upstream_ready(&config.upstream_interface)?;
+    let mut upstream_ready = false;
+    if !config.upstream_interface.is_empty() {
+        match ensure_upstream_ready(&config.upstream_interface) {
+            Ok(_) => upstream_ready = true,
+            Err(WirelessError::Interface(msg)) if msg.contains("has no IPv4 address") => {
+                // Allow offline hotspot; continue without upstream/NAT
+                upstream_ready = false;
+                log::warn!("Hotspot upstream not ready: {msg}");
+            }
+            Err(err) => return Err(err),
+        }
+    }
     fs::create_dir_all(CONF_DIR).map_err(|e| WirelessError::System(format!("mkdir: {e}")))?;
 
     // Ensure previous instances are stopped to avoid dhcp bind failures
@@ -99,50 +118,52 @@ pub fn start_hotspot(config: HotspotConfig) -> Result<HotspotState> {
     // Enable forwarding
     let _ = run_cmd("sysctl", &["-w", "net.ipv4.ip_forward=1"]);
 
-    // NAT rules
-    let _ = run_cmd(
-        "iptables",
-        &[
-            "-t",
-            "nat",
-            "-A",
-            "POSTROUTING",
-            "-o",
-            &config.upstream_interface,
-            "-j",
-            "MASQUERADE",
-        ],
-    );
-    let _ = run_cmd(
-        "iptables",
-        &[
-            "-A",
-            "FORWARD",
-            "-i",
-            &config.upstream_interface,
-            "-o",
-            &config.ap_interface,
-            "-m",
-            "state",
-            "--state",
-            "RELATED,ESTABLISHED",
-            "-j",
-            "ACCEPT",
-        ],
-    );
-    let _ = run_cmd(
-        "iptables",
-        &[
-            "-A",
-            "FORWARD",
-            "-i",
-            &config.ap_interface,
-            "-o",
-            &config.upstream_interface,
-            "-j",
-            "ACCEPT",
-        ],
-    );
+    // NAT rules (only if upstream is present and ready)
+    if upstream_ready && !config.upstream_interface.is_empty() {
+        let _ = run_cmd(
+            "iptables",
+            &[
+                "-t",
+                "nat",
+                "-A",
+                "POSTROUTING",
+                "-o",
+                &config.upstream_interface,
+                "-j",
+                "MASQUERADE",
+            ],
+        );
+        let _ = run_cmd(
+            "iptables",
+            &[
+                "-A",
+                "FORWARD",
+                "-i",
+                &config.upstream_interface,
+                "-o",
+                &config.ap_interface,
+                "-m",
+                "state",
+                "--state",
+                "RELATED,ESTABLISHED",
+                "-j",
+                "ACCEPT",
+            ],
+        );
+        let _ = run_cmd(
+            "iptables",
+            &[
+                "-A",
+                "FORWARD",
+                "-i",
+                &config.ap_interface,
+                "-o",
+                &config.upstream_interface,
+                "-j",
+                "ACCEPT",
+            ],
+        );
+    }
 
     // Write hostapd.conf
     let hostapd_conf = format!(
@@ -198,6 +219,7 @@ pub fn start_hotspot(config: HotspotConfig) -> Result<HotspotState> {
         ap_interface: config.ap_interface,
         upstream_interface: config.upstream_interface,
         channel: config.channel,
+        upstream_ready,
         hostapd_pid: hostapd,
         dnsmasq_pid: dnsmasq,
     };
@@ -225,46 +247,48 @@ pub fn stop_hotspot() -> Result<()> {
         }
 
         // Remove iptables rules (ignore errors if not present)
-        let _ = Command::new("iptables")
-            .args([
-                "-t",
-                "nat",
-                "-D",
-                "POSTROUTING",
-                "-o",
-                &s.upstream_interface,
-                "-j",
-                "MASQUERADE",
-            ])
-            .status();
-        let _ = Command::new("iptables")
-            .args([
-                "-D",
-                "FORWARD",
-                "-i",
-                &s.upstream_interface,
-                "-o",
-                &s.ap_interface,
-                "-m",
-                "state",
-                "--state",
-                "RELATED,ESTABLISHED",
-                "-j",
-                "ACCEPT",
-            ])
-            .status();
-        let _ = Command::new("iptables")
-            .args([
-                "-D",
-                "FORWARD",
-                "-i",
-                &s.ap_interface,
-                "-o",
-                &s.upstream_interface,
-                "-j",
-                "ACCEPT",
-            ])
-            .status();
+        if s.upstream_ready && !s.upstream_interface.is_empty() {
+            let _ = Command::new("iptables")
+                .args([
+                    "-t",
+                    "nat",
+                    "-D",
+                    "POSTROUTING",
+                    "-o",
+                    &s.upstream_interface,
+                    "-j",
+                    "MASQUERADE",
+                ])
+                .status();
+            let _ = Command::new("iptables")
+                .args([
+                    "-D",
+                    "FORWARD",
+                    "-i",
+                    &s.upstream_interface,
+                    "-o",
+                    &s.ap_interface,
+                    "-m",
+                    "state",
+                    "--state",
+                    "RELATED,ESTABLISHED",
+                    "-j",
+                    "ACCEPT",
+                ])
+                .status();
+            let _ = Command::new("iptables")
+                .args([
+                    "-D",
+                    "FORWARD",
+                    "-i",
+                    &s.ap_interface,
+                    "-o",
+                    &s.upstream_interface,
+                    "-j",
+                    "ACCEPT",
+                ])
+                .status();
+        }
     }
 
     let _ = fs::remove_file(STATE_PATH);

@@ -122,10 +122,13 @@ PACKAGES=(
   wireless-tools wpasupplicant iw iproute2 isc-dhcp-client network-manager rfkill
   # Evil Twin / Karma AP requirements
   hostapd dnsmasq iptables
-  # USB WiFi dongle support
-  firmware-linux-nonfree firmware-realtek firmware-atheros
   # misc
   git i2c-tools curl
+)
+
+# Optional firmware bundles (may require non-free-firmware repo on Debian)
+FIRMWARE_PACKAGES=(
+  firmware-linux-nonfree firmware-realtek firmware-atheros firmware-ralink firmware-misc-nonfree
 )
 
 step "Updating APT and installing dependencies..."
@@ -133,19 +136,37 @@ if ! sudo apt-get update -qq; then
   fail "APT update failed. Check network connectivity/apt sources and rerun."
 fi
 
+INSTALL_PACKAGES=("${PACKAGES[@]}")
+available_firmware=()
+missing_firmware=()
+for pkg in "${FIRMWARE_PACKAGES[@]}"; do
+  if apt-cache show "$pkg" >/dev/null 2>&1; then
+    available_firmware+=("$pkg")
+  else
+    missing_firmware+=("$pkg")
+  fi
+done
+if ((${#available_firmware[@]})); then
+  INSTALL_PACKAGES+=("${available_firmware[@]}")
+fi
+if ((${#missing_firmware[@]})); then
+  warn "Skipping unavailable firmware packages: ${missing_firmware[*]}"
+  warn "Enable 'non-free-firmware' in /etc/apt/sources.list on Debian 12+ if you need them."
+fi
+
 to_install=()
 install_plan=""
-if install_plan=$(sudo apt-get -qq --just-print install "${PACKAGES[@]}" 2>/dev/null); then
+if install_plan=$(sudo apt-get -qq --just-print install "${INSTALL_PACKAGES[@]}" 2>/dev/null); then
   to_install=($(echo "$install_plan" | awk '/^Inst/ {print $2}'))
   if ((${#to_install[@]})); then
     info "Will install/upgrade: ${to_install[*]}"
-    sudo apt-get install -y --no-install-recommends "${PACKAGES[@]}" || fail "APT install failed. Check output above."
+    sudo apt-get install -y --no-install-recommends "${INSTALL_PACKAGES[@]}" || fail "APT install failed. Check output above."
   else
     info "All packages already installed and up-to-date."
   fi
 else
   warn "APT dry-run failed (likely missing kernel headers or bad sources); attempting full install..."
-  sudo apt-get install -y --no-install-recommends "${PACKAGES[@]}" || fail "APT install failed. Check output above."
+  sudo apt-get install -y --no-install-recommends "${INSTALL_PACKAGES[@]}" || fail "APT install failed. Check output above."
 fi
 
 # Re-claim resolv.conf after any package changes (apt may rewrite it)

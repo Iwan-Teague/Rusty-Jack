@@ -156,34 +156,6 @@ pub fn list_wireless_interfaces() -> Result<Vec<String>> {
     Ok(all.into_iter().filter(|i| is_wireless(i)).collect())
 }
 
-/// Convenience function to quickly randomize a MAC address
-///
-/// This is a stateless operation - the original MAC is not saved.
-/// For operations requiring restoration, use [`MacManager`] instead.
-///
-/// # Arguments
-///
-/// * `interface` - Network interface name
-///
-/// # Errors
-///
-/// Returns an error if MAC randomization fails
-///
-/// # Example
-///
-/// ```no_run
-/// use rustyjack_evasion::quick_randomize_mac;
-///
-/// if let Ok(new_mac) = quick_randomize_mac("wlan0") {
-///     println!("New MAC: {}", new_mac);
-/// }
-/// ```
-pub fn quick_randomize_mac(interface: &str) -> Result<String> {
-    let mut manager = MacManager::new()?;
-    let state = manager.randomize(interface)?;
-    Ok(state.current_mac.to_string())
-}
-
 /// Convenience function to set TX power to stealth level
 ///
 /// # Arguments

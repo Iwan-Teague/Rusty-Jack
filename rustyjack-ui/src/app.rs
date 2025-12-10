@@ -488,14 +488,16 @@ impl App {
         status.active_interface = settings.active_network_interface.clone();
 
         let interface_mac = self.read_interface_mac(&settings.active_network_interface);
+        let interface_name = &settings.active_network_interface;
         let current_mac = interface_mac
             .clone()
-            .unwrap_or_else(|| settings.current_mac.clone());
-        let original_mac = if !settings.original_mac.is_empty() {
-            settings.original_mac.clone()
-        } else {
-            interface_mac.unwrap_or_else(|| current_mac.clone())
-        };
+            .or_else(|| settings.current_macs.get(interface_name).cloned())
+            .unwrap_or_default();
+        let original_mac = settings
+            .original_macs
+            .get(interface_name)
+            .cloned()
+            .unwrap_or_else(|| interface_mac.unwrap_or_else(|| current_mac.clone()));
 
         status.current_mac = current_mac.to_uppercase();
         status.original_mac = original_mac.to_uppercase();
@@ -6631,31 +6633,40 @@ impl App {
             )?;
 
             match randomize_mac_with_reconnect(&active_interface) {
-                Ok(state) => {
+                Ok((state, reconnect_ok)) => {
                     let original_mac = state.original_mac.to_string();
                     let new_mac = state.current_mac.to_string();
 
-                    if self.config.settings.original_mac.is_empty() {
-                        self.config.settings.original_mac = original_mac.clone();
-                    }
-                    self.config.settings.current_mac = new_mac.clone();
+                    self.config.settings.original_macs
+                        .entry(active_interface.clone())
+                        .or_insert_with(|| original_mac.clone());
+                    self.config.settings.current_macs
+                        .insert(active_interface.clone(), new_mac.clone());
                     let config_path = self.root.join("gui_conf.json");
                     let _ = self.config.save(&config_path);
 
+                    let mut lines = vec![
+                        format!("Interface: {}", active_interface),
+                        "".to_string(),
+                        "New MAC:".to_string(),
+                        new_mac,
+                        "".to_string(),
+                        "Original saved:".to_string(),
+                        original_mac,
+                        "".to_string(),
+                    ];
+                    
+                    if reconnect_ok {
+                        lines.push("DHCP renewed and".to_string());
+                        lines.push("reconnect signaled.".to_string());
+                    } else {
+                        lines.push("Warning: reconnect may".to_string());
+                        lines.push("have failed. Check DHCP.".to_string());
+                    }
+
                     self.scrollable_text_viewer(
                         "MAC Randomized",
-                        &[
-                            format!("Interface: {}", active_interface),
-                            "".to_string(),
-                            "New MAC:".to_string(),
-                            new_mac,
-                            "".to_string(),
-                            "Original saved:".to_string(),
-                            original_mac,
-                            "".to_string(),
-                            "DHCP renewed and".to_string(),
-                            "reconnect signaled.".to_string(),
-                        ],
+                        &lines,
                         false,
                     )
                 }
@@ -6713,20 +6724,28 @@ impl App {
                 MacGenerationStrategy::Vendor(selected_vendor.name),
             ) {
                 Ok(state) => {
-                    renew_dhcp_and_reconnect(&interface);
+                    let reconnect_ok = renew_dhcp_and_reconnect(&interface);
                     
-                    // Update config
                     let new_mac = state.current_mac.to_string();
-                    self.config.settings.current_mac = new_mac.clone();
+                    self.config.settings.current_macs
+                        .insert(interface.clone(), new_mac.clone());
                     let config_path = self.root.join("gui_conf.json");
                     let _ = self.config.save(&config_path);
 
+                    let mut lines = vec![
+                        format!("Set to {}", selected_vendor.name),
+                        format!("New: {}", new_mac),
+                    ];
+                    
+                    if !reconnect_ok {
+                        lines.push("".to_string());
+                        lines.push("Warning: reconnect may".to_string());
+                        lines.push("have failed. Check DHCP.".to_string());
+                    }
+
                     self.show_message(
                         "MAC Address",
-                        [
-                            &format!("Set to {}", selected_vendor.name),
-                            &format!("New: {}", new_mac),
-                        ],
+                        lines.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
                     )?;
                 }
                 Err(e) => {
@@ -6788,24 +6807,33 @@ impl App {
             .args(["link", "set", &active_interface, "up"])
             .output();
 
-        if let Ok(output) = result {
-            if output.status.success() {
-                // Clear the saved MACs
-                self.config.settings.current_mac.clear();
+        match result {
+            Ok(output) if output.status.success() => {
+                let reconnect_ok = renew_dhcp_and_reconnect(&active_interface);
+                
+                self.config.settings.current_macs.remove(&active_interface);
+                self.config.settings.original_macs.remove(&active_interface);
                 let config_path = self.root.join("gui_conf.json");
                 let _ = self.config.save(&config_path);
 
-                self.show_message(
-                    "MAC Restored",
-                    [
-                        &format!("Interface: {}", active_interface),
-                        "",
-                        &format!("MAC: {}", original_mac),
-                        "",
-                        "Original MAC restored.",
-                    ],
-                )
-            } else {
+                let mut lines = vec![
+                    &format!("Interface: {}", active_interface),
+                    "",
+                    &format!("MAC: {}", original_mac),
+                    "",
+                ];
+                
+                if reconnect_ok {
+                    lines.push("Original MAC restored.");
+                } else {
+                    lines.push("MAC restored.");
+                    lines.push("Warning: reconnect may");
+                    lines.push("have failed. Check DHCP.");
+                }
+
+                self.show_message("MAC Restored", lines)
+            }
+            Ok(_) => {
                 self.show_message(
                     "Restore Error",
                     [
@@ -6816,8 +6844,9 @@ impl App {
                     ],
                 )
             }
-        } else {
-            self.show_message("Restore Error", ["Failed to execute", "restore command."])
+            Err(_) => {
+                self.show_message("Restore Error", ["Failed to execute", "restore command."])
+            }
         }
     }
 
@@ -9889,15 +9918,19 @@ impl App {
 }
 
 #[cfg(target_os = "linux")]
-fn renew_dhcp_and_reconnect(interface: &str) {
-    let _ = Command::new("dhclient").args(["-r", interface]).status();
-    let _ = Command::new("dhclient").arg(interface).status();
-    let _ = Command::new("wpa_cli")
+fn renew_dhcp_and_reconnect(interface: &str) -> bool {
+    let dhcp_release = Command::new("dhclient").args(["-r", interface]).status();
+    let dhcp_renew = Command::new("dhclient").arg(interface).status();
+    let wpa = Command::new("wpa_cli")
         .args(["-i", interface, "reconnect"])
         .status();
-    let _ = Command::new("nmcli")
+    let nm = Command::new("nmcli")
         .args(["device", "reconnect", interface])
         .status();
+    
+    dhcp_renew.map(|s| s.success()).unwrap_or(false)
+        || wpa.map(|s| s.success()).unwrap_or(false)
+        || nm.map(|s| s.success()).unwrap_or(false)
 }
 
 #[cfg(target_os = "linux")]
@@ -9923,7 +9956,7 @@ fn generate_vendor_aware_mac(interface: &str) -> anyhow::Result<rustyjack_evasio
 }
 
 #[cfg(target_os = "linux")]
-fn randomize_mac_with_reconnect(interface: &str) -> anyhow::Result<rustyjack_evasion::MacState> {
+fn randomize_mac_with_reconnect(interface: &str) -> anyhow::Result<(rustyjack_evasion::MacState, bool)> {
     use rustyjack_evasion::MacManager;
 
     let mut manager = MacManager::new().context("creating MacManager")?;
@@ -9934,8 +9967,8 @@ fn randomize_mac_with_reconnect(interface: &str) -> anyhow::Result<rustyjack_eva
         .set_mac(interface, &new_mac)
         .context("setting randomized MAC")?;
 
-    renew_dhcp_and_reconnect(interface);
-    Ok(state)
+    let reconnect_ok = renew_dhcp_and_reconnect(interface);
+    Ok((state, reconnect_ok))
 }
 
 fn interface_has_ip(interface: &str) -> bool {

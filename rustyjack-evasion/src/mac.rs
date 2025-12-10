@@ -28,6 +28,7 @@
 //! ```
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fmt;
 use std::str::FromStr;
 
@@ -134,12 +135,10 @@ impl MacAddress {
     pub fn random_with_oui(oui: [u8; 3]) -> Result<Self> {
         let mut bytes = [0u8; 6];
 
-        // Get random NIC portion
         getrandom::getrandom(&mut bytes[3..6])
             .map_err(|e| EvasionError::RngError(format!("Failed to get random bytes: {}", e)))?;
 
-        // Set OUI
-        bytes[0] = oui[0];
+        bytes[0] = (oui[0] | 0x02) & 0xFE;
         bytes[1] = oui[1];
         bytes[2] = oui[2];
 
@@ -268,7 +267,7 @@ impl MacState {
 /// Tracks state changes and provides restoration capability.
 /// Implements Drop to automatically restore MACs on cleanup.
 pub struct MacManager {
-    states: Vec<MacState>,
+    states: HashMap<String, MacState>,
     auto_restore: bool,
 }
 
@@ -280,7 +279,7 @@ impl MacManager {
     /// Returns an error if the system doesn't support MAC operations
     pub fn new() -> Result<Self> {
         Ok(Self {
-            states: Vec::new(),
+            states: HashMap::new(),
             auto_restore: true,
         })
     }
@@ -326,45 +325,38 @@ impl MacManager {
     pub fn set_mac(&mut self, interface: &str, mac: &MacAddress) -> Result<MacState> {
         self.validate_interface(interface)?;
 
-        // Get current MAC
-        let original_mac = self.get_mac(interface)?;
+        let current_mac = self.get_mac(interface)?;
 
-        // Don't change if already set
-        if original_mac == *mac {
+        if current_mac == *mac {
             return Ok(MacState {
                 interface: interface.to_string(),
-                original_mac: original_mac.clone(),
-                current_mac: original_mac,
+                original_mac: current_mac.clone(),
+                current_mac: current_mac,
                 is_randomized: false,
                 changed_at: chrono::Utc::now().timestamp(),
             });
         }
 
-        // Bring interface down
+        let state = self.states.entry(interface.to_string())
+            .or_insert_with(|| MacState {
+                interface: interface.to_string(),
+                original_mac: current_mac.clone(),
+                current_mac: current_mac.clone(),
+                is_randomized: false,
+                changed_at: chrono::Utc::now().timestamp(),
+            });
+
         self.interface_down(interface)?;
-
-        // Set new MAC
         let result = self.set_mac_raw(interface, mac);
-
-        // Always try to bring interface back up
         let up_result = self.interface_up(interface);
-
-        // Check results
         result?;
         up_result?;
 
-        let state = MacState {
-            interface: interface.to_string(),
-            original_mac,
-            current_mac: mac.clone(),
-            is_randomized: true,
-            changed_at: chrono::Utc::now().timestamp(),
-        };
+        state.current_mac = mac.clone();
+        state.is_randomized = true;
+        state.changed_at = chrono::Utc::now().timestamp();
 
-        // Save state for restoration
-        self.states.push(state.clone());
-
-        Ok(state)
+        Ok(state.clone())
     }
 
     /// Randomize the MAC address
@@ -440,17 +432,21 @@ impl MacManager {
     ///
     /// Returns the first error encountered, but attempts all restorations
     pub fn restore_all(&mut self) -> Result<()> {
-        let states: Vec<_> = self.states.drain(..).collect();
+        let states: Vec<_> = self.states.values().cloned().collect();
         let mut first_error: Option<EvasionError> = None;
 
         for state in states {
-            if let Err(e) = self.restore_state(&state) {
-                log::warn!("Failed to restore MAC on {}: {}", state.interface, e);
-                if first_error.is_none() {
-                    first_error = Some(e);
+            if state.needs_restore() {
+                if let Err(e) = self.restore_state(&state) {
+                    log::warn!("Failed to restore MAC on {}: {}", state.interface, e);
+                    if first_error.is_none() {
+                        first_error = Some(e);
+                    }
                 }
             }
         }
+
+        self.states.clear();
 
         first_error.map_or(Ok(()), Err)
     }
@@ -458,13 +454,13 @@ impl MacManager {
     /// Get the saved state for an interface
     #[must_use]
     pub fn get_state(&self, interface: &str) -> Option<&MacState> {
-        self.states.iter().find(|s| s.interface == interface)
+        self.states.get(interface)
     }
 
     /// Get all saved states
     #[must_use]
-    pub fn all_states(&self) -> &[MacState] {
-        &self.states
+    pub fn all_states(&self) -> Vec<&MacState> {
+        self.states.values().collect()
     }
 
     // Private helper methods

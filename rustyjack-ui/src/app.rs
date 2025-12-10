@@ -6768,8 +6768,8 @@ impl App {
         }
 
         // Check if we have a saved original MAC
-        let original_mac = if !self.config.settings.original_mac.is_empty() {
-            self.config.settings.original_mac.clone()
+        let original_mac = if let Some(mac) = self.config.settings.original_macs.get(&active_interface) {
+            mac.clone()
         } else {
             // Try to read the permanent hardware address
             let perm_path = format!("/sys/class/net/{}/address", active_interface);

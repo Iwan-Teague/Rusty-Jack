@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     fs,
     path::{Path, PathBuf},
 };
@@ -222,12 +223,12 @@ pub struct SettingsConfig {
     /// Auto-randomize MAC before attacks
     #[serde(default)]
     pub mac_randomization_enabled: bool,
-    /// Original MAC address (saved when randomized)
+    /// Per-interface original MAC addresses (saved when randomized)
     #[serde(default)]
-    pub original_mac: String,
-    /// Current (possibly randomized) MAC
+    pub original_macs: HashMap<String, String>,
+    /// Per-interface current MAC addresses
     #[serde(default)]
-    pub current_mac: String,
+    pub current_macs: HashMap<String, String>,
     /// Auto-randomize hostname before attacks
     #[serde(default)]
     pub hostname_randomization_enabled: bool,
@@ -258,8 +259,8 @@ impl Default for SettingsConfig {
             target_bssid: String::new(),
             target_channel: 0,
             mac_randomization_enabled: false,
-            original_mac: String::new(),
-            current_mac: String::new(),
+            original_macs: HashMap::new(),
+            current_macs: HashMap::new(),
             hostname_randomization_enabled: false,
             operation_mode: Self::default_operation_mode(),
             tx_power_level: Self::default_tx_power(),

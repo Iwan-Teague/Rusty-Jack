@@ -22,15 +22,12 @@ rustyjack-evasion = "0.1"
 ## Quick Start
 
 ```rust
-use rustyjack_evasion::{MacManager, TxPowerLevel, quick_randomize_mac};
+use rustyjack_evasion::{MacManager, TxPowerLevel};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Quick randomize (stateless)
-    let new_mac = quick_randomize_mac("wlan0")?;
-    println!("New MAC: {}", new_mac);
-    
-    // Or with state management
+    // Create a MAC manager with state management
     let mut manager = MacManager::new()?;
+    manager.set_auto_restore(false); // Disable auto-restore to keep changes
     
     // Randomize MAC (original is saved)
     let state = manager.randomize("wlan0")?;
@@ -38,7 +35,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     // Do operations...
     
-    // Restore original (automatic on drop, or manual)
+    // Restore original manually when done
     manager.restore("wlan0")?;
     
     Ok(())

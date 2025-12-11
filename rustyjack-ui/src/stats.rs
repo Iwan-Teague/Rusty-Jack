@@ -14,11 +14,7 @@ use rustyjack_core::cli::{HotspotCommand, StatusCommand};
 use rustyjack_core::{apply_interface_isolation, Commands};
 use serde_json::Value;
 
-use crate::{
-    config::GuiConfig,
-    core::CoreBridge,
-    display::StatusOverlay,
-};
+use crate::{config::GuiConfig, core::CoreBridge, display::StatusOverlay};
 
 pub struct StatsSampler {
     data: Arc<Mutex<StatusOverlay>>,
@@ -68,7 +64,8 @@ fn sample_once(core: &CoreBridge, shared: &Arc<Mutex<StatusOverlay>>, root: &Pat
         read_disk_usage(root.to_str().unwrap_or("/root/Rustyjack")).unwrap_or((0.0, 0.0));
 
     let mut overlay = {
-        let guard = shared.lock()
+        let guard = shared
+            .lock()
             .map_err(|e| anyhow::anyhow!("Stats mutex poisoned: {}", e))?;
         let mut snapshot = guard.clone();
 

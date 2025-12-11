@@ -220,6 +220,21 @@ pub struct SettingsConfig {
     pub target_bssid: String,
     #[serde(default)]
     pub target_channel: u8,
+    /// Master encryption toggle
+    #[serde(default)]
+    pub encryption_enabled: bool,
+    /// Encrypt discord webhook file
+    #[serde(default)]
+    pub encrypt_discord_webhook: bool,
+    /// Encrypt loot files
+    #[serde(default)]
+    pub encrypt_loot: bool,
+    /// Encrypt saved Wi-Fi profiles
+    #[serde(default)]
+    pub encrypt_wifi_profiles: bool,
+    /// Default path to encryption key file (for USB lookup)
+    #[serde(default)]
+    pub encryption_key_path: String,
     /// Auto-randomize MAC before attacks
     #[serde(default)]
     pub mac_randomization_enabled: bool,
@@ -258,6 +273,11 @@ impl Default for SettingsConfig {
             logs_enabled: Self::default_logs_enabled(),
             target_bssid: String::new(),
             target_channel: 0,
+            encryption_enabled: false,
+            encrypt_discord_webhook: false,
+            encrypt_loot: false,
+            encrypt_wifi_profiles: false,
+            encryption_key_path: String::new(),
             mac_randomization_enabled: false,
             original_macs: HashMap::new(),
             current_macs: HashMap::new(),

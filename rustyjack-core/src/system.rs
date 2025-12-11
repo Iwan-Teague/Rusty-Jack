@@ -26,8 +26,7 @@
 //! explicit error messages if not run as root.
 
 use std::{
-    env,
-    fs,
+    env, fs,
     net::Ipv4Addr,
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -41,6 +40,7 @@ use regex::Regex;
 use reqwest::blocking::{multipart, Client};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
+use zeroize::Zeroize;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct InterfaceInfo {
@@ -1677,26 +1677,56 @@ pub fn list_wifi_profiles(root: &Path) -> Result<Vec<WifiProfileRecord>> {
             }
         };
 
-        if !entry.path().is_file() {
+        let path = entry.path();
+        if !path.is_file() {
             continue;
         }
 
-        if entry.path().extension().and_then(|s| s.to_str()) != Some("json") {
+        let ext = path.extension().and_then(|s| s.to_str());
+        if ext != Some("json") && ext != Some("enc") {
             continue;
         }
 
-        let contents = match fs::read_to_string(entry.path()) {
-            Ok(c) => c,
-            Err(e) => {
-                log::warn!("Failed to read profile {}: {e}", entry.path().display());
-                continue;
+        let contents = if ext == Some("enc") {
+            match rustyjack_encryption::decrypt_file(&path) {
+                Ok(mut bytes) => {
+                    let out = match String::from_utf8(bytes.clone()) {
+                        Ok(mut s) => {
+                            let copy = s.clone();
+                            s.zeroize();
+                            copy
+                        }
+                        Err(e) => {
+                            log::warn!("Invalid UTF-8 in profile {}: {e}", path.display());
+                            bytes.zeroize();
+                            continue;
+                        }
+                    };
+                    bytes.zeroize();
+                    out
+                }
+                Err(e) => {
+                    log::warn!("Failed to decrypt profile {}: {e}", path.display());
+                    continue;
+                }
+            }
+        } else {
+            match fs::read_to_string(&path) {
+                Ok(mut c) => {
+                    let out = c.clone();
+                    c.zeroize();
+                    out
+                }
+                Err(e) => {
+                    log::warn!("Failed to read profile {}: {e}", path.display());
+                    continue;
+                }
             }
         };
 
         match serde_json::from_str::<WifiProfile>(&contents) {
             Ok(profile) => {
-                let filename = entry
-                    .path()
+                let filename = path
                     .file_name()
                     .and_then(|s| s.to_str())
                     .unwrap_or_default()
@@ -1715,10 +1745,7 @@ pub fn list_wifi_profiles(root: &Path) -> Result<Vec<WifiProfileRecord>> {
                 });
             }
             Err(err) => {
-                log::warn!(
-                    "Failed to parse Wi-Fi profile {}: {err}",
-                    entry.path().display()
-                );
+                log::warn!("Failed to parse Wi-Fi profile {}: {err}", path.display());
             }
         }
     }
@@ -1743,19 +1770,37 @@ pub fn load_wifi_profile(root: &Path, identifier: &str) -> Result<Option<StoredW
     let identifier_lower = identifier.trim().to_lowercase();
     log::info!("Loading WiFi profile for identifier: {identifier}");
 
-    // Try direct filename match first (case-insensitive)
+    // Try direct filename match first (case-insensitive), support .json and .json.enc
     let sanitized = sanitize_profile_name(identifier);
-    let direct = dir.join(format!("{sanitized}.json"));
-    if direct.exists() {
-        log::info!("Found profile by direct match: {}", direct.display());
-        let contents = fs::read_to_string(&direct)
-            .with_context(|| format!("reading profile from {}", direct.display()))?;
-        let profile = serde_json::from_str::<WifiProfile>(&contents)
-            .with_context(|| format!("parsing profile from {}", direct.display()))?;
-        return Ok(Some(StoredWifiProfile {
-            profile,
-            path: direct,
-        }));
+    let direct_plain = dir.join(format!("{sanitized}.json"));
+    let direct_enc = dir.join(format!("{sanitized}.json.enc"));
+
+    for candidate in [&direct_plain, &direct_enc] {
+        if candidate.exists() {
+            log::info!("Found profile by direct match: {}", candidate.display());
+            let contents = if candidate.extension().and_then(|s| s.to_str()) == Some("enc") {
+                let mut bytes = rustyjack_encryption::decrypt_file(candidate)
+                    .with_context(|| format!("decrypting profile {}", candidate.display()))?;
+                let mut s = String::from_utf8(bytes.clone())
+                    .with_context(|| format!("utf8 profile {}", candidate.display()))?;
+                let out = s.clone();
+                s.zeroize();
+                bytes.zeroize();
+                out
+            } else {
+                let mut s = fs::read_to_string(candidate)
+                    .with_context(|| format!("reading profile from {}", candidate.display()))?;
+                let out = s.clone();
+                s.zeroize();
+                out
+            };
+            let profile = serde_json::from_str::<WifiProfile>(&contents)
+                .with_context(|| format!("parsing profile from {}", candidate.display()))?;
+            return Ok(Some(StoredWifiProfile {
+                profile,
+                path: candidate.to_path_buf(),
+            }));
+        }
     }
 
     // Search all profiles for case-insensitive SSID match
@@ -1764,39 +1809,65 @@ pub fn load_wifi_profile(root: &Path, identifier: &str) -> Result<Option<StoredW
         .with_context(|| format!("reading profiles directory {}", dir.display()))?
     {
         let entry = entry.with_context(|| "reading directory entry")?;
-        if !entry.path().is_file() {
+        let path = entry.path();
+        if !path.is_file() {
             continue;
         }
 
-        let contents = match fs::read_to_string(entry.path()) {
-            Ok(c) => c,
-            Err(e) => {
-                log::warn!(
-                    "Could not read profile file {}: {e}",
-                    entry.path().display()
-                );
-                continue;
+        let ext = path.extension().and_then(|s| s.to_str());
+        if ext != Some("json") && ext != Some("enc") {
+            continue;
+        }
+
+        let contents = if ext == Some("enc") {
+            match rustyjack_encryption::decrypt_file(&path) {
+                Ok(mut bytes) => {
+                    let out = match String::from_utf8(bytes.clone()) {
+                        Ok(mut s) => {
+                            let copy = s.clone();
+                            s.zeroize();
+                            copy
+                        }
+                        Err(e) => {
+                            log::warn!("Could not parse profile file {}: {e}", path.display());
+                            bytes.zeroize();
+                            continue;
+                        }
+                    };
+                    bytes.zeroize();
+                    out
+                }
+                Err(e) => {
+                    log::warn!("Could not decrypt profile file {}: {e}", path.display());
+                    continue;
+                }
+            }
+        } else {
+            match fs::read_to_string(&path) {
+                Ok(mut c) => {
+                    let out = c.clone();
+                    c.zeroize();
+                    out
+                }
+                Err(e) => {
+                    log::warn!("Could not read profile file {}: {e}", path.display());
+                    continue;
+                }
             }
         };
 
         let profile = match serde_json::from_str::<WifiProfile>(&contents) {
             Ok(p) => p,
             Err(e) => {
-                log::warn!(
-                    "Could not parse profile file {}: {e}",
-                    entry.path().display()
-                );
+                log::warn!("Could not parse profile file {}: {e}", path.display());
                 continue;
             }
         };
 
         // Case-insensitive comparison
         if profile.ssid.trim().to_lowercase() == identifier_lower {
-            log::info!("Found profile by SSID match: {}", entry.path().display());
-            return Ok(Some(StoredWifiProfile {
-                profile,
-                path: entry.path(),
-            }));
+            log::info!("Found profile by SSID match: {}", path.display());
+            return Ok(Some(StoredWifiProfile { profile, path }));
         }
     }
 
@@ -1838,8 +1909,28 @@ pub fn save_wifi_profile(root: &Path, profile: &WifiProfile) -> Result<PathBuf> 
     }
     to_save.last_used = Some(now);
 
-    let filename = format!("{}.json", sanitize_profile_name(&to_save.ssid));
+    let sanitized = sanitize_profile_name(&to_save.ssid);
+    let encrypt_profiles = rustyjack_encryption::wifi_profile_encryption_active();
+    if encrypt_profiles && !rustyjack_encryption::encryption_enabled() {
+        bail!("WiFi profile encryption is enabled but no key is loaded");
+    }
+
+    let filename = if encrypt_profiles {
+        format!("{sanitized}.json.enc")
+    } else {
+        format!("{sanitized}.json")
+    };
     let path = dir.join(filename);
+
+    // Remove legacy copy with the opposite extension to prevent stale duplicates
+    let legacy = if encrypt_profiles {
+        dir.join(format!("{sanitized}.json"))
+    } else {
+        dir.join(format!("{sanitized}.json.enc"))
+    };
+    if legacy.exists() {
+        let _ = fs::remove_file(&legacy);
+    }
 
     log::info!("Writing profile to: {}", path.display());
     write_wifi_profile(&path, &to_save)
@@ -1859,15 +1950,18 @@ pub fn delete_wifi_profile(root: &Path, identifier: &str) -> Result<()> {
     let identifier_lower = identifier.trim().to_lowercase();
     log::info!("Attempting to delete WiFi profile: {identifier}");
 
-    // Try direct filename match first
+    // Try direct filename match first (plain or encrypted)
     let sanitized = sanitize_profile_name(identifier);
-    let path = dir.join(format!("{sanitized}.json"));
-    if path.exists() {
-        log::info!("Deleting profile by direct match: {}", path.display());
-        fs::remove_file(&path)
-            .with_context(|| format!("deleting profile at {}", path.display()))?;
-        log::info!("Profile deleted successfully");
-        return Ok(());
+    let direct_plain = dir.join(format!("{sanitized}.json"));
+    let direct_enc = dir.join(format!("{sanitized}.json.enc"));
+    for candidate in [&direct_plain, &direct_enc] {
+        if candidate.exists() {
+            log::info!("Deleting profile by direct match: {}", candidate.display());
+            fs::remove_file(candidate)
+                .with_context(|| format!("deleting profile at {}", candidate.display()))?;
+            log::info!("Profile deleted successfully");
+            return Ok(());
+        }
     }
 
     // Search for case-insensitive match
@@ -1876,30 +1970,65 @@ pub fn delete_wifi_profile(root: &Path, identifier: &str) -> Result<()> {
         .with_context(|| format!("reading profiles directory {}", dir.display()))?
     {
         let entry = entry.with_context(|| "reading directory entry")?;
-        if !entry.path().is_file() {
+        let path = entry.path();
+        if !path.is_file() {
             continue;
         }
 
-        let contents = match fs::read_to_string(entry.path()) {
-            Ok(c) => c,
-            Err(e) => {
-                log::warn!("Could not read profile {}: {e}", entry.path().display());
-                continue;
+        let ext = path.extension().and_then(|s| s.to_str());
+        if ext != Some("json") && ext != Some("enc") {
+            continue;
+        }
+
+        let contents = if ext == Some("enc") {
+            match rustyjack_encryption::decrypt_file(&path) {
+                Ok(mut bytes) => {
+                    let out = match String::from_utf8(bytes.clone()) {
+                        Ok(mut s) => {
+                            let copy = s.clone();
+                            s.zeroize();
+                            copy
+                        }
+                        Err(e) => {
+                            log::warn!("Could not parse profile {}: {e}", path.display());
+                            bytes.zeroize();
+                            continue;
+                        }
+                    };
+                    bytes.zeroize();
+                    out
+                }
+                Err(e) => {
+                    log::warn!("Could not decrypt profile {}: {e}", path.display());
+                    continue;
+                }
+            }
+        } else {
+            match fs::read_to_string(&path) {
+                Ok(mut c) => {
+                    let out = c.clone();
+                    c.zeroize();
+                    out
+                }
+                Err(e) => {
+                    log::warn!("Could not read profile {}: {e}", path.display());
+                    continue;
+                }
             }
         };
 
         let profile = match serde_json::from_str::<WifiProfile>(&contents) {
             Ok(p) => p,
             Err(e) => {
-                log::warn!("Could not parse profile {}: {e}", entry.path().display());
+                log::warn!("Could not parse profile {}: {e}", path.display());
                 continue;
             }
         };
 
         if profile.ssid.trim().to_lowercase() == identifier_lower {
-            log::info!("Deleting profile by SSID match: {}", entry.path().display());
-            fs::remove_file(entry.path())
-                .with_context(|| format!("deleting profile at {}", entry.path().display()))?;
+            log::info!("Deleting profile by SSID match: {}", path.display());
+            fs::remove_file(&path)
+                .with_context(|| format!("deleting profile at {}", path.display()))?;
             log::info!("Profile deleted successfully");
             return Ok(());
         }
@@ -1913,8 +2042,24 @@ pub fn write_wifi_profile(path: &Path, profile: &WifiProfile) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let json = serde_json::to_string_pretty(profile)?;
-    fs::write(path, json)?;
+    let mut json = serde_json::to_string_pretty(profile)?;
+    let encrypt_profiles = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|ext| ext.eq_ignore_ascii_case("enc"))
+        .unwrap_or(false)
+        || rustyjack_encryption::wifi_profile_encryption_active();
+
+    if encrypt_profiles {
+        if !rustyjack_encryption::encryption_enabled() {
+            json.zeroize();
+            bail!("WiFi profile encryption active but no key loaded");
+        }
+        rustyjack_encryption::encrypt_to_file(path, json.as_bytes())?;
+    } else {
+        fs::write(path, json.as_bytes())?;
+    }
+    json.zeroize();
     Ok(())
 }
 

@@ -2,7 +2,8 @@
 //!
 //! Native Rust wireless security toolkit for Raspberry Pi.
 //! Provides monitor mode management, packet injection, deauthentication attacks,
-//! and handshake capture without external dependencies.
+//! and handshake capture. Requires Linux userspace tools (`ip`, `iw`, `hostapd`,
+//! `dnsmasq`, `tcpdump`) and root privileges for raw sockets.
 //!
 //! ## Features
 //!
@@ -50,7 +51,6 @@
 
 // Module declarations
 pub mod capture;
-pub mod channel;
 pub mod crack;
 pub mod deauth;
 pub mod error;
@@ -62,7 +62,6 @@ pub mod inject;
 pub mod interface;
 pub mod karma;
 pub mod nl80211;
-pub mod pipeline;
 pub mod pmkid;
 pub mod probe;
 pub mod radiotap;
@@ -95,7 +94,6 @@ pub mod stealth {
 
 // Re-exports for convenience
 pub use capture::{CaptureFilter, CapturedPacket, PacketCapture};
-pub use channel::ChannelInfo;
 pub use crack::{CrackResult, CrackerConfig, WpaCracker};
 pub use deauth::{DeauthAttacker, DeauthConfig, DeauthStats};
 pub use error::{Result, WirelessError};
@@ -106,10 +104,6 @@ pub use interface::WirelessInterface;
 pub use karma::{
     execute_karma, execute_karma_with_ap, CapturedProbe, KarmaAttack, KarmaConfig,
     KarmaExecutionResult, KarmaResult, KarmaStats, KarmaVictim,
-};
-pub use pipeline::{
-    AttackPipeline, AttackTechnique, PipelineConfig, PipelineObjective, PipelineResult,
-    PipelineStage,
 };
 pub use pmkid::{
     execute_pmkid_capture, PmkidCapture, PmkidCaptureResult, PmkidCapturer, PmkidConfig,
@@ -131,22 +125,6 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub fn check_privileges() -> bool {
     // Check if we're root or have CAP_NET_RAW
     unsafe { libc::geteuid() == 0 }
-}
-
-/// Global logging toggle driven by the UI.
-/// When disabled, components should avoid writing log files.
-pub fn logs_disabled() -> bool {
-    match std::env::var("RUSTYJACK_LOGS_DISABLED") {
-        Ok(val) => {
-            let normalized = val.trim().to_ascii_lowercase();
-            matches!(normalized.as_str(), "1" | "true" | "yes" | "on")
-        }
-        Err(_) => false,
-    }
-}
-
-pub fn logs_enabled() -> bool {
-    !logs_disabled()
 }
 
 /// Check if an interface exists and is wireless

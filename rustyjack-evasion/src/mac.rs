@@ -337,7 +337,8 @@ impl MacManager {
             });
         }
 
-        self.states.entry(interface.to_string())
+        self.states
+            .entry(interface.to_string())
             .or_insert_with(|| MacState {
                 interface: interface.to_string(),
                 original_mac: current_mac.clone(),

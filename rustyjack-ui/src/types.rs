@@ -3,9 +3,13 @@
 //! This module contains all the Serde response types and internal
 //! data structures used throughout the UI.
 
-use std::{collections::HashMap, path::PathBuf, time::{Duration, SystemTime}};
-use serde::Deserialize;
 use rustyjack_core::InterfaceSummary;
+use serde::Deserialize;
+use std::{
+    collections::HashMap,
+    path::PathBuf,
+    time::{Duration, SystemTime},
+};
 
 #[cfg(target_os = "linux")]
 use rustyjack_wireless::handshake::HandshakeExport;

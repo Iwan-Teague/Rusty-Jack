@@ -3015,21 +3015,6 @@ impl App {
         Ok(())
     }
 
-        let confirm_migrate = vec![
-            "Dry run (safe)".to_string(),
-            "Run migration (destructive)".to_string(),
-            "Cancel".to_string(),
-        ];
-        let choice = self.choose_from_list("Migration mode", &confirm_migrate)?;
-        let execute = match choice {
-            Some(0) => false,
-            Some(1) => true,
-            _ => return Ok(()),
-        };
-
-        self.run_fde_migrate(&target, &keyfile, execute)
-    }
-
     fn run_usb_prepare(&mut self, device: &str) -> Result<()> {
         let script = self.root.join("scripts").join("fde_prepare_usb.sh");
         if !script.exists() {

@@ -184,6 +184,32 @@ pub fn set_max_power(interface: &str) -> Result<()> {
     manager.set_power(interface, TxPowerLevel::Maximum)
 }
 
+/// Check if logging is disabled via environment variable
+///
+/// # Returns
+///
+/// `true` if `RUSTYJACK_LOGS_DISABLED` is set to "1", "true", "yes", or "on"
+#[must_use]
+pub fn logs_disabled() -> bool {
+    match std::env::var("RUSTYJACK_LOGS_DISABLED") {
+        Ok(val) => {
+            let normalized = val.trim().to_ascii_lowercase();
+            matches!(normalized.as_str(), "1" | "true" | "yes" | "on")
+        }
+        Err(_) => false,
+    }
+}
+
+/// Check if logging is enabled
+///
+/// # Returns
+///
+/// `true` if logging is not explicitly disabled via `RUSTYJACK_LOGS_DISABLED`
+#[must_use]
+pub fn logs_enabled() -> bool {
+    !logs_disabled()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

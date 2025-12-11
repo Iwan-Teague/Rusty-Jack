@@ -589,11 +589,10 @@ pub fn cleanup_on_exit(root: &Path, config: &AntiForensicsConfig) -> Result<()> 
     clear_routing_artifacts()?;
 
     // Restore original MAC addresses
-    if let Ok(state_mgr) = rustyjack_evasion::StateManager::new() {
-        if let Ok(states) = state_mgr.list_states() {
-            for interface in states {
-                let _ = state_mgr.restore(&interface);
-            }
+    let state_mgr = rustyjack_evasion::StateManager::new();
+    if let Ok(states) = state_mgr.list_states() {
+        for interface in states {
+            let _ = state_mgr.restore(&interface);
         }
     }
 

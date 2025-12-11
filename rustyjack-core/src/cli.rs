@@ -756,6 +756,10 @@ pub enum SystemCommand {
     Update(SystemUpdateArgs),
     /// Randomize hostname to a plausible, non-identifying value
     RandomizeHostname,
+    /// Prepare a USB key for full disk encryption (formats device)
+    FdePrepare(SystemFdePrepareArgs),
+    /// Migrate root into encrypted volume (destructive; defaults to dry run)
+    FdeMigrate(SystemFdeMigrateArgs),
 }
 
 #[derive(Args, Debug)]
@@ -775,6 +779,26 @@ pub struct SystemUpdateArgs {
     /// Directory where the backup archive should be written
     #[arg(long)]
     pub backup_dir: Option<PathBuf>,
+}
+
+#[derive(Args, Debug)]
+pub struct SystemFdePrepareArgs {
+    /// Target removable USB device (e.g., /dev/sda)
+    #[arg(long)]
+    pub device: String,
+}
+
+#[derive(Args, Debug)]
+pub struct SystemFdeMigrateArgs {
+    /// Target block device for encrypted root (unused partition)
+    #[arg(long)]
+    pub target: String,
+    /// Path to keyfile (e.g., /mnt/usb/rustyjack.key)
+    #[arg(long)]
+    pub keyfile: String,
+    /// Perform destructive actions; omit to run dry-run only
+    #[arg(long, default_value_t = false)]
+    pub execute: bool,
 }
 
 #[derive(Subcommand, Debug)]

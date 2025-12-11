@@ -1230,20 +1230,27 @@ impl Display {
 
     fn draw_network_interfaces(&mut self, status: &StatusOverlay) -> Result<()> {
         use std::process::Command;
-        
+
         self.draw_toolbar_with_title(Some("NETWORK IFS"), status)?;
 
         let mut entries = Vec::new();
-        
+
         #[cfg(target_os = "linux")]
         {
-            if let Ok(output) = Command::new("ip").args(["-o", "-4", "addr", "show"]).output() {
+            if let Ok(output) = Command::new("ip")
+                .args(["-o", "-4", "addr", "show"])
+                .output()
+            {
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 for line in stdout.lines() {
                     let parts: Vec<&str> = line.split_whitespace().collect();
                     if parts.len() >= 4 {
                         let iface = parts[1];
-                        if let Some(ip_part) = parts.iter().position(|&p| p == "inet").and_then(|i| parts.get(i + 1)) {
+                        if let Some(ip_part) = parts
+                            .iter()
+                            .position(|&p| p == "inet")
+                            .and_then(|i| parts.get(i + 1))
+                        {
                             let ip = ip_part.split('/').next().unwrap_or(ip_part);
                             entries.push(format!("{}: {}", iface, ip));
                         }
@@ -1251,7 +1258,7 @@ impl Display {
                 }
             }
         }
-        
+
         #[cfg(not(target_os = "linux"))]
         {
             entries.push("No interfaces".to_string());
@@ -1501,13 +1508,20 @@ impl Display {
                 #[cfg(target_os = "linux")]
                 {
                     use std::process::Command;
-                    if let Ok(output) = Command::new("ip").args(["-o", "-4", "addr", "show"]).output() {
+                    if let Ok(output) = Command::new("ip")
+                        .args(["-o", "-4", "addr", "show"])
+                        .output()
+                    {
                         let stdout = String::from_utf8_lossy(&output.stdout);
                         for line in stdout.lines() {
                             let parts: Vec<&str> = line.split_whitespace().collect();
                             if parts.len() >= 4 {
                                 let iface = parts[1];
-                                if let Some(ip_part) = parts.iter().position(|&p| p == "inet").and_then(|i| parts.get(i + 1)) {
+                                if let Some(ip_part) = parts
+                                    .iter()
+                                    .position(|&p| p == "inet")
+                                    .and_then(|i| parts.get(i + 1))
+                                {
                                     let ip = ip_part.split('/').next().unwrap_or(ip_part);
                                     println!("{}: {}", iface, ip);
                                 }

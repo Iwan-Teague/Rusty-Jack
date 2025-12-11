@@ -1,6 +1,6 @@
 # rustyjack-wireless
 
-Native Rust wireless security toolkit for Raspberry Pi Zero W 2. Replaces aircrack-ng with pure Rust implementations for offensive WiFi operations.
+Native Rust wireless security toolkit for Raspberry Pi Zero W 2. Provides offensive WiFi operations with Rust code but still calls standard Linux tools where needed (e.g., `ip`, `iw`, `hostapd`, `dnsmasq`, `tcpdump`); root access is required.
 
 ## Why Native Rust?
 

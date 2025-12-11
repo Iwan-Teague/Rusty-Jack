@@ -3,13 +3,13 @@
 //! This module contains standalone helper functions that don't
 //! require access to the App state.
 
+use anyhow::{Context, Result};
 use std::{
     fs,
     io::{BufRead, BufReader},
     path::Path,
     process::Command,
 };
-use anyhow::{Context, Result};
 
 /// Count the number of lines in a file
 pub fn count_lines(path: &Path) -> std::io::Result<usize> {
@@ -131,7 +131,7 @@ pub fn renew_dhcp_and_reconnect(interface: &str) -> bool {
     let nm = Command::new("nmcli")
         .args(["device", "reconnect", interface])
         .status();
-    
+
     dhcp_renew.map(|s| s.success()).unwrap_or(false)
         || wpa.map(|s| s.success()).unwrap_or(false)
         || nm.map(|s| s.success()).unwrap_or(false)
@@ -160,7 +160,9 @@ pub fn generate_vendor_aware_mac(interface: &str) -> Result<rustyjack_evasion::M
 }
 
 #[cfg(target_os = "linux")]
-pub fn randomize_mac_with_reconnect(interface: &str) -> Result<(rustyjack_evasion::MacState, bool)> {
+pub fn randomize_mac_with_reconnect(
+    interface: &str,
+) -> Result<(rustyjack_evasion::MacState, bool)> {
     use rustyjack_evasion::MacManager;
 
     let mut manager = MacManager::new().context("creating MacManager")?;

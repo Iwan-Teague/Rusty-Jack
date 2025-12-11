@@ -174,7 +174,7 @@ pub fn arp_scan(interface: &str) -> Result<Vec<ArpDevice>> {
     if devices.is_empty() {
         perform_active_arp_scan(&subnet, interface)?;
         std::thread::sleep(Duration::from_millis(500));
-        
+
         let output = Command::new("ip")
             .args(["neigh", "show", "dev", interface])
             .output()
@@ -216,7 +216,8 @@ fn parse_arp_line(line: &str) -> Option<ArpDevice> {
     let parts: Vec<&str> = line.split_whitespace().collect();
     if parts.len() >= 5 {
         let ip = parts[0].parse::<Ipv4Addr>().ok()?;
-        let mac = parts.iter()
+        let mac = parts
+            .iter()
             .find(|p| p.contains(':') && p.len() == 17)?
             .to_string();
 
@@ -254,16 +255,15 @@ fn perform_active_arp_scan(subnet: &str, interface: &str) -> Result<()> {
 }
 
 fn resolve_hostname(ip: Ipv4Addr) -> Option<String> {
-    let output = Command::new("host")
-        .arg(ip.to_string())
-        .output()
-        .ok()?;
+    let output = Command::new("host").arg(ip.to_string()).output().ok()?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     if stdout.contains("domain name pointer") {
         let parts: Vec<&str> = stdout.split_whitespace().collect();
         if let Some(idx) = parts.iter().position(|&p| p == "pointer") {
-            return parts.get(idx + 1).map(|s| s.trim_end_matches('.').to_string());
+            return parts
+                .get(idx + 1)
+                .map(|s| s.trim_end_matches('.').to_string());
         }
     }
 
@@ -432,8 +432,11 @@ fn read_sys_net_stat(interface: &str, stat: &str) -> Result<u64> {
 
 /// Calculate bandwidth from two traffic samples
 pub fn calculate_bandwidth(before: &TrafficStats, after: &TrafficStats) -> BandwidthSample {
-    let elapsed = after.timestamp.duration_since(before.timestamp).as_secs_f64();
-    
+    let elapsed = after
+        .timestamp
+        .duration_since(before.timestamp)
+        .as_secs_f64();
+
     let rx_bytes_delta = after.rx_bytes.saturating_sub(before.rx_bytes);
     let tx_bytes_delta = after.tx_bytes.saturating_sub(before.tx_bytes);
 
@@ -450,13 +453,7 @@ pub fn calculate_bandwidth(before: &TrafficStats, after: &TrafficStats) -> Bandw
 /// Capture DNS queries using tcpdump
 pub fn start_dns_capture(interface: &str) -> Result<std::process::Child> {
     Command::new("tcpdump")
-        .args([
-            "-i",
-            interface,
-            "-n",
-            "-l",
-            "udp port 53",
-        ])
+        .args(["-i", interface, "-n", "-l", "udp port 53"])
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .spawn()
@@ -467,13 +464,15 @@ pub fn start_dns_capture(interface: &str) -> Result<std::process::Child> {
 pub fn parse_dns_query(line: &str) -> Option<DnsQuery> {
     if line.contains("A?") || line.contains("AAAA?") {
         let parts: Vec<&str> = line.split_whitespace().collect();
-        
-        let source_ip = parts.iter()
+
+        let source_ip = parts
+            .iter()
             .find(|p| p.contains('.') && !p.contains('>'))
             .and_then(|s| s.split('.').next())
             .and_then(|s| s.parse::<Ipv4Addr>().ok())?;
 
-        let domain = parts.iter()
+        let domain = parts
+            .iter()
             .position(|&p| p == "A?" || p == "AAAA?")
             .and_then(|idx| parts.get(idx + 1))
             .map(|s| s.trim_end_matches('?').to_string())?;

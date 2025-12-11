@@ -40,6 +40,7 @@ pub enum MenuAction {
     ReconMdnsScan,
     ReconBandwidth,
     ReconDnsCapture,
+    ManageSavedNetworks,
     /// Post-connection wireless offensive actions
     ResponderOn,
     ResponderOff,
@@ -56,6 +57,8 @@ pub enum MenuAction {
     ToggleMacRandomization,
     /// Randomize MAC address now
     RandomizeMacNow,
+    ImportWifiFromUsb,
+    ImportWebhookFromUsb,
     /// Set MAC to a specific vendor OUI
     SetVendorMac,
     /// Restore original MAC
@@ -90,6 +93,22 @@ pub enum MenuAction {
     BuildNetworkReport,
     /// Ethernet MITM / ARP spoof capture
     EthernetMitm,
+    /// Load encryption key from USB
+    EncryptionLoadKey,
+    /// Generate encryption key to USB
+    EncryptionGenerateKey,
+    /// Toggle master encryption
+    ToggleEncryptionMaster,
+    /// Toggle webhook encryption
+    ToggleEncryptWebhook,
+    /// Toggle loot encryption
+    ToggleEncryptLoot,
+    /// Toggle Wi-Fi profile encryption
+    ToggleEncryptWifiProfiles,
+    /// Enter full disk encryption flow
+    FullDiskEncryptionSetup,
+    /// Start encrypted root migration (uses prepared key)
+    FullDiskEncryptionMigrate,
     /// Purge everything related to Rustyjack
     CompletePurge,
     /// Purge log files from loot
@@ -177,6 +196,8 @@ impl MenuTree {
         nodes.insert("aeth", MenuNode::Static(ethernet_menu));
         nodes.insert("aethp", MenuNode::Static(ethernet_pipeline_menu));
         nodes.insert("apt", MenuNode::Static(autopilot_menu));
+        nodes.insert("enc", MenuNode::Static(encryption_menu));
+        nodes.insert("encadv", MenuNode::Static(encryption_advanced_menu));
         Self { nodes }
     }
 
@@ -216,6 +237,7 @@ fn main_menu() -> Vec<MenuEntry> {
         MenuEntry::new("Autopilot", MenuAction::Submenu("apt")),
         MenuEntry::new("Obfuscation", MenuAction::Submenu("ao")),
         MenuEntry::new("Loot", MenuAction::Submenu("ah")),
+        MenuEntry::new("Encryption", MenuAction::Submenu("enc")),
         MenuEntry::new("Dashboards", MenuAction::ViewDashboards),
         MenuEntry::new("Settings", MenuAction::Submenu("as")),
     ]
@@ -242,6 +264,7 @@ fn wifi_access_menu() -> Vec<MenuEntry> {
         MenuEntry::new("Scan Networks", MenuAction::ScanNetworks),
         MenuEntry::new("Recon", MenuAction::Submenu("awar")),
         MenuEntry::new("Offence", MenuAction::Submenu("awao")),
+        MenuEntry::new("Import WiFi from USB", MenuAction::ImportWifiFromUsb),
         MenuEntry::new("Connect Network", MenuAction::ConnectKnownNetwork),
     ]
 }
@@ -251,6 +274,7 @@ fn wifi_connected_menu() -> Vec<MenuEntry> {
         MenuEntry::new("Recon", MenuAction::Submenu("awcr")),
         MenuEntry::new("Offence", MenuAction::Submenu("awco")),
         MenuEntry::new("Ensure Route", MenuAction::WifiEnsureRoute),
+        MenuEntry::new("Manage Saved Networks", MenuAction::ManageSavedNetworks),
         MenuEntry::new("Disconnect WiFi", MenuAction::WifiDisconnect),
     ]
 }
@@ -312,6 +336,28 @@ fn ethernet_pipeline_menu() -> Vec<MenuEntry> {
         "Site Cred Capture",
         MenuAction::EthernetSiteCredCapture,
     )]
+}
+
+fn encryption_menu() -> Vec<MenuEntry> {
+    vec![
+        MenuEntry::new("Encryption [OFF]", MenuAction::ToggleEncryptionMaster),
+        MenuEntry::new("Webhook [OFF]", MenuAction::ToggleEncryptWebhook),
+        MenuEntry::new("Loot [OFF]", MenuAction::ToggleEncryptLoot),
+        MenuEntry::new("WiFi Profiles [OFF]", MenuAction::ToggleEncryptWifiProfiles),
+        MenuEntry::new("Load Key from USB", MenuAction::EncryptionLoadKey),
+        MenuEntry::new("Generate Key on USB", MenuAction::EncryptionGenerateKey),
+        MenuEntry::new("Advanced", MenuAction::Submenu("encadv")),
+    ]
+}
+
+fn encryption_advanced_menu() -> Vec<MenuEntry> {
+    vec![
+        MenuEntry::new("Full Disk Encryption", MenuAction::FullDiskEncryptionSetup),
+        MenuEntry::new(
+            "Run Migration (dry/destructive)",
+            MenuAction::FullDiskEncryptionMigrate,
+        ),
+    ]
 }
 
 fn pipeline_menu() -> Vec<MenuEntry> {
@@ -452,6 +498,7 @@ fn logs_menu() -> Vec<MenuEntry> {
 
 fn discord_menu() -> Vec<MenuEntry> {
     vec![
+        MenuEntry::new("Import Webhook from USB", MenuAction::ImportWebhookFromUsb),
         MenuEntry::new("Toggle Discord", MenuAction::ToggleDiscord),
         MenuEntry::new("Upload Loot", MenuAction::DiscordUpload),
     ]
@@ -522,6 +569,8 @@ pub fn menu_title(id: &str) -> &'static str {
         "aom" => "MAC Address",
         "aopp" => "Operating Mode",
         "atx" => "TX Power",
+        "enc" => "Encryption",
+        "encadv" => "Encryption: Advanced",
         _ => "Menu",
     }
 }

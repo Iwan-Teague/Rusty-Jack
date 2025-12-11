@@ -16,9 +16,9 @@ use rustyjack_ethernet::{
     LanDiscoveryResult,
 };
 use rustyjack_wireless::{
-    start_hotspot, status_hotspot, stop_hotspot, HotspotConfig, HotspotState,
     arp_scan, calculate_bandwidth, discover_gateway, discover_mdns_devices, get_traffic_stats,
-    parse_dns_query, scan_network_services, start_dns_capture,
+    parse_dns_query, scan_network_services, start_dns_capture, start_hotspot, status_hotspot,
+    stop_hotspot, HotspotConfig, HotspotState,
 };
 use serde_json::{json, Value};
 use walkdir::WalkDir;
@@ -30,23 +30,24 @@ use crate::cli::{
     HardwareCommand, HotspotCommand, HotspotStartArgs, LootCommand, LootKind, LootListArgs,
     LootReadArgs, MitmCommand, MitmStartArgs, NotifyCommand, ProcessCommand, ProcessKillArgs,
     ProcessStatusArgs, ResponderArgs, ResponderCommand, ReverseCommand, ReverseLaunchArgs,
-    ScanCommand, ScanRunArgs, StatusCommand, SystemCommand, SystemUpdateArgs, WifiBestArgs,
-    WifiCommand, WifiCrackArgs, WifiDeauthArgs, WifiDisconnectArgs, WifiEvilTwinArgs,
-    WifiKarmaArgs, WifiPmkidArgs, WifiProbeSniffArgs, WifiProfileCommand, WifiProfileConnectArgs,
-    WifiProfileDeleteArgs, WifiProfileSaveArgs, WifiReconArpScanArgs, WifiReconBandwidthArgs,
-    WifiReconCommand, WifiReconDnsCaptureArgs, WifiReconGatewayArgs, WifiReconMdnsScanArgs,
-    WifiReconServiceScanArgs, WifiRouteCommand, WifiRouteEnsureArgs, WifiRouteMetricArgs,
-    WifiScanArgs, WifiStatusArgs, WifiSwitchArgs,
+    ScanCommand, ScanRunArgs, StatusCommand, SystemCommand, SystemFdeMigrateArgs,
+    SystemFdePrepareArgs, SystemUpdateArgs, WifiBestArgs, WifiCommand, WifiCrackArgs,
+    WifiDeauthArgs, WifiDisconnectArgs, WifiEvilTwinArgs, WifiKarmaArgs, WifiPmkidArgs,
+    WifiProbeSniffArgs, WifiProfileCommand, WifiProfileConnectArgs, WifiProfileDeleteArgs,
+    WifiProfileSaveArgs, WifiReconArpScanArgs, WifiReconBandwidthArgs, WifiReconCommand,
+    WifiReconDnsCaptureArgs, WifiReconGatewayArgs, WifiReconMdnsScanArgs, WifiReconServiceScanArgs,
+    WifiRouteCommand, WifiRouteEnsureArgs, WifiRouteMetricArgs, WifiScanArgs, WifiStatusArgs,
+    WifiSwitchArgs,
 };
 use crate::system::{
     append_payload_log, backup_repository, backup_routing_state, build_loot_path,
     build_manual_embed, build_mitm_pcap_path, compose_status_text, connect_wifi_network,
     default_gateway_ip, delete_wifi_profile, detect_ethernet_interface, detect_interface,
-    disconnect_wifi_interface, enable_ip_forwarding, enforce_single_interface, git_reset_to_remote,
-    find_interface_by_mac, interface_gateway, kill_process, kill_process_pattern,
-    list_interface_summaries, list_wifi_profiles, load_wifi_profile, log_mac_usage, ping_host,
-    process_running_exact, process_running_pattern, randomize_hostname, read_default_route,
-    read_discord_webhook, read_dns_servers, read_interface_preference,
+    disconnect_wifi_interface, enable_ip_forwarding, enforce_single_interface,
+    find_interface_by_mac, git_reset_to_remote, interface_gateway, kill_process,
+    kill_process_pattern, list_interface_summaries, list_wifi_profiles, load_wifi_profile,
+    log_mac_usage, ping_host, process_running_exact, process_running_pattern, randomize_hostname,
+    read_default_route, read_discord_webhook, read_dns_servers, read_interface_preference,
     read_interface_preference_with_mac, read_interface_stats, read_wifi_link_info,
     restart_system_service, restore_routing_state, rewrite_dns_servers, rewrite_ettercap_dns,
     sanitize_label, save_wifi_profile, scan_local_hosts, scan_wifi_networks, select_best_interface,
@@ -162,6 +163,8 @@ pub fn dispatch_command(root: &Path, command: Commands) -> Result<HandlerResult>
         Commands::Reverse(ReverseCommand::Launch(args)) => handle_reverse_launch(root, args),
         Commands::System(SystemCommand::Update(args)) => handle_system_update(root, args),
         Commands::System(SystemCommand::RandomizeHostname) => handle_randomize_hostname(),
+        Commands::System(SystemCommand::FdePrepare(args)) => handle_system_fde_prepare(root, args),
+        Commands::System(SystemCommand::FdeMigrate(args)) => handle_system_fde_migrate(root, args),
         Commands::Bridge(sub) => match sub {
             BridgeCommand::Start(args) => handle_bridge_start(root, args),
             BridgeCommand::Stop(args) => handle_bridge_stop(root, args),
@@ -194,9 +197,9 @@ fn handle_scan_run(root: &Path, args: ScanRunArgs) -> Result<HandlerResult> {
 
 fn handle_eth_discover(root: &Path, args: EthernetDiscoverArgs) -> Result<HandlerResult> {
     let interface = detect_ethernet_interface(args.interface.clone())?;
-    
+
     enforce_single_interface(&interface.name)?;
-    
+
     let cidr = args
         .target
         .clone()
@@ -702,9 +705,9 @@ fn handle_mitm_start(root: &Path, args: MitmStartArgs) -> Result<HandlerResult> 
         label,
     } = args;
     let interface_info = detect_interface(interface)?;
-    
+
     enforce_single_interface(&interface_info.name)?;
-    
+
     let gateway = default_gateway_ip().context("determining default gateway for MITM")?;
     let network = network.unwrap_or_else(|| interface_info.network_cidr());
 
@@ -1103,11 +1106,7 @@ fn handle_wifi_recon_arp_scan(args: WifiReconArpScanArgs) -> Result<HandlerResul
         "isolation_enforced": true,
     });
 
-    let msg = format!(
-        "Found {} device(s) on {}",
-        devices.len(),
-        args.interface
-    );
+    let msg = format!("Found {} device(s) on {}", devices.len(), args.interface);
 
     Ok((msg, data))
 }
@@ -1140,10 +1139,7 @@ fn handle_wifi_recon_service_scan(args: WifiReconServiceScanArgs) -> Result<Hand
         "count": services.len(),
     });
 
-    let msg = format!(
-        "Found services on {} device(s)",
-        services.len()
-    );
+    let msg = format!("Found services on {} device(s)", services.len());
 
     Ok((msg, data))
 }
@@ -1201,10 +1197,7 @@ fn handle_wifi_recon_bandwidth(args: WifiReconBandwidthArgs) -> Result<HandlerRe
         "tx_bytes": after.tx_bytes.saturating_sub(before.tx_bytes),
     });
 
-    let msg = format!(
-        "Bandwidth: RX={:.2} Mbps, TX={:.2} Mbps",
-        rx_mbps, tx_mbps
-    );
+    let msg = format!("Bandwidth: RX={:.2} Mbps, TX={:.2} Mbps", rx_mbps, tx_mbps);
 
     Ok((msg, data))
 }
@@ -1689,8 +1682,7 @@ fn handle_wifi_route_ensure(root: &Path, args: WifiRouteEnsureArgs) -> Result<Ha
         }
     }
 
-    let iface = iface
-        .ok_or_else(|| anyhow!("interface {} not found", interface))?;
+    let iface = iface.ok_or_else(|| anyhow!("interface {} not found", interface))?;
 
     enforce_single_interface(&target_interface)?;
     let gateway = interface_gateway(&target_interface)?;
@@ -1704,7 +1696,9 @@ fn handle_wifi_route_ensure(root: &Path, args: WifiRouteEnsureArgs) -> Result<Ha
         gateway_ip = Some(gateway);
     } else {
         // Remove any existing default route so traffic cannot leak to other interfaces
-        let _ = Command::new("ip").args(["route", "del", "default"]).status();
+        let _ = Command::new("ip")
+            .args(["route", "del", "default"])
+            .status();
     }
 
     write_interface_preference(root, "system_preferred", &target_interface)?;
@@ -1808,6 +1802,104 @@ fn handle_randomize_hostname() -> Result<HandlerResult> {
         let data = json!({ "hostname": new_hostname });
         Ok((format!("Hostname set to {}", new_hostname), data))
     }
+}
+
+fn handle_system_fde_prepare(root: &Path, args: SystemFdePrepareArgs) -> Result<HandlerResult> {
+    let SystemFdePrepareArgs { device } = args;
+    if !device.starts_with("/dev/") {
+        bail!("Device must be a block path like /dev/sda");
+    }
+
+    let script = root.join("scripts").join("fde_prepare_usb.sh");
+    if !script.exists() {
+        bail!("FDE prep script missing at {}", script.display());
+    }
+
+    let output = Command::new("bash")
+        .arg(&script)
+        .arg(&device)
+        .output()
+        .with_context(|| format!("running {}", script.display()))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+    if !output.status.success() {
+        let msg = if !stderr.trim().is_empty() {
+            stderr.trim().to_string()
+        } else {
+            format!("fde prepare failed with status {:?}", output.status.code())
+        };
+        bail!(msg);
+    }
+
+    let data = json!({
+        "device": device,
+        "stdout": stdout,
+        "stderr": stderr,
+    });
+    Ok(("FDE USB prepared".to_string(), data))
+}
+
+fn handle_system_fde_migrate(root: &Path, args: SystemFdeMigrateArgs) -> Result<HandlerResult> {
+    let SystemFdeMigrateArgs {
+        target,
+        keyfile,
+        execute,
+    } = args;
+
+    if !target.starts_with("/dev/") {
+        bail!("Target must be a block path like /dev/mmcblk0p3");
+    }
+    if keyfile.is_empty() {
+        bail!("Keyfile path is required");
+    }
+    let script = root.join("scripts").join("fde_migrate_root.sh");
+    if !script.exists() {
+        bail!("FDE migrate script missing at {}", script.display());
+    }
+
+    let mut cmd = Command::new("bash");
+    cmd.arg(&script)
+        .arg("--target")
+        .arg(&target)
+        .arg("--keyfile")
+        .arg(&keyfile);
+    if execute {
+        cmd.arg("--execute");
+    }
+
+    let output = cmd
+        .output()
+        .with_context(|| format!("running {}", script.display()))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+    if !output.status.success() {
+        let msg = if !stderr.trim().is_empty() {
+            stderr.trim().to_string()
+        } else {
+            format!("fde migrate failed with status {:?}", output.status.code())
+        };
+        bail!(msg);
+    }
+
+    let data = json!({
+        "target": target,
+        "keyfile": keyfile,
+        "execute": execute,
+        "stdout": stdout,
+        "stderr": stderr,
+    });
+    Ok((
+        if execute {
+            "FDE migration completed".to_string()
+        } else {
+            "FDE migration dry-run completed".to_string()
+        },
+        data,
+    ))
 }
 
 fn handle_bridge_start(root: &Path, args: BridgeStartArgs) -> Result<HandlerResult> {

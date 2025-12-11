@@ -8,6 +8,7 @@ use std::{
 use anyhow::{anyhow, Context, Result};
 use log::{debug, info, warn};
 use serde::{Deserialize, Serialize};
+use walkdir::WalkDir;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AntiForensicsConfig {
@@ -215,6 +216,101 @@ pub fn clear_network_history() -> Result<()> {
     }
 
     Ok(())
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PurgeReport {
+    pub removed: usize,
+    pub service_disabled: bool,
+    pub errors: Vec<String>,
+}
+
+/// Remove Rustyjack artifacts from the system and return a summary of actions taken.
+pub fn perform_complete_purge(root: &Path) -> PurgeReport {
+    let mut removed = 0usize;
+    let mut errors = Vec::new();
+    let mut service_disabled = false;
+
+    let _ = std::env::set_current_dir("/tmp");
+
+    let mut delete_path = |path: &Path| {
+        if !path.exists() {
+            return;
+        }
+        if path == Path::new("/") {
+            errors.push("Refused to delete /".to_string());
+            return;
+        }
+        let res = if path.is_dir() {
+            fs::remove_dir_all(path)
+        } else {
+            fs::remove_file(path)
+        };
+        match res {
+            Ok(_) => removed += 1,
+            Err(e) => errors.push(format!("{}: {}", path.display(), e)),
+        }
+    };
+
+    if let Ok(status) = Command::new("systemctl")
+        .args(["disable", "rustyjack.service"])
+        .status()
+    {
+        if status.success() {
+            service_disabled = true;
+        } else {
+            errors.push("systemctl disable rustyjack.service failed".to_string());
+        }
+    } else {
+        errors.push("systemctl disable rustyjack.service failed".to_string());
+    }
+
+    let system_paths = [
+        PathBuf::from("/usr/local/bin/rustyjack-ui"),
+        PathBuf::from("/etc/systemd/system/rustyjack.service"),
+        PathBuf::from("/etc/systemd/system/multi-user.target.wants/rustyjack.service"),
+        PathBuf::from("/etc/udev/rules.d/99-rustyjack-wifi.rules"),
+    ];
+    for path in system_paths.iter() {
+        delete_path(path);
+    }
+
+    let data_paths = [
+        root.join("loot"),
+        root.join("Responder"),
+        root.join("wifi"),
+        root.join("scripts"),
+        root.join("target"),
+        root.to_path_buf(),
+    ];
+    for path in data_paths.iter() {
+        delete_path(path);
+    }
+
+    for entry in WalkDir::new("/var/log").into_iter().filter_map(|e| e.ok()) {
+        if entry.file_type().is_file() {
+            let path = entry.path();
+            match fs::remove_file(path) {
+                Ok(_) => removed += 1,
+                Err(e) => errors.push(format!("{}: {}", path.display(), e)),
+            }
+        }
+    }
+
+    let _ = Command::new("journalctl").arg("--rotate").status();
+    let _ = Command::new("journalctl").arg("--vacuum-time=1s").status();
+    let _ = Command::new("journalctl").arg("--vacuum-size=1K").status();
+    let _ = Command::new("systemctl").arg("daemon-reload").status();
+    let _ = Command::new("systemctl")
+        .args(["reset-failed", "rustyjack.service"])
+        .status();
+    let _ = Command::new("sync").status();
+
+    PurgeReport {
+        removed,
+        service_disabled,
+        errors,
+    }
 }
 
 /// Clear DNS cache

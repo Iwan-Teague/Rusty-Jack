@@ -49,22 +49,6 @@ pub struct InterfaceInfo {
     pub prefix: u8,
 }
 
-/// Global logging toggle driven by UI setting.
-/// When `RUSTYJACK_LOGS_DISABLED` is set, no log files should be created.
-pub fn logs_disabled() -> bool {
-    match env::var("RUSTYJACK_LOGS_DISABLED") {
-        Ok(val) => {
-            let normalized = val.trim().to_ascii_lowercase();
-            matches!(normalized.as_str(), "1" | "true" | "yes" | "on")
-        }
-        Err(_) => false,
-    }
-}
-
-pub fn logs_enabled() -> bool {
-    !logs_disabled()
-}
-
 impl InterfaceInfo {
     pub fn network_cidr(&self) -> String {
         let prefix = self.prefix.min(32);
@@ -811,7 +795,7 @@ pub fn log_mac_usage(root: &Path, interface: &str, context: &str, tag: Option<&s
 }
 
 pub fn append_payload_log(root: &Path, entry: &str) -> Result<()> {
-    if logs_disabled() {
+    if rustyjack_evasion::logs_disabled() {
         return Ok(());
     }
     let path = root.join("loot").join("payload.log");

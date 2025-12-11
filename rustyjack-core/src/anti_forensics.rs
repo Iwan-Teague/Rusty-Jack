@@ -2,7 +2,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
     process::Command,
-    time::{SystemTime, UNIX_EPOCH},
+    time::SystemTime,
 };
 
 use anyhow::{anyhow, Context, Result};
@@ -181,8 +181,8 @@ pub fn clear_app_logs(root: &Path) -> Result<()> {
 
     let log_locations = vec![
         root.join("logs"),
-        Path::new("/var/log/rustyjack"),
-        Path::new("/tmp/rustyjack"),
+        PathBuf::from("/var/log/rustyjack"),
+        PathBuf::from("/tmp/rustyjack"),
     ];
 
     for location in log_locations {
@@ -252,17 +252,14 @@ pub fn perform_complete_purge(root: &Path) -> PurgeReport {
         }
     };
 
+    // Disable service first before using delete_path closure
     if let Ok(status) = Command::new("systemctl")
         .args(["disable", "rustyjack.service"])
         .status()
     {
         if status.success() {
             service_disabled = true;
-        } else {
-            errors.push("systemctl disable rustyjack.service failed".to_string());
         }
-    } else {
-        errors.push("systemctl disable rustyjack.service failed".to_string());
     }
 
     let system_paths = [
@@ -285,6 +282,14 @@ pub fn perform_complete_purge(root: &Path) -> PurgeReport {
     ];
     for path in data_paths.iter() {
         delete_path(path);
+    }
+
+    // Drop closure to release borrow on errors
+    drop(delete_path);
+
+    // Add service error if it failed
+    if !service_disabled {
+        errors.push("systemctl disable rustyjack.service failed".to_string());
     }
 
     for entry in WalkDir::new("/var/log").into_iter().filter_map(|e| e.ok()) {
@@ -329,7 +334,7 @@ pub fn clear_dns_cache() -> Result<()> {
 }
 
 /// Enable RAM-only mode (tmpfs for sensitive data)
-pub fn enable_ram_only_mode(root: &Path) -> Result<()> {
+pub fn enable_ram_only_mode(_root: &Path) -> Result<()> {
     info!("Enabling RAM-only mode");
 
     let ram_dir = Path::new("/tmp/rustyjack_ram");
@@ -442,8 +447,6 @@ pub fn enable_anti_dump_protection() -> Result<()> {
     // Disable ptrace for this process (prevents debugging)
     #[cfg(target_os = "linux")]
     {
-        use std::os::unix::fs::PermissionsExt;
-
         // PR_SET_DUMPABLE = 4
         unsafe {
             libc::prctl(4, 0, 0, 0, 0);
@@ -586,9 +589,11 @@ pub fn cleanup_on_exit(root: &Path, config: &AntiForensicsConfig) -> Result<()> 
     clear_routing_artifacts()?;
 
     // Restore original MAC addresses
-    if let Ok(macs) = crate::evasion::load_original_macs(root) {
-        for (interface, mac) in macs {
-            let _ = crate::evasion::set_mac_address(&interface, &mac);
+    if let Ok(state_mgr) = rustyjack_evasion::StateManager::new() {
+        if let Ok(states) = state_mgr.list_states() {
+            for interface in states {
+                let _ = state_mgr.restore(&interface);
+            }
         }
     }
 

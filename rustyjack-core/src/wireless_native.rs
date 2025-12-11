@@ -127,7 +127,7 @@ pub fn execute_deauth_attack(
     // Create loot directory for captures
     fs::create_dir_all(loot_dir)
         .with_context(|| format!("Creating loot directory: {}", loot_dir.display()))?;
-    let logging_enabled = crate::system::logs_enabled();
+    let logging_enabled = crate::logs_enabled();
     let log_file = if logging_enabled {
         let logs_dir = loot_dir.join("logs");
         fs::create_dir_all(&logs_dir)

@@ -590,8 +590,13 @@ pub fn cleanup_on_exit(root: &Path, config: &AntiForensicsConfig) -> Result<()> 
 
     // Restore original MAC addresses
     let mut state_mgr = rustyjack_evasion::StateManager::new();
-    for interface in state_mgr.modified_interfaces() {
-        let _ = state_mgr.restore(interface);
+    let interfaces: Vec<String> = state_mgr
+        .modified_interfaces()
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    for interface in interfaces {
+        let _ = state_mgr.restore(&interface);
     }
 
     info!("Cleanup complete");

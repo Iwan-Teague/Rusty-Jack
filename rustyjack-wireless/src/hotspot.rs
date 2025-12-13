@@ -148,7 +148,31 @@ pub fn start_hotspot(config: HotspotConfig) -> Result<HotspotState> {
     let _ = Command::new("pkill").args(["-f", "dnsmasq"]).status();
     std::thread::sleep(std::time::Duration::from_millis(500));
 
-    // Bring AP interface up with static IP
+    // Unblock rfkill FIRST before configuring interface
+    eprintln!("[HOTSPOT] Unblocking rfkill for {}...", config.ap_interface);
+    let rfkill_result = Command::new("rfkill")
+        .args(&["unblock", "wifi"])
+        .output();
+    
+    match rfkill_result {
+        Ok(output) => {
+            if !output.status.success() {
+                eprintln!("[HOTSPOT] WARNING: rfkill unblock failed: {}", 
+                    String::from_utf8_lossy(&output.stderr));
+            } else {
+                eprintln!("[HOTSPOT] rfkill unblocked successfully");
+            }
+        }
+        Err(e) => {
+            eprintln!("[HOTSPOT] WARNING: rfkill command failed: {}", e);
+        }
+    }
+    
+    // Give rfkill unblock time to take effect
+    eprintln!("[HOTSPOT] Waiting 1 second for rfkill to take effect...");
+    std::thread::sleep(std::time::Duration::from_secs(1));
+
+    // Now configure AP interface with static IP
     eprintln!("[HOTSPOT] Configuring AP interface {} with IP {}", config.ap_interface, AP_GATEWAY);
     log::debug!("Configuring AP interface {} with IP {}", config.ap_interface, AP_GATEWAY);
     
@@ -175,26 +199,6 @@ pub fn start_hotspot(config: HotspotConfig) -> Result<HotspotState> {
     
     eprintln!("[HOTSPOT] AP interface {} is up", config.ap_interface);
     log::debug!("AP interface {} is up", config.ap_interface);
-    
-    // Unblock rfkill for the AP interface BEFORE starting hostapd
-    eprintln!("[HOTSPOT] Unblocking rfkill for {}...", config.ap_interface);
-    let rfkill_result = Command::new("rfkill")
-        .args(&["unblock", "wifi"])
-        .output();
-    
-    match rfkill_result {
-        Ok(output) => {
-            if !output.status.success() {
-                eprintln!("[HOTSPOT] WARNING: rfkill unblock failed: {}", 
-                    String::from_utf8_lossy(&output.stderr));
-            } else {
-                eprintln!("[HOTSPOT] rfkill unblocked successfully");
-            }
-        }
-        Err(e) => {
-            eprintln!("[HOTSPOT] WARNING: rfkill command failed: {}", e);
-        }
-    }
     
     // Give interface time to fully initialize with its IP
     eprintln!("[HOTSPOT] Waiting 2 seconds for interface to stabilize...");

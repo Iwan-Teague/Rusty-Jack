@@ -204,8 +204,11 @@ pub fn start_hotspot(config: HotspotConfig) -> Result<HotspotState> {
         )
     };
     let hostapd_path = format!("{CONF_DIR}/hostapd.conf");
-    fs::write(&hostapd_path, hostapd_conf)
+    fs::write(&hostapd_path, &hostapd_conf)
         .map_err(|e| WirelessError::System(format!("writing hostapd.conf: {e}")))?;
+    
+    log::debug!("hostapd.conf written to {}", hostapd_path);
+    log::debug!("hostapd config:\n{}", hostapd_conf);
 
     let logging_enabled = rustyjack_evasion::logs_enabled();
 
@@ -244,8 +247,9 @@ pub fn start_hotspot(config: HotspotConfig) -> Result<HotspotState> {
     // Give interface time to stabilize
     std::thread::sleep(std::time::Duration::from_millis(500));
 
-    // Start hostapd (it daemonizes itself with -B, so we don't track PID directly)
-    log::info!("Starting hostapd...");
+    // Start hostapd in background mode
+    log::info!("Starting hostapd on {} (SSID: {})", config.ap_interface, config.ssid);
+    
     let hostapd_output = Command::new("hostapd")
         .args(&["-B", &hostapd_path])
         .output()
@@ -254,36 +258,66 @@ pub fn start_hotspot(config: HotspotConfig) -> Result<HotspotState> {
     if !hostapd_output.status.success() {
         let stderr = String::from_utf8_lossy(&hostapd_output.stderr);
         let stdout = String::from_utf8_lossy(&hostapd_output.stdout);
-        log::error!("hostapd failed: stderr={}, stdout={}", stderr, stdout);
+        log::error!("hostapd command failed: stderr={}, stdout={}", stderr, stdout);
         return Err(WirelessError::System(format!(
             "hostapd failed to start: {}",
-            stderr
+            if stderr.is_empty() { stdout.as_ref() } else { stderr.as_ref() }
         )));
     }
     
     log::debug!("hostapd command executed, waiting for initialization...");
     
-    // Give hostapd time to initialize AP before starting DHCP
-    std::thread::sleep(std::time::Duration::from_secs(2));
+    // Give hostapd more time to initialize AP before checking
+    std::thread::sleep(std::time::Duration::from_secs(3));
     
-    // Verify hostapd is actually running
+    // Verify hostapd is actually running by checking for our specific config file
     let hostapd_running = Command::new("pgrep")
         .arg("-f")
-        .arg("hostapd")
+        .arg(&format!("hostapd.*{}", hostapd_path))
         .status()
         .map(|s| s.success())
         .unwrap_or(false);
     
     if !hostapd_running {
-        log::error!("hostapd is not running after start");
+        log::error!("hostapd is not running after start - checking logs");
+        
+        // Try to get error info from syslog
+        let log_output = Command::new("grep")
+            .args(&["hostapd", "/var/log/syslog"])
+            .output();
+        
+        if let Ok(output) = log_output {
+            let logs = String::from_utf8_lossy(&output.stdout);
+            let recent_lines: Vec<&str> = logs.lines().rev().take(5).collect();
+            for line in recent_lines.iter().rev() {
+                log::error!("syslog: {}", line);
+            }
+        }
+        
         return Err(WirelessError::System(
-            "hostapd started but is not running; check interface AP mode support or hostapd logs".to_string()
+            "hostapd exited immediately after start - interface may not support AP mode, or driver issue. Check 'tail /var/log/syslog'".to_string()
         ));
     }
     
     log::info!("hostapd is running, starting dnsmasq...");
     
-    let dnsmasq = spawn_background("dnsmasq", &["--conf-file", &dns_path])?;
+    // Start dnsmasq
+    let dnsmasq_output = Command::new("dnsmasq")
+        .args(&["--conf-file", &dns_path])
+        .output()
+        .map_err(|e| WirelessError::System(format!("spawn dnsmasq: {}", e)))?;
+    
+    if !dnsmasq_output.status.success() {
+        let stderr = String::from_utf8_lossy(&dnsmasq_output.stderr);
+        let stdout = String::from_utf8_lossy(&dnsmasq_output.stdout);
+        log::error!("dnsmasq failed: stderr={}, stdout={}", stderr, stdout);
+        // Clean up hostapd before returning error
+        let _ = Command::new("pkill").args(["-f", "hostapd"]).status();
+        return Err(WirelessError::System(format!(
+            "dnsmasq failed to start: {}",
+            if stderr.is_empty() { stdout.as_ref() } else { stderr.as_ref() }
+        )));
+    }
     
     // Verify dnsmasq is actually running
     std::thread::sleep(std::time::Duration::from_millis(500));
@@ -295,18 +329,18 @@ pub fn start_hotspot(config: HotspotConfig) -> Result<HotspotState> {
         .unwrap_or(false);
     
     if !dnsmasq_running {
-        log::error!("dnsmasq failed to start");
+        log::error!("dnsmasq is not running after start");
         // Clean up hostapd before returning error
         let _ = Command::new("pkill").args(["-f", "hostapd"]).status();
         return Err(WirelessError::System(
-            "dnsmasq failed to start; port may be in use".to_string()
+            "dnsmasq started but is not running; port 53 or 67 may be in use".to_string()
         ));
     }
     
     log::info!("dnsmasq is running");
     
     // Get actual PIDs after verification
-    let hostapd_pid = get_pid_by_pattern("hostapd");
+    let hostapd_pid = get_pid_by_pattern(&format!("hostapd.*{}", hostapd_path));
     let dnsmasq_pid = get_pid_by_pattern(&format!("dnsmasq.*{}", dns_path));
     
     log::info!("Hotspot started successfully: hostapd_pid={:?}, dnsmasq_pid={:?}", hostapd_pid, dnsmasq_pid);

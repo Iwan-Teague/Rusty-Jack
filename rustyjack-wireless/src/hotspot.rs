@@ -156,6 +156,15 @@ pub fn start_hotspot(config: HotspotConfig) -> Result<HotspotState> {
     run_cmd("ip", &["link", "set", &config.ap_interface, "up"])?;
     eprintln!("[HOTSPOT] AP interface {} is up", config.ap_interface);
     log::debug!("AP interface {} is up", config.ap_interface);
+    
+    // Unblock rfkill for the AP interface BEFORE starting hostapd
+    eprintln!("[HOTSPOT] Unblocking rfkill for {}...", config.ap_interface);
+    let _ = Command::new("rfkill")
+        .args(&["unblock", "wifi"])
+        .status();
+    
+    // Give interface time to fully initialize with its IP
+    std::thread::sleep(std::time::Duration::from_secs(2));
 
     // Enable forwarding
     let _ = run_cmd("sysctl", &["-w", "net.ipv4.ip_forward=1"]);
@@ -336,8 +345,12 @@ pub fn start_hotspot(config: HotspotConfig) -> Result<HotspotState> {
     }
     
     eprintln!("[HOTSPOT] hostapd is running successfully");
-    eprintln!("[HOTSPOT] hostapd is running successfully");
     log::info!("hostapd is running, starting dnsmasq...");
+    
+    // Give hostapd and the interface more time to fully initialize
+    // The interface needs to be fully up with its IP before dnsmasq can bind to it
+    eprintln!("[HOTSPOT] Waiting for interface to stabilize before starting dnsmasq...");
+    std::thread::sleep(std::time::Duration::from_secs(3));
     
     // Start dnsmasq
     eprintln!("[HOTSPOT] Starting dnsmasq with config: {}", dns_path);

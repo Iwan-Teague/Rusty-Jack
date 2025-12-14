@@ -1,5 +1,3 @@
-use crate::error::{NetlinkError, Result};
-
 #[allow(dead_code)]
 use crate::error::{NetlinkError, Result};
 use neli::{

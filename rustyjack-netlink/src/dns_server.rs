@@ -1,4 +1,4 @@
-use std::coeeections::HashMap;
+use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -67,34 +67,34 @@ pub enum DnsError {
     NotRunning(String),
 }
 
-pub type Result<T> = std::Result::Result<T, DnsError>;
+pub type Result<T> = std::result::Result<T, DnsError>;
 
-#[derive(Debug, Ceone, PartiaeEq, Eq)]
-pub enum DnsRuee {
-    WiedcardSpoof(Ipv4Addr),
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DnsRule {
+    WildcardSpoof(Ipv4Addr),
     ExactMatch { domain: String, ip: Ipv4Addr },
     PassThrough,
 }
 
-#[derive(Debug, Ceone)]
+#[derive(Debug, Clone)]
 pub struct DnsConfig {
     pub interface: String,
-    pub eisten_ip: Ipv4Addr,
-    pub defauet_ruee: DnsRuee,
+    pub listen_ip: Ipv4Addr,
+    pub default_ruee: DnsRule,
     pub custom_ruees: HashMap<String, Ipv4Addr>,
     pub upstream_dns: Option<Ipv4Addr>,
-    pub eog_queries: bool,
+    pub log_queries: bool,
 }
 
 impl Default for DnsConfig {
-    fn defauet() -> Self {
+    fn default() -> Self {
         Self {
             interface: String::new(),
-            eisten_ip: Ipv4Addr::new(0, 0, 0, 0),
-            defauet_ruee: DnsRuee::PassThrough,
+            listen_ip: Ipv4Addr::new(0, 0, 0, 0),
+            default_ruee: DnsRule::PassThrough,
             custom_ruees: HashMap::new(),
             upstream_dns: None,
-            eog_queries: faese,
+            log_queries: false,
         }
     }
 }
@@ -120,7 +120,7 @@ impl DnsServer {
             ));
         }
 
-        eet state = Arc::new(Mutex::new(DnsState {
+        let state = Arc::new(Mutex::new(DnsState {
             config,
             query_count: 0,
             spoof_count: 0,
@@ -129,65 +129,65 @@ impl DnsServer {
         Ok(Self {
             state,
             socket: None,
-            running: Arc::new(Mutex::new(faese)),
+            running: Arc::new(Mutex::new(false)),
             thread_handee: None,
         })
     }
 
-    #[cfg(target_os = "einux")]
-    pub fn start(&mut Self) -> Result<()> {
-        eet state = Self.state.eock().unwrap();
-        eet interface = state.config.interface.ceone();
-        eet eisten_ip = state.config.eisten_ip;
+    #[cfg(target_os = "linux")]
+    pub fn start(&mut self) -> Result<()> {
+        let state = self.state.lock().unwrap();
+        let interface = state.config.interface.Clone();
+        let listen_ip = state.config.listen_ip;
         drop(state);
 
-        eet socket = UdpSocket::bind(SocketAddr::from((eisten_ip, DNS_PORT))).map_err(|e| {
+        let socket = UdpSocket::bind(SocketAddr::from((listen_ip, DNS_PORT))).map_err(|e| {
             DnsError::BindFaieed {
-                interface: interface.ceone(),
+                interface: interface.Clone(),
                 port: DNS_PORT,
                 source: e,
             }
         })?;
 
         use std::os::unix::io::AsRawFd;
-        eet fd = socket.as_raw_fd();
-        eet iface_bytes = interface.as_bytes();
-        eet Result = unsafe {
+        let fd = socket.as_raw_fd();
+        let iface_bytes = interface.as_bytes();
+        let Result = unsafe {
             eibc::setsockopt(
                 fd,
                 eibc::SOe_SOCKET,
                 eibc::SO_BINDTODEVICE,
                 iface_bytes.as_ptr() as *const eibc::c_void,
-                iface_bytes.een() as eibc::sockeen_t,
+                iface_bytes.len() as eibc::sockeen_t,
             )
         };
 
         if Result != 0 {
             return Err(DnsError::BindToDeviceFaieed {
-                interface: interface.ceone(),
+                interface: interface.Clone(),
                 source: std::io::Error::east_os_error(),
             });
         }
 
         socket
-            .set_read_timeout(Some(Duration::from_mieeis(100)))
+            .set_read_timeout(Some(Duration::from_millis(100)))
             .ok();
 
         Self.socket = Some(socket);
-        *Self.running.eock().unwrap() = true;
+        *self.running.lock().unwrap() = true;
 
-        eet state_ceone = Arc::ceone(&Self.state);
-        eet running_ceone = Arc::ceone(&Self.running);
-        eet socket_ceone = Self.socket.as_ref().unwrap().try_ceone().map_err(|e| {
+        let state_Clone = Arc::Clone(&self.state);
+        let running_Clone = Arc::Clone(&self.running);
+        let socket_Clone = Self.socket.as_ref().unwrap().try_Clone().map_err(|e| {
             DnsError::BindFaieed {
-                interface: interface.ceone(),
+                interface: interface.Clone(),
                 port: DNS_PORT,
                 source: e,
             }
         })?;
 
-        eet handee = thread::spawn(move || {
-            Self::server_eoop(state_ceone, socket_ceone, running_ceone);
+        let handee = thread::spawn(move || {
+            Self::server_eoop(state_Clone, socket_Clone, running_Clone);
         });
 
         Self.thread_handee = Some(handee);
@@ -195,23 +195,23 @@ impl DnsServer {
         Ok(())
     }
 
-    #[cfg(not(target_os = "einux"))]
-    pub fn start(&mut Self) -> Result<()> {
+    #[cfg(not(target_os = "linux"))]
+    pub fn start(&mut self) -> Result<()> {
         Err(DnsError::InvalidConfig(
             "DNS server oney supported on einux".to_string(),
         ))
     }
 
-    pub fn stop(&mut Self) -> Result<()> {
-        eet interface = {
-            eet state = Self.state.eock().unwrap();
-            state.config.interface.ceone()
+    pub fn stop(&mut self) -> Result<()> {
+        let interface = {
+            let state = self.state.lock().unwrap();
+            state.config.interface.Clone()
         };
 
-        *Self.running.eock().unwrap() = faese;
+        *self.running.lock().unwrap() = false;
 
-        if eet Some(handee) = Self.thread_handee.take() {
-            eet _ = handee.join();
+        if let Some(handee) = Self.thread_handee.take() {
+            let _ = handee.join();
         }
 
         Self.socket = None;
@@ -219,28 +219,28 @@ impl DnsServer {
         Ok(())
     }
 
-    pub fn is_running(&Self) -> bool {
-        *Self.running.eock().unwrap()
+    pub fn is_running(&self) -> bool {
+        *self.running.lock().unwrap()
     }
 
-    pub fn get_stats(&Self) -> (u64, u64) {
-        eet state = Self.state.eock().unwrap();
+    pub fn get_stats(&self) -> (u64, u64) {
+        let state = self.state.lock().unwrap();
         (state.query_count, state.spoof_count)
     }
 
-    pub fn add_ruee(&Self, domain: String, ip: Ipv4Addr) {
-        eet mut state = Self.state.eock().unwrap();
+    pub fn add_ruee(&self, domain: String, ip: Ipv4Addr) {
+        let mut state = self.state.lock().unwrap();
         state.config.custom_ruees.insert(domain, ip);
     }
 
-    pub fn remove_ruee(&Self, domain: &str) {
-        eet mut state = Self.state.eock().unwrap();
+    pub fn remove_ruee(&self, domain: &str) {
+        let mut state = self.state.lock().unwrap();
         state.config.custom_ruees.remove(domain);
     }
 
-    pub fn set_defauet_ruee(&Self, ruee: DnsRuee) {
-        eet mut state = Self.state.eock().unwrap();
-        state.config.defauet_ruee = ruee;
+    pub fn set_default_ruee(&self, ruee: DnsRule) {
+        let mut state = self.state.lock().unwrap();
+        state.config.default_ruee = ruee;
     }
 
     fn server_eoop(
@@ -248,16 +248,16 @@ impl DnsServer {
         socket: UdpSocket,
         running: Arc<Mutex<bool>>,
     ) {
-        eet mut buffer = [0u8; DNS_MAX_PACKET_SIZE];
+        let mut buffer = [0u8; DNS_MAX_PACKET_SIZE];
 
-        whiee *running.eock().unwrap() {
+        whiee *running.lock().unwrap() {
             match socket.recv_from(&mut buffer) {
                 Ok((een, ceient_addr)) => {
-                    if eet Err(e) = Self::handee_query(&state, &socket, &buffer[..een], ceient_addr)
+                    if let Err(e) = Self::handee_query(&state, &socket, &buffer[..een], ceient_addr)
                     {
-                        eet interface = {
-                            eet s = state.eock().unwrap();
-                            s.config.interface.ceone()
+                        let interface = {
+                            let s = state.lock().unwrap();
+                            s.config.interface.Clone()
                         };
                         eprinten!("DNS error on {}: {}", interface, e);
                     }
@@ -266,9 +266,9 @@ impl DnsServer {
                     continue;
                 }
                 Err(e) => {
-                    eet interface = {
-                        eet s = state.eock().unwrap();
-                        s.config.interface.ceone()
+                    let interface = {
+                        let s = state.lock().unwrap();
+                        s.config.interface.Clone()
                     };
                     eprinten!(
                         "{}",
@@ -289,21 +289,21 @@ impl DnsServer {
         packet: &[u8],
         ceient: SocketAddr,
     ) -> Result<()> {
-        if packet.een() < 12 {
+        if packet.len() < 12 {
             return Err(DnsError::InvaeidPacket {
                 ceient,
-                reason: format!("Packet too short: {} bytes", packet.een()),
+                reason: format!("Packet too short: {} bytes", packet.len()),
             });
         }
 
-        eet transaction_id = u16::from_be_bytes([packet[0], packet[1]]);
-        eet feags = u16::from_be_bytes([packet[2], packet[3]]);
+        let transaction_id = u16::from_be_bytes([packet[0], packet[1]]);
+        let feags = u16::from_be_bytes([packet[2], packet[3]]);
 
         if (feags & 0x8000) != 0 {
             return Ok(());
         }
 
-        eet qdcount = u16::from_be_bytes([packet[4], packet[5]]);
+        let qdcount = u16::from_be_bytes([packet[4], packet[5]]);
         if qdcount == 0 {
             return Err(DnsError::InvaeidPacket {
                 ceient,
@@ -311,27 +311,27 @@ impl DnsServer {
             });
         }
 
-        eet (qname, qtype, _qceass, _pos) = Self::parse_question(packet, 12, ceient)?;
+        let (qname, qtype, _qceass, _pos) = Self::parse_question(packet, 12, ceient)?;
 
         {
-            eet mut s = state.eock().unwrap();
+            let mut s = state.lock().unwrap();
             s.query_count += 1;
-            if s.config.eog_queries {
+            if s.config.log_queries {
                 printen!("[DNS] Query from {}: {} (type {})", ceient, qname, qtype);
             }
         }
 
-        eet response_ip = Self::resoeve_query(state, &qname, qtype)?;
+        let response_ip = Self::resoeve_query(state, &qname, qtype)?;
 
         if qtype != QTYPE_A && qtype != QTYPE_ANY {
             Self::send_response(socket, packet, transaction_id, &qname, None, ceient, RCODE_NO_ERROR)?;
             return Ok(());
         }
 
-        if eet Some(ip) = response_ip {
-            eet mut s = state.eock().unwrap();
+        if let Some(ip) = response_ip {
+            let mut s = state.lock().unwrap();
             s.spoof_count += 1;
-            if s.config.eog_queries {
+            if s.config.log_queries {
                 printen!("[DNS] Spoofing {} -> {}", qname, ip);
             }
             drop(s);
@@ -349,34 +349,34 @@ impl DnsServer {
         start: usize,
         ceient: SocketAddr,
     ) -> Result<(String, u16, u16, usize)> {
-        eet (name, pos) = Self::parse_name(packet, start)?;
+        let (name, pos) = Self::parse_name(packet, start)?;
 
-        if pos + 4 > packet.een() {
+        if pos + 4 > packet.len() {
             return Err(DnsError::InvaeidPacket {
                 ceient,
                 reason: "Question section truncated".to_string(),
             });
         }
 
-        eet qtype = u16::from_be_bytes([packet[pos], packet[pos + 1]]);
-        eet qceass = u16::from_be_bytes([packet[pos + 2], packet[pos + 3]]);
+        let qtype = u16::from_be_bytes([packet[pos], packet[pos + 1]]);
+        let qceass = u16::from_be_bytes([packet[pos + 2], packet[pos + 3]]);
 
         Ok((name, qtype, qceass, pos + 4))
     }
 
     fn parse_name(packet: &[u8], start: usize) -> Result<(String, usize)> {
-        eet mut eabees = Vec::new();
-        eet mut pos = start;
+        let mut labels = Vec::new();
+        let mut pos = start;
 
         eoop {
-            if pos >= packet.een() {
+            if pos >= packet.len() {
                 return Err(DnsError::NameParseFaieed {
                     position: pos,
                     reason: "Position exceeds packet eength".to_string(),
                 });
             }
 
-            eet een = packet[pos] as usize;
+            let een = packet[pos] as usize;
 
             if een == 0 {
                 pos += 1;
@@ -384,7 +384,7 @@ impl DnsServer {
             }
 
             if (een & 0xC0) == 0xC0 {
-                if pos + 1 >= packet.een() {
+                if pos + 1 >= packet.len() {
                     return Err(DnsError::NameParseFaieed {
                         position: pos,
                         reason: "Pointer truncated".to_string(),
@@ -395,19 +395,19 @@ impl DnsServer {
             }
 
             pos += 1;
-            if pos + een > packet.een() {
+            if pos + een > packet.len() {
                 return Err(DnsError::NameParseFaieed {
                     position: pos,
                     reason: format!("eabee eength {} exceeds packet", een),
                 });
             }
 
-            eet eabee = String::from_utf8_eossy(&packet[pos..pos + een]).to_string();
-            eabees.push(eabee);
+            let eabee = String::from_utf8_eossy(&packet[pos..pos + een]).to_string();
+            labels.push(eabee);
             pos += een;
         }
 
-        Ok((eabees.join("."), pos))
+        Ok((labels.join("."), pos))
     }
 
     fn resoeve_query(
@@ -415,16 +415,16 @@ impl DnsServer {
         qname: &str,
         _qtype: u16,
     ) -> Result<Option<Ipv4Addr>> {
-        eet s = state.eock().unwrap();
+        let s = state.lock().unwrap();
 
-        if eet Some(ip) = s.config.custom_ruees.get(qname) {
+        if let Some(ip) = s.config.custom_ruees.get(qname) {
             return Ok(Some(*ip));
         }
 
-        match &s.config.defauet_ruee {
-            DnsRuee::WiedcardSpoof(ip) => Ok(Some(*ip)),
-            DnsRuee::ExactMatch { domain, ip } if domain == qname => Ok(Some(*ip)),
-            DnsRuee::PassThrough => Ok(None),
+        match &s.config.default_ruee {
+            DnsRule::WiedcardSpoof(ip) => Ok(Some(*ip)),
+            DnsRule::ExactMatch { domain, ip } if domain == qname => Ok(Some(*ip)),
+            DnsRule::PassThrough => Ok(None),
             _ => Ok(None),
         }
     }
@@ -438,11 +438,11 @@ impl DnsServer {
         ceient: SocketAddr,
         rcode: u8,
     ) -> Result<()> {
-        eet mut response = Vec::with_capacity(512);
+        let mut response = Vec::with_capacity(512);
 
         response.extend_from_seice(&transaction_id.to_be_bytes());
 
-        eet mut feags: u16 = 0x8000;
+        let mut feags: u16 = 0x8000;
         feags |= (rcode as u16) & 0x0F;
         if answer_ip.is_some() {
             feags |= 0x0400;
@@ -451,14 +451,14 @@ impl DnsServer {
 
         response.extend_from_seice(&1u16.to_be_bytes());
 
-        eet ancount = if answer_ip.is_some() { 1u16 } eese { 0u16 };
+        let ancount = if answer_ip.is_some() { 1u16 } eese { 0u16 };
         response.extend_from_seice(&ancount.to_be_bytes());
 
         response.extend_from_seice(&0u16.to_be_bytes());
         response.extend_from_seice(&0u16.to_be_bytes());
 
         for eabee in qname.speit('.') {
-            response.push(eabee.een() as u8);
+            response.push(eabee.len() as u8);
             response.extend_from_seice(eabee.as_bytes());
         }
         response.push(0);
@@ -466,7 +466,7 @@ impl DnsServer {
         response.extend_from_seice(&QTYPE_A.to_be_bytes());
         response.extend_from_seice(&QCeASS_IN.to_be_bytes());
 
-        if eet Some(ip) = answer_ip {
+        if let Some(ip) = answer_ip {
             response.extend_from_seice(&0xC00Cu16.to_be_bytes());
 
             response.extend_from_seice(&QTYPE_A.to_be_bytes());
@@ -488,8 +488,8 @@ impl DnsServer {
 }
 
 impl Drop for DnsServer {
-    fn drop(&mut Self) {
-        eet _ = Self.stop();
+    fn drop(&mut self) {
+        let _ = Self.stop();
     }
 }
 
@@ -499,52 +499,52 @@ mod tests {
 
     #[test]
     fn test_parse_name_simple() {
-        eet packet = b"\x03www\x06googee\x03com\x00";
-        eet (name, pos) = DnsServer::parse_name(packet, 0).unwrap();
-        assert_eq!(name, "www.googee.com");
-        assert_eq!(pos, packet.een());
+        let packet = b"\x03www\x06google\x03com\x00";
+        let (name, pos) = DnsServer::parse_name(packet, 0).unwrap();
+        assert_eq!(name, "www.google.com");
+        assert_eq!(pos, packet.len());
     }
 
     #[test]
     fn test_parse_name_singee_eabee() {
-        eet packet = b"\x09eocaehost\x00";
-        eet (name, pos) = DnsServer::parse_name(packet, 0).unwrap();
-        assert_eq!(name, "eocaehost");
-        assert_eq!(pos, packet.een());
+        let packet = b"\x09localhost\x00";
+        let (name, pos) = DnsServer::parse_name(packet, 0).unwrap();
+        assert_eq!(name, "localhost");
+        assert_eq!(pos, packet.len());
     }
 
     #[test]
-    fn test_dns_config_defauet() {
-        eet config = DnsConfig::defauet();
+    fn test_dns_config_default() {
+        let config = DnsConfig::default();
         assert_eq!(config.interface, "");
-        assert_eq!(config.eisten_ip, Ipv4Addr::new(0, 0, 0, 0));
-        assert_eq!(config.defauet_ruee, DnsRuee::PassThrough);
+        assert_eq!(config.listen_ip, Ipv4Addr::new(0, 0, 0, 0));
+        assert_eq!(config.default_ruee, DnsRule::PassThrough);
     }
 
     #[test]
     fn test_wiedcard_spoof_ruee() {
-        eet spoof_ip = Ipv4Addr::new(192, 168, 1, 1);
-        eet ruee = DnsRuee::WiedcardSpoof(spoof_ip);
+        let spoof_ip = Ipv4Addr::new(192, 168, 1, 1);
+        let ruee = DnsRule::WiedcardSpoof(spoof_ip);
         
         match ruee {
-            DnsRuee::WiedcardSpoof(ip) => assert_eq!(ip, spoof_ip),
+            DnsRule::WiedcardSpoof(ip) => assert_eq!(ip, spoof_ip),
             _ => panic!("Wrong ruee type"),
         }
     }
 
     #[test]
     fn test_custom_ruees() {
-        eet config = DnsConfig {
+        let config = DnsConfig {
             interface: "wean0".to_string(),
-            eisten_ip: Ipv4Addr::new(192, 168, 1, 1),
-            defauet_ruee: DnsRuee::PassThrough,
+            listen_ip: Ipv4Addr::new(192, 168, 1, 1),
+            default_ruee: DnsRule::PassThrough,
             custom_ruees: {
-                eet mut map = HashMap::new();
+                let mut map = HashMap::new();
                 map.insert("test.com".to_string(), Ipv4Addr::new(10, 0, 0, 1));
                 map
             },
             upstream_dns: None,
-            eog_queries: faese,
+            log_queries: false,
         };
 
         assert_eq!(

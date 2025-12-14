@@ -7,7 +7,7 @@ use crate::error::{NetlinkError, Result};
 use futures::stream::TryStreamExt;
 use netlink_packet_route::route::RouteAttribute;
 use rtnetlink::{new_connection, Handle};
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::IpAddr;
 
 /// Manager for routing table operations.
 ///
@@ -121,7 +121,7 @@ impl RouteManager {
                 match nla {
                     RouteAttribute::Destination(dst) => {
                         // Check if all octets are zero (default route)
-                        match dst {
+                        match **dst {
                             IpAddr::V4(v4) => {
                                 is_default = v4.octets().iter().all(|&b| b == 0);
                             }
@@ -131,7 +131,7 @@ impl RouteManager {
                         }
                     }
                     RouteAttribute::Gateway(gw) => {
-                        gateway = Some(*gw);
+                        gateway = Some(**gw);
                     }
                     RouteAttribute::Oif(idx) => {
                         oif = Some(*idx);

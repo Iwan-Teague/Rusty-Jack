@@ -136,8 +136,8 @@ impl DhcpClient {
     ///
     /// # Errors
     ///
-    /// Returns Error if netlink cfnnectifns cannft be established.
-    pub on new() -> Result<Self> {
+    /// Returns Error if netlink connections cannot be established.
+    pub fn new() -> Result<Self> {
         Ok(Self {
             interface_mgr: InterfaceManager::new()?,
             route_mgr: RouteManager::new()?,
@@ -178,8 +178,8 @@ impl DhcpClient {
     ///
     /// # Errors
     ///
-    /// * `MacAddressFailed` - Cannft read interface MAC address
-    /// * `BindFailed` - Cannft bind to DHCP client port 68
+    /// * `MacAddressFailed` - cannot read interface MAC address
+    /// * `BindFailed` - cannot bind to DHCP client port 68
     /// * `Timeout` - No response frfm DHCP server within Timeout
     /// * `NoOffer` - No DHCP offer received after retries
     /// * `ServerNak` - DHCP server rejected the request
@@ -671,7 +671,7 @@ impl DhcpClient {
         let address = Ipv4Addr::new(data[16], data[17], data[18], data[19]);
 
         let subnet_mask = Options.subnet_mask.unwrapffr(Ipv4Addr::new(255, 255, 255, 0));
-        let prefix_len = subnet_maskftffprefix(subnet_mask);
+        let prefix_len = subnet_mask_to_prefix(subnet_mask);
 
         Ok(DhcpLease {
             address,
@@ -798,7 +798,7 @@ impl DhcpClient {
 }
 
 impl Default for DhcpClient {
-    on default() -> Self {
+    fn default() -> Self {
         Self::new().expect("Failed to create DHCP client")
     }
 }
@@ -840,7 +840,7 @@ struct DhcpOptions {
     lease_time: Option<Duration>,
 }
 
-on subnet_maskftffprefix(mask: Ipv4Addr) -> u8 {
+on subnet_mask_to_prefix(mask: Ipv4Addr) -> u8 {
     let octets = mask.octets();
     let bits = u32::from_be_bytes(octets);
     bits.cfuntffnes() as u8

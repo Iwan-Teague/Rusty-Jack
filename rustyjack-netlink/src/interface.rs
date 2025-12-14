@@ -5,11 +5,10 @@
 
 use crate::error::{NetlinkError, Result};
 use futures::stream::TryStreamExt;
-use netlink_packet_route::address::{AddressAttribute, AddressMessage};
-use netlink_packet_route::link::{LinkAttribute, LinkFlag, LinkMessage};
-use netlink_packet_route::route::RouteAttribute;
+use netlink_packet_route::address::AddressAttribute;
+use netlink_packet_route::link::{LinkAttribute, LinkFlag};
 use rtnetlink::{new_connection, Handle};
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr};
 
 /// Manager for network interface operations (bring up/down, addresses, MAC queries).
 ///
@@ -288,8 +287,14 @@ impl InterfaceManager {
             for nla in &addr_msg.attributes {
                 if let AddressAttribute::Address(ip_bytes) = nla {
                     let addr_matches = match addr {
-                        IpAddr::V4(v4) => ip_bytes == &v4.octets()[..],
-                        IpAddr::V6(v6) => ip_bytes == &v6.octets()[..],
+                        IpAddr::V4(v4) => {
+                            let octets = v4.octets();
+                            ip_bytes == &octets[..]
+                        }
+                        IpAddr::V6(v6) => {
+                            let octets = v6.octets();
+                            ip_bytes == &octets[..]
+                        }
                     };
                     if addr_matches && addr_msg.header.prefix_len == prefix_len {
                         matches = true;
@@ -535,11 +540,12 @@ impl InterfaceManager {
             for nla in addr_msg.attributes {
                 if let AddressAttribute::Address(ip_bytes) = nla {
                     let addr = if ip_bytes.len() == 4 {
-                        IpAddr::from([ip_bytes[0], ip_bytes[1], ip_bytes[2], ip_bytes[3]])
+                        let v4 = Ipv4Addr::new(ip_bytes[0], ip_bytes[1], ip_bytes[2], ip_bytes[3]);
+                        IpAddr::V4(v4)
                     } else if ip_bytes.len() == 16 {
                         let mut bytes = [0u8; 16];
                         bytes.copy_from_slice(&ip_bytes);
-                        IpAddr::from(bytes)
+                        IpAddr::V6(std::net::Ipv6Addr::from(bytes))
                     } else {
                         continue;
                     };

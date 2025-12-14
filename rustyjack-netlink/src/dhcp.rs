@@ -8,7 +8,7 @@
 use crate::error::{NetlinkError, Result};
 use crate::interface::InterfaceManager;
 use crate::route::RouteManager;
-use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
+use std::net::{IpAddr, Ipv4Addr, UdpSocket};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 

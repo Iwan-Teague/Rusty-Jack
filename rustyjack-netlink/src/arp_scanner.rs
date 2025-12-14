@@ -317,7 +317,7 @@ impl ArpScanner {
                 reason: format!("Failed to read {}: {}", path, e),
             }))?;
         
-        parse_mac_address(mac_str.trim())
+        parse_mac_address(mac_str.trim()).map_err(|e| NetlinkError::Arp(e))
     }
 
     fn get_interface_ip(&self, interface: &str) -> Result<Ipv4Addr> {

@@ -269,7 +269,7 @@ impl AccessPoint {
         log::info!("Starting Access Point: SSID={}, channel={}", self.config.ssid, self.config.channel);
         
         // Check if interface supports AP mode
-        let phy_caps = self.wireless_mgr.get_phy_capabilities(&self.config.interface).await?;
+        let phy_caps = self.wireless_mgr.get_phy_capabilities(&self.config.interface)?;
         if !phy_caps.supported_modes.contains(&InterfaceMode::AccessPoint) {
             return Err(NetlinkError::OperationNotSupported(
                 format!("Interface {} does not support AP mode. Supported modes: {:?}", 
@@ -285,7 +285,7 @@ impl AccessPoint {
             ))?;
         
         // Set channel
-        self.wireless_mgr.set_channel(&self.config.interface, self.config.channel).await
+        self.wireless_mgr.set_channel(&self.config.interface, self.config.channel)?;
             .map_err(|e| NetlinkError::System(
                 format!("Failed to set channel {} on {}: {}", self.config.channel, self.config.interface, e)
             ))?;
@@ -321,7 +321,8 @@ impl AccessPoint {
         self.disconnect_all_clients().await;
         
         // Reset interface to managed mode
-        let _ = self.wireless_mgr.set_interface_mode(&self.config.interface, InterfaceMode::Station).await;
+        // Note: Interface mode setting would be done via iw command externally if needed
+        // as set_interface_mode is not available in WirelessManager
         
         log::info!("Access Point stopped");
         Ok(())

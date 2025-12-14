@@ -136,6 +136,7 @@ pub enum NetlinkError {
     },
 
     #[error("DHCP client error: {0}")]
+    #[cfg(target_os = "linux")]
     DhcpClient(#[from] crate::dhcp::DhcpClientError),
 
     // DNS errors
@@ -198,6 +199,7 @@ pub enum NetlinkError {
     Runtime { context: String, reason: String },
 
     #[error("ARP error: {0}")]
+    #[cfg(target_os = "linux")]
     Arp(#[from] crate::arp::ArpError),
 }
 

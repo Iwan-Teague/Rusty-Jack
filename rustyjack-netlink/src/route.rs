@@ -7,7 +7,7 @@ use crate::error::{NetlinkError, Result};
 use futures::stream::TryStreamExt;
 use netlink_packet_route::route::RouteAttribute;
 use rtnetlink::{new_connection, Handle};
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr};
 
 /// Manager for routing table operations.
 ///
@@ -120,12 +120,14 @@ impl RouteManager {
             for nla in &route.attributes {
                 match nla {
                     RouteAttribute::Destination(dst) => {
-                        if dst.is_unspecified() {
+                        if dst.is_empty() || dst.iter().all(|&b| b == 0) {
                             is_default = true;
                         }
                     }
                     RouteAttribute::Gateway(gw) => {
-                        gateway = Some(*gw);
+                        if gw.len() == 4 {
+                            gateway = Some(IpAddr::V4(Ipv4Addr::new(gw[0], gw[1], gw[2], gw[3])));
+                        }
                     }
                     RouteAttribute::Oif(idx) => {
                         oif = Some(*idx);
@@ -188,10 +190,14 @@ impl RouteManager {
             for nla in route.attributes {
                 match nla {
                     RouteAttribute::Destination(dst) => {
-                        destination = Some(dst);
+                        if dst.len() == 4 {
+                            destination = Some(IpAddr::V4(Ipv4Addr::new(dst[0], dst[1], dst[2], dst[3])));
+                        }
                     }
                     RouteAttribute::Gateway(gw) => {
-                        gateway = Some(gw);
+                        if gw.len() == 4 {
+                            gateway = Some(IpAddr::V4(Ipv4Addr::new(gw[0], gw[1], gw[2], gw[3])));
+                        }
                     }
                     RouteAttribute::Oif(idx) => {
                         oif = Some(idx);

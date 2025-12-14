@@ -219,18 +219,21 @@ impl WirelessManager {
     pub fn set_mode(&mut self, interface: &str, mode: InterfaceMode) -> Result<()> {
         let ifindex = self.get_ifindex(interface)?;
 
-        let attrs = vec![
+        let mut attrs = GenlBuffer::new();
+        attrs.push(
             Nlattr::new(false, false, NL80211_ATTR_IFINDEX, ifindex)
-                .map_err(|e| NetlinkError::OperationFailed(format!("Failed to create ifindex attr: {}", e)))?,
+                .map_err(|e| NetlinkError::OperationFailed(format!("Failed to create ifindex attr: {}", e)))?
+        );
+        attrs.push(
             Nlattr::new(false, false, NL80211_ATTR_IFTYPE, mode.to_nl80211())
-                .map_err(|e| NetlinkError::OperationFailed(format!("Failed to create iftype attr: {}", e)))?,
-        ];
+                .map_err(|e| NetlinkError::OperationFailed(format!("Failed to create iftype attr: {}", e)))?
+        );
 
-        let genlhdr = Genlmsghdr::new(NL80211_CMD_SET_INTERFACE, 1, GenlBuffer::new_from_vec(attrs));
+        let genlhdr = Genlmsghdr::new(NL80211_CMD_SET_INTERFACE, 1, attrs);
         let nlhdr = Nlmsghdr::new(
             None,
             self.family_id,
-            &[NlmF::REQUEST, NlmF::ACK],
+            vec![NlmF::Request, NlmF::Ack],
             None,
             None,
             NlPayload::Payload(genlhdr),
@@ -291,20 +294,19 @@ impl WirelessManager {
     pub fn set_frequency(&mut self, interface: &str, frequency: u32, width: ChannelWidth) -> Result<()> {
         let ifindex = self.get_ifindex(interface)?;
 
-        let attrs = vec![
-            Nlattr::new(false, false, NL80211_ATTR_IFINDEX, ifindex)
-                .map_err(|e| NetlinkError::OperationFailed(format!("Failed to create ifindex attr: {}", e)))?,
-            Nlattr::new(false, false, NL80211_ATTR_WIPHY_FREQ, frequency)
-                .map_err(|e| NetlinkError::OperationFailed(format!("Failed to create frequency attr: {}", e)))?,
-            Nlattr::new(false, false, NL80211_ATTR_WIPHY_CHANNEL_TYPE, width.to_nl80211())
-                .map_err(|e| NetlinkError::OperationFailed(format!("Failed to create channel_type attr: {}", e)))?,
-        ];
+        let mut attrs = GenlBuffer::new();
+        attrs.push(Nlattr::new(false, false, NL80211_ATTR_IFINDEX, ifindex)
+            .map_err(|e| NetlinkError::OperationFailed(format!("Failed to create ifindex attr: {}", e)))?);
+        attrs.push(Nlattr::new(false, false, NL80211_ATTR_WIPHY_FREQ, frequency)
+            .map_err(|e| NetlinkError::OperationFailed(format!("Failed to create frequency attr: {}", e)))?);
+        attrs.push(Nlattr::new(false, false, NL80211_ATTR_WIPHY_CHANNEL_TYPE, width.to_nl80211())
+            .map_err(|e| NetlinkError::OperationFailed(format!("Failed to create channel_type attr: {}", e)))?);
 
-        let genlhdr = Genlmsghdr::new(NL80211_CMD_SET_WIPHY, 1, GenlBuffer::new_from_vec(attrs));
+        let genlhdr = Genlmsghdr::new(NL80211_CMD_SET_WIPHY, 1, attrs);
         let nlhdr = Nlmsghdr::new(
             None,
             self.family_id,
-            &[NlmF::REQUEST, NlmF::ACK],
+            vec![NlmF::Request, NlmF::Ack],
             None,
             None,
             NlPayload::Payload(genlhdr),
@@ -407,20 +409,19 @@ impl WirelessManager {
     pub fn create_interface(&mut self, phy_interface: &str, new_name: &str, mode: InterfaceMode) -> Result<()> {
         let ifindex = self.get_ifindex(phy_interface)?;
 
-        let attrs = vec![
-            Nlattr::new(false, false, NL80211_ATTR_IFINDEX, ifindex)
-                .map_err(|e| NetlinkError::OperationFailed(format!("Failed to create ifindex attr: {}", e)))?,
-            Nlattr::new(false, false, NL80211_ATTR_IFNAME, new_name.as_bytes())
-                .map_err(|e| NetlinkError::OperationFailed(format!("Failed to create ifname attr: {}", e)))?,
-            Nlattr::new(false, false, NL80211_ATTR_IFTYPE, mode.to_nl80211())
-                .map_err(|e| NetlinkError::OperationFailed(format!("Failed to create iftype attr: {}", e)))?,
-        ];
+        let mut attrs = GenlBuffer::new();
+        attrs.push(Nlattr::new(false, false, NL80211_ATTR_IFINDEX, ifindex)
+            .map_err(|e| NetlinkError::OperationFailed(format!("Failed to create ifindex attr: {}", e)))?);
+        attrs.push(Nlattr::new(false, false, NL80211_ATTR_IFNAME, new_name.as_bytes())
+            .map_err(|e| NetlinkError::OperationFailed(format!("Failed to create ifname attr: {}", e)))?);
+        attrs.push(Nlattr::new(false, false, NL80211_ATTR_IFTYPE, mode.to_nl80211())
+            .map_err(|e| NetlinkError::OperationFailed(format!("Failed to create iftype attr: {}", e)))?);
 
-        let genlhdr = Genlmsghdr::new(NL80211_CMD_NEW_INTERFACE, 1, GenlBuffer::new_from_vec(attrs));
+        let genlhdr = Genlmsghdr::new(NL80211_CMD_NEW_INTERFACE, 1, attrs);
         let nlhdr = Nlmsghdr::new(
             None,
             self.family_id,
-            &[NlmF::REQUEST, NlmF::ACK],
+            vec![NlmF::Request, NlmF::Ack],
             None,
             None,
             NlPayload::Payload(genlhdr),
@@ -458,16 +459,15 @@ impl WirelessManager {
     pub fn delete_interface(&mut self, interface: &str) -> Result<()> {
         let ifindex = self.get_ifindex(interface)?;
 
-        let attrs = vec![
-            Nlattr::new(false, false, NL80211_ATTR_IFINDEX, ifindex)
-                .map_err(|e| NetlinkError::OperationFailed(format!("Failed to create ifindex attr: {}", e)))?,
-        ];
+        let mut attrs = GenlBuffer::new();
+        attrs.push(Nlattr::new(false, false, NL80211_ATTR_IFINDEX, ifindex)
+            .map_err(|e| NetlinkError::OperationFailed(format!("Failed to create ifindex attr: {}", e)))?);
 
-        let genlhdr = Genlmsghdr::new(NL80211_CMD_DEL_INTERFACE, 1, GenlBuffer::new_from_vec(attrs));
+        let genlhdr = Genlmsghdr::new(NL80211_CMD_DEL_INTERFACE, 1, attrs);
         let nlhdr = Nlmsghdr::new(
             None,
             self.family_id,
-            &[NlmF::REQUEST, NlmF::ACK],
+            vec![NlmF::Request, NlmF::Ack],
             None,
             None,
             NlPayload::Payload(genlhdr),
@@ -501,16 +501,15 @@ impl WirelessManager {
     pub fn get_interface_info(&mut self, interface: &str) -> Result<WirelessInfo> {
         let ifindex = self.get_ifindex(interface)?;
 
-        let attrs = vec![
-            Nlattr::new(false, false, NL80211_ATTR_IFINDEX, ifindex)
-                .map_err(|e| NetlinkError::OperationFailed(format!("Failed to create ifindex attr: {}", e)))?,
-        ];
+        let mut attrs = GenlBuffer::new();
+        attrs.push(Nlattr::new(false, false, NL80211_ATTR_IFINDEX, ifindex)
+            .map_err(|e| NetlinkError::OperationFailed(format!("Failed to create ifindex attr: {}", e)))?);
 
-        let genlhdr = Genlmsghdr::new(NL80211_CMD_GET_INTERFACE, 1, GenlBuffer::new_from_vec(attrs));
+        let genlhdr = Genlmsghdr::new(NL80211_CMD_GET_INTERFACE, 1, attrs);
         let nlhdr = Nlmsghdr::new(
             None,
             self.family_id,
-            &[NlmF::REQUEST],
+            vec![NlmF::Request],
             None,
             None,
             NlPayload::Payload(genlhdr),
@@ -533,7 +532,7 @@ impl WirelessManager {
             txpower_mbm: None,
         };
 
-        if let NlPayload::Payload(genlhdr) = response.nl_payload() {
+        if let NlPayload::Payload(genlhdr) = &response.nl_payload {
             for attr in genlhdr.attrs.iter() {
                 match attr.nla_type.nla_type() {
                     NL80211_ATTR_WIPHY => {
@@ -572,16 +571,15 @@ impl WirelessManager {
     pub fn get_phy_capabilities(&mut self, interface: &str) -> Result<PhyCapabilities> {
         let info = self.get_interface_info(interface)?;
 
-        let attrs = vec![
-            Nlattr::new(false, false, NL80211_ATTR_WIPHY, info.wiphy)
-                .map_err(|e| NetlinkError::OperationFailed(format!("Failed to create wiphy attr: {}", e)))?,
-        ];
+        let mut attrs = GenlBuffer::new();
+        attrs.push(Nlattr::new(false, false, NL80211_ATTR_WIPHY, info.wiphy)
+            .map_err(|e| NetlinkError::OperationFailed(format!("Failed to create wiphy attr: {}", e)))?);
 
-        let genlhdr = Genlmsghdr::new(NL80211_CMD_GET_WIPHY, 1, GenlBuffer::new_from_vec(attrs));
+        let genlhdr = Genlmsghdr::new(NL80211_CMD_GET_WIPHY, 1, attrs);
         let nlhdr = Nlmsghdr::new(
             None,
             self.family_id,
-            &[NlmF::REQUEST],
+            vec![NlmF::Request],
             None,
             None,
             NlPayload::Payload(genlhdr),
@@ -603,7 +601,7 @@ impl WirelessManager {
             supports_station: false,
         };
 
-        if let NlPayload::Payload(genlhdr) = response.nl_payload() {
+        if let NlPayload::Payload(genlhdr) = &response.nl_payload {
             for attr in genlhdr.attrs.iter() {
                 match attr.nla_type.nla_type() {
                     NL80211_ATTR_WIPHY_NAME => {
@@ -722,3 +720,4 @@ impl WirelessManager {
         }
     }
 }
+

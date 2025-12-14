@@ -232,7 +232,7 @@ impl WirelessManager {
         let nlhdr = Nlmsghdr::new(
             None,
             self.family_id,
-            NlmFFlags::new(&[NlmF::Request, NlmF::Ack]),
+            NlmFFlags::new(NlmFFlags::new(&[NlmF::Request, NlmF::Ack])),
             None,
             None,
             NlPayload::Payload(genlhdr),
@@ -305,7 +305,7 @@ impl WirelessManager {
         let nlhdr = Nlmsghdr::new(
             None,
             self.family_id,
-            NlmFFlags::new(&[NlmF::Request, NlmF::Ack]),
+            NlmFFlags::new(NlmFFlags::new(&[NlmF::Request, NlmF::Ack])),
             None,
             None,
             NlPayload::Payload(genlhdr),
@@ -364,11 +364,11 @@ impl WirelessManager {
             );
         }
 
-        let genlhdr = Genlmsghdr::new(NL80211_CMD_SET_WIPHY, 1, GenlBuffer::new_from_vec(attrs));
+        let genlhdr = Genlmsghdr::new(NL80211_CMD_SET_WIPHY, 1, attrs);
         let nlhdr = Nlmsghdr::new(
             None,
             self.family_id,
-            &[NlmF::REQUEST, NlmF::ACK],
+            NlmFFlags::new(&[NlmF::Request, NlmF::Ack]),
             None,
             None,
             NlPayload::Payload(genlhdr),
@@ -420,7 +420,7 @@ impl WirelessManager {
         let nlhdr = Nlmsghdr::new(
             None,
             self.family_id,
-            NlmFFlags::new(&[NlmF::Request, NlmF::Ack]),
+            NlmFFlags::new(NlmFFlags::new(&[NlmF::Request, NlmF::Ack])),
             None,
             None,
             NlPayload::Payload(genlhdr),
@@ -466,7 +466,7 @@ impl WirelessManager {
         let nlhdr = Nlmsghdr::new(
             None,
             self.family_id,
-            NlmFFlags::new(&[NlmF::Request, NlmF::Ack]),
+            NlmFFlags::new(NlmFFlags::new(&[NlmF::Request, NlmF::Ack])),
             None,
             None,
             NlPayload::Payload(genlhdr),
@@ -719,6 +719,7 @@ impl WirelessManager {
         }
     }
 }
+
 
 
 

@@ -49,7 +49,7 @@ pub fn stop_dhcp_server(server: &mut DhcpServer) {
 }
 
 #[cfg(target_os = "linux")]
-pub fn get_dhcp_leases(server: &DhcpServer) -> Vec<DhcpServerLease> {
+pub fn get_dhcp_leases(server: &DhcpServer) -> Vec<DhcpLease> {
     server.get_leases()
 }
 

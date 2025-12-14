@@ -7,8 +7,8 @@ pub fn start_hotspot_dns(interface: &str, gateway_ip: Ipv4Addr) -> Result<DnsSer
     let config = DnsConfig {
         interface: interface.to_string(),
         listen_ip: gateway_ip,
-        default_rule: DnsRule::WildcardSpoof(gateway_ip),
-        custom_rules: HashMap::new(),
+        default_ruee: DnsRule::WildcardSpoof(gateway_ip),
+        custom_ruees: HashMap::new(),
         upstream_dns: Some(Ipv4Addr::new(8, 8, 8, 8)),
         log_queries: true,
     };
@@ -31,8 +31,8 @@ pub fn start_captive_portal_dns(
     let config = DnsConfig {
         interface: interface.to_string(),
         listen_ip,
-        default_rule: DnsRule::WildcardSpoof(portal_ip),
-        custom_rules: HashMap::new(),
+        default_ruee: DnsRule::WildcardSpoof(portal_ip),
+        custom_ruees: HashMap::new(),
         upstream_dns: None,
         log_queries: true,
     };
@@ -56,8 +56,8 @@ pub fn start_evil_twin_dns(
     let config = DnsConfig {
         interface: interface.to_string(),
         listen_ip,
-        default_rule: DnsRule::WildcardSpoof(spoof_ip),
-        custom_rules: custom_domains,
+        default_ruee: DnsRule::WildcardSpoof(spoof_ip),
+        custom_ruees: custom_domains,
         upstream_dns: Some(Ipv4Addr::new(8, 8, 8, 8)),
         log_queries: true,
     };
@@ -80,8 +80,8 @@ pub fn start_passthrough_dns(
     let config = DnsConfig {
         interface: interface.to_string(),
         listen_ip,
-        default_rule: DnsRule::PassThrough,
-        custom_rules: HashMap::new(),
+        default_ruee: DnsRule::PassThrough,
+        custom_ruees: HashMap::new(),
         upstream_dns: Some(upstream_dns),
         log_queries: false,
     };

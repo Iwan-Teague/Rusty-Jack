@@ -205,7 +205,9 @@ fn handle_eth_discover(root: &Path, args: EthernetDiscoverArgs) -> Result<Handle
 
     let timeout = Duration::from_millis(args.timeout_ms.max(50));
     let mut hosts_detail = Vec::new();
-    if let Ok(arp_result) = discover_hosts_arp(&interface.name, net, Some(50), timeout) {
+    if let Ok(arp_result) = tokio::runtime::Handle::current().block_on(async {
+        discover_hosts_arp(&interface.name, net, Some(50), timeout).await
+    }) {
         hosts_detail.extend(arp_result.details);
     }
     if let Ok(icmp_result) = discover_hosts(net, timeout) {
@@ -361,7 +363,9 @@ fn handle_eth_inventory(root: &Path, args: EthernetInventoryArgs) -> Result<Hand
 
     // Combine ARP and ICMP to find hosts
     let mut details = Vec::new();
-    if let Ok(arp) = discover_hosts_arp(&interface.name, net, Some(50), timeout) {
+    if let Ok(arp) = tokio::runtime::Handle::current().block_on(async {
+        discover_hosts_arp(&interface.name, net, Some(50), timeout).await
+    }) {
         details.extend(arp.details);
     }
     if let Ok(icmp) = discover_hosts(net, timeout) {
@@ -876,7 +880,9 @@ fn handle_eth_site_cred_capture(root: &Path, args: EthernetSiteCredArgs) -> Resu
 
     // Discovery + inventory
     let mut details = Vec::new();
-    if let Ok(arp) = discover_hosts_arp(&interface_info.name, net, Some(50), timeout) {
+    if let Ok(arp) = tokio::runtime::Handle::current().block_on(async {
+        discover_hosts_arp(&interface_info.name, net, Some(50), timeout).await
+    }) {
         details.extend(arp.details);
     }
     if let Ok(icmp) = discover_hosts(net, timeout) {

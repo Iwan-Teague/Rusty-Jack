@@ -1,9 +1,11 @@
 use std::net::Ipv4Addr;
-use std::os::unix::io::AsRawFd;
 use std::time::{Duration, Instant};
 use libc::{AF_PACKET, SOCK_RAW, sockaddr_ll, socket};
 
-use super::{ArpError, ArpPacket, ArpScanConfig, ArpScanResult, Result};
+use crate::arp::{subnet_to_ips, parse_mac_address, format_mac_address};
+use super::{ArpError, ArpPacket, ArpScanConfig, ArpScanResult};
+use crate::error::{NetlinkError, Result};
+use crate::interface::InterfaceManager;
 
 /// ARP Scanner for discovering hosts on local network
 pub struct ArpScanner {
@@ -104,7 +106,7 @@ impl ArpScanner {
         subnet: &str,
         interface: &str,
     ) -> Result<Vec<ArpScanResult>> {
-        let ips = super::subnet_to_ips(subnet)?;
+        let ips = subnet_to_ips(subnet)?;
         
         log::info!("Scanning {} hosts in subnet {} on {}", ips.len(), subnet, interface);
         
@@ -140,12 +142,12 @@ impl ArpScanner {
         if sock_fd < 0 {
             let err = std::io::Error::last_os_error();
             return if err.raw_os_error() == Some(libc::EPERM) {
-                Err(ArpError::PermissionDenied)
+                Err(NetlinkError::Arp(ArpError::PermissionDenied))
             } else {
-                Err(ArpError::SocketCreate {
+                Err(NetlinkError::Arp(ArpError::SocketCreate {
                     interface: interface.to_string(),
                     source: err,
-                })
+                }))
             };
         }
 
@@ -167,10 +169,10 @@ impl ArpScanner {
         };
 
         if result < 0 {
-            return Err(ArpError::SocketBind {
+            return Err(NetlinkError::Arp(ArpError::SocketBind {
                 interface: interface.to_string(),
                 source: std::io::Error::last_os_error(),
-            });
+            }));
         }
 
         Ok(())
@@ -193,10 +195,10 @@ impl ArpScanner {
         };
 
         if result < 0 {
-            return Err(ArpError::Io {
+            return Err(NetlinkError::Arp(ArpError::Io {
                 interface: interface.to_string(),
                 source: std::io::Error::last_os_error(),
-            });
+            }));
         }
 
         Ok(())
@@ -238,11 +240,11 @@ impl ArpScanner {
         };
 
         if result < 0 {
-            return Err(ArpError::SendRequest {
+            return Err(NetlinkError::Arp(ArpError::SendRequest {
                 target_ip,
                 interface: interface.to_string(),
                 source: std::io::Error::last_os_error(),
-            });
+            }));
         }
 
         Ok(())
@@ -274,10 +276,10 @@ impl ArpScanner {
                     || err.kind() == std::io::ErrorKind::TimedOut {
                     return Ok(None); // Timeout
                 }
-                return Err(ArpError::ReceiveReply {
+                return Err(NetlinkError::Arp(ArpError::ReceiveReply {
                     interface: interface.to_string(),
                     source: err,
-                });
+                }));
             }
 
             // Skip Ethernet header (14 bytes: 6 dest + 6 src + 2 ethertype)
@@ -296,17 +298,13 @@ impl ArpScanner {
     }
 
     fn get_interface_index(&self, interface: &str) -> Result<u32> {
-        use crate::InterfaceManager;
+        let mgr = InterfaceManager::new()?;
         
-        let mgr = InterfaceManager::new()
-            .map_err(|e| ArpError::InterfaceNotFound {
-                interface: interface.to_string(),
-            })?;
-        
-        mgr.get_index(interface)
-            .map_err(|e| ArpError::InterfaceNotFound {
-                interface: interface.to_string(),
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(async {
+                mgr.get_index(interface).await
             })
+        })
     }
 
     fn get_interface_mac(&self, interface: &str) -> Result<[u8; 6]> {
@@ -314,27 +312,22 @@ impl ArpScanner {
         
         let path = format!("/sys/class/net/{}/address", interface);
         let mac_str = fs::read_to_string(&path)
-            .map_err(|e| ArpError::MacAddressError {
+            .map_err(|e| NetlinkError::Arp(ArpError::MacAddressError {
                 interface: interface.to_string(),
                 reason: format!("Failed to read {}: {}", path, e),
-            })?;
+            }))?;
         
-        super::parse_mac_address(mac_str.trim())
+        parse_mac_address(mac_str.trim())
     }
 
     fn get_interface_ip(&self, interface: &str) -> Result<Ipv4Addr> {
-        use crate::InterfaceManager;
+        let mgr = InterfaceManager::new()?;
         
-        let mgr = InterfaceManager::new()
-            .map_err(|e| ArpError::InterfaceNotFound {
-                interface: interface.to_string(),
-            })?;
-        
-        let addrs = mgr.get_addresses(interface)
-            .map_err(|e| ArpError::MacAddressError {
-                interface: interface.to_string(),
-                reason: format!("Failed to get IP address: {}", e),
-            })?;
+        let addrs = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(async {
+                mgr.get_addresses(interface).await
+            })
+        })?;
         
         // Find first IPv4 address
         for addr_info in addrs {
@@ -343,10 +336,10 @@ impl ArpScanner {
             }
         }
         
-        Err(ArpError::MacAddressError {
+        Err(NetlinkError::Arp(ArpError::MacAddressError {
             interface: interface.to_string(),
             reason: "No IPv4 address configured on interface".to_string(),
-        })
+        }))
     }
 }
 

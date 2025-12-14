@@ -12,7 +12,7 @@ use neli::consts::nl::{NlmF, Nlmsg};
 use neli::consts::socket::NlFamily;
 
 // Nlmsg type for error checking
-const NlmsgErr: u16 = Nlmsg::Error as u16;
+const NlmsgErr: u16 = 2; // NLMSG_ERROR value
 
 const NL80211_GENL_NAME: &str = "nl80211";
 

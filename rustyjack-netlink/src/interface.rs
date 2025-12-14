@@ -5,6 +5,9 @@
 
 use crate::error::{NetlinkError, Result};
 use futures::stream::TryStreamExt;
+use netlink_packet_route::address::{AddressAttribute, AddressMessage};
+use netlink_packet_route::link::{LinkAttribute, LinkFlag, LinkMessage};
+use netlink_packet_route::route::RouteAttribute;
 use rtnetlink::{new_connection, Handle};
 use std::net::IpAddr;
 
@@ -266,19 +269,56 @@ impl InterfaceManager {
         }
         let index = self.get_interface_index(interface).await?;
         
-        self.handle
+        // Get all addresses to find the one to delete
+        let mut addrs = self.handle
             .address()
-            .del(index, addr, prefix_len)
-            .execute()
-            .await
+            .get()
+            .set_link_index_filter(index)
+            .execute();
+        
+        while let Some(addr_msg) = addrs.try_next().await
             .map_err(|e| NetlinkError::DeleteAddressError {
                 address: addr.to_string(),
                 interface: interface.to_string(),
                 reason: e.to_string(),
-            })?;
+            })? 
+        {
+            // Check if this is the address we want to delete
+            let mut matches = false;
+            for nla in &addr_msg.attributes {
+                if let AddressAttribute::Address(ip_bytes) = nla {
+                    let addr_matches = match addr {
+                        IpAddr::V4(v4) => ip_bytes == &v4.octets()[..],
+                        IpAddr::V6(v6) => ip_bytes == &v6.octets()[..],
+                    };
+                    if addr_matches && addr_msg.header.prefix_len == prefix_len {
+                        matches = true;
+                        break;
+                    }
+                }
+            }
+            
+            if matches {
+                self.handle
+                    .address()
+                    .del(addr_msg)
+                    .execute()
+                    .await
+                    .map_err(|e| NetlinkError::DeleteAddressError {
+                        address: addr.to_string(),
+                        interface: interface.to_string(),
+                        reason: e.to_string(),
+                    })?;
+                log::info!("Deleted address {}/{} from {}", addr, prefix_len, interface);
+                return Ok(());
+            }
+        }
         
-        log::info!("Deleted address {}/{} from {}", addr, prefix_len, interface);
-        Ok(())
+        Err(NetlinkError::DeleteAddressError {
+            address: addr.to_string(),
+            interface: interface.to_string(),
+            reason: "Address not found on interface".to_string(),
+        })
     }
 
     /// Remove all IP addresses from an interface.
@@ -315,15 +355,11 @@ impl InterfaceManager {
                 reason: e.to_string(),
             })? 
         {
-            for nla in addr.attributes {
-                if let rtnetlink::packet::address::AddressAttribute::Address(ip) = nla {
-                    let _ = self.handle
-                        .address()
-                        .del(index, ip, addr.header.prefix_len)
-                        .execute()
-                        .await;
-                }
-            }
+            let _ = self.handle
+                .address()
+                .del(addr)
+                .execute()
+                .await;
         }
         
         log::info!("Flushed all addresses from {}", interface);
@@ -362,14 +398,14 @@ impl InterfaceManager {
             let mut name = String::new();
             let mut mac = None;
             let index = link.header.index;
-            let flags = link.header.flags;
-            let is_up = (flags & libc::IFF_UP as u32) != 0;
-            let is_running = (flags & libc::IFF_RUNNING as u32) != 0;
+            let flags = &link.header.flags;
+            let is_up = flags.contains(&LinkFlag::Up);
+            let is_running = flags.contains(&LinkFlag::Running);
             
             for nla in link.attributes {
                 match nla {
-                    rtnetlink::packet::link::LinkAttribute::IfName(n) => name = n,
-                    rtnetlink::packet::link::LinkAttribute::Address(addr) => {
+                    LinkAttribute::IfName(n) => name = n,
+                    LinkAttribute::Address(addr) => {
                         if addr.len() == 6 {
                             mac = Some(format!(
                                 "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
@@ -409,7 +445,7 @@ impl InterfaceManager {
             .map_err(|e| NetlinkError::runtime(format!("listing addresses for interface index {}", index), e.to_string()))? 
         {
             for nla in addr.attributes {
-                if let rtnetlink::packet::address::AddressAttribute::Address(ip) = nla {
+                if let AddressAttribute::Address(ip) = nla {
                     addresses.push(AddressInfo {
                         address: ip,
                         prefix_len: addr.header.prefix_len,
@@ -456,7 +492,7 @@ impl InterfaceManager {
             })? 
         {
             for nla in link.attributes {
-                if let rtnetlink::packet::link::LinkAttribute::Address(addr) = nla {
+                if let LinkAttribute::Address(addr) = nla {
                     if addr.len() == 6 {
                         return Ok(format!(
                             "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
@@ -497,7 +533,7 @@ impl InterfaceManager {
             })? 
         {
             for nla in addr_msg.attributes {
-                if let rtnetlink::packet::address::AddressAttribute::Address(ip_bytes) = nla {
+                if let AddressAttribute::Address(ip_bytes) = nla {
                     let addr = if ip_bytes.len() == 4 {
                         IpAddr::from([ip_bytes[0], ip_bytes[1], ip_bytes[2], ip_bytes[3]])
                     } else if ip_bytes.len() == 16 {

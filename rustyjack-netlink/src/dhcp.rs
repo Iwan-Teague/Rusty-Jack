@@ -103,7 +103,7 @@ pub enum DhcpClientError {
         reason: String,
     },
 
-    #[error("Failed to broadcast DHCP packet on '{interface}': {0}")]
+    #[error("Failed to broadcast DHCP packet on interface: {0}")]
     BroadcastFailed(std::io::Error),
 }
 

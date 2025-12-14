@@ -5,7 +5,10 @@ use std::thread;
 use std::time::Duration;
 use libc::{AF_PACKET, SOCK_RAW, sockaddr_ll, socket};
 
-use super::{ArpError, ArpPacket, Result};
+use crate::arp::{format_mac_address};
+use super::{ArpError, ArpPacket};
+use crate::error::{NetlinkError, Result};
+use crate::interface::InterfaceManager;
 
 /// ARP Spoofer for man-in-the-middle attacks
 pub struct ArpSpoofer {
@@ -71,10 +74,10 @@ impl ArpSpoofer {
     /// Start continuous ARP spoofing in background
     pub fn start_continuous(&mut self, config: ArpSpoofConfig) -> Result<()> {
         if self.running.load(Ordering::Relaxed) {
-            return Err(ArpError::SpoofError {
+            return Err(NetlinkError::Arp(ArpError::SpoofError {
                 interface: config.interface.clone(),
                 reason: "ARP spoofing already running".to_string(),
-            });
+            }));
         }
 
         // Get target's real MAC address first
@@ -93,7 +96,7 @@ impl ArpSpoofer {
             log::info!(
                 "Starting ARP spoof: {} ({}) -> {} on {}",
                 config.spoof_ip,
-                super::format_mac_address(&config.attacker_mac),
+                format_mac_address(&config.attacker_mac),
                 config.target_ip,
                 config.interface
             );
@@ -221,12 +224,12 @@ impl ArpSpoofer {
         if sock_fd < 0 {
             let err = std::io::Error::last_os_error();
             return if err.raw_os_error() == Some(libc::EPERM) {
-                Err(ArpError::PermissionDenied)
+                Err(NetlinkError::Arp(ArpError::PermissionDenied))
             } else {
-                Err(ArpError::SocketCreate {
+                Err(NetlinkError::Arp(ArpError::SocketCreate {
                     interface: interface.to_string(),
                     source: err,
-                })
+                }))
             };
         }
 
@@ -267,28 +270,24 @@ impl ArpSpoofer {
         };
 
         if result < 0 {
-            return Err(ArpError::SendRequest {
+            return Err(NetlinkError::Arp(ArpError::SendRequest {
                 target_ip,
                 interface: interface.to_string(),
                 source: std::io::Error::last_os_error(),
-            });
+            }));
         }
 
         Ok(())
     }
 
     fn get_interface_index(interface: &str) -> Result<u32> {
-        use crate::InterfaceManager;
+        let mgr = InterfaceManager::new()?;
 
-        let mgr = InterfaceManager::new()
-            .map_err(|_| ArpError::InterfaceNotFound {
-                interface: interface.to_string(),
-            })?;
-
-        mgr.get_index(interface)
-            .map_err(|_| ArpError::InterfaceNotFound {
-                interface: interface.to_string(),
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(async {
+                mgr.get_index(interface).await
             })
+        })
     }
 }
 

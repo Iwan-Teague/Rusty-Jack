@@ -5,6 +5,7 @@
 
 use crate::error::{NetlinkError, Result};
 use futures::stream::TryStreamExt;
+use netlink_packet_route::route::RouteAttribute;
 use rtnetlink::{new_connection, Handle};
 use std::net::IpAddr;
 
@@ -63,27 +64,36 @@ impl RouteManager {
         }
         let index = self.get_interface_index(interface).await?;
         
-        let mut route = self.handle.route().add();
-        
         match gateway {
             IpAddr::V4(gw) => {
-                route = route.v4().gateway(gw);
+                self.handle.route().add()
+                    .v4()
+                    .gateway(gw)
+                    .output_interface(index)
+                    .execute()
+                    .await
+                    .map_err(|e| NetlinkError::AddRouteError {
+                        destination: "default".to_string(),
+                        gateway: gateway.to_string(),
+                        interface: interface.to_string(),
+                        reason: e.to_string(),
+                    })?;
             }
             IpAddr::V6(gw) => {
-                route = route.v6().gateway(gw);
+                self.handle.route().add()
+                    .v6()
+                    .gateway(gw)
+                    .output_interface(index)
+                    .execute()
+                    .await
+                    .map_err(|e| NetlinkError::AddRouteError {
+                        destination: "default".to_string(),
+                        gateway: gateway.to_string(),
+                        interface: interface.to_string(),
+                        reason: e.to_string(),
+                    })?;
             }
         }
-        
-        route
-            .output_interface(index)
-            .execute()
-            .await
-            .map_err(|e| NetlinkError::AddRouteError {
-                destination: "default".to_string(),
-                gateway: gateway.to_string(),
-                interface: interface.to_string(),
-                reason: e.to_string(),
-            })?;
         
         log::info!("Added default route via {} on {}", gateway, interface);
         Ok(())
@@ -109,15 +119,15 @@ impl RouteManager {
             
             for nla in &route.attributes {
                 match nla {
-                    rtnetlink::packet::route::RouteAttribute::Destination(dst) => {
+                    RouteAttribute::Destination(dst) => {
                         if dst.is_unspecified() {
                             is_default = true;
                         }
                     }
-                    rtnetlink::packet::route::RouteAttribute::Gateway(gw) => {
+                    RouteAttribute::Gateway(gw) => {
                         gateway = Some(*gw);
                     }
-                    rtnetlink::packet::route::RouteAttribute::Oif(idx) => {
+                    RouteAttribute::Oif(idx) => {
                         oif = Some(*idx);
                     }
                     _ => {}
@@ -177,13 +187,13 @@ impl RouteManager {
             
             for nla in route.attributes {
                 match nla {
-                    rtnetlink::packet::route::RouteAttribute::Destination(dst) => {
+                    RouteAttribute::Destination(dst) => {
                         destination = Some(dst);
                     }
-                    rtnetlink::packet::route::RouteAttribute::Gateway(gw) => {
+                    RouteAttribute::Gateway(gw) => {
                         gateway = Some(gw);
                     }
-                    rtnetlink::packet::route::RouteAttribute::Oif(idx) => {
+                    RouteAttribute::Oif(idx) => {
                         oif = Some(idx);
                     }
                     _ => {}

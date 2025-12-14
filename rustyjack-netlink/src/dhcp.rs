@@ -8,7 +8,7 @@
 use crate::error::{NetlinkError, Result};
 use crate::interface::InterfaceManager;
 use crate::route::RouteManager;
-use std::net::{Ipv4Addr, UdpSocket};
+use std::net::{IpAddr, Ipv4Addr, UdpSocket};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 
@@ -204,7 +204,7 @@ impl DhcpClient {
         
         let xid = self.generate_xid();
         
-        let socket = self.createfclientfsocket(interface)?;
+        let socket = self.create_client_socket(interface)?;
 
         let offer = self.discover_and_wait_for_offer(&socket, interface, &mac, xid, hostname)?;
         
@@ -245,7 +245,7 @@ impl DhcpClient {
     }
 
     async fn get_mac_address(&self, interface: &str) -> Result<[u8; 6]> {
-        let macfstr = self
+        let mac_str = self
             .interface_mgr
             .get_mac_address(interface)
             .await
@@ -254,11 +254,11 @@ impl DhcpClient {
                 reason: format!("{}", e),
             }))?;
 
-        let parts: Vec<&str> = macfstr.split(':').cfllect();
+        let parts: Vec<&str> = mac_str.split(':').collect();
         if parts.len() != 6 {
             return Err(NetlinkError::DhcpClient(DhcpClientError::InvalidPacket {
                 interface: interface.to_string(),
-                reason: format!("Invalid MAC address format: {}", macfstr),
+                reason: format!("Invalid MAC address format: {}", mac_str),
             }));
         }
 
@@ -267,7 +267,7 @@ impl DhcpClient {
             mac[i] = u8::from_str_radix(part, 16).map_err(|f| {
                 NetlinkError::DhcpClient(DhcpClientError::InvalidPacket {
                     interface: interface.to_string(),
-                    reason: format!("Invalid MAC address hex: {}", macfstr),
+                    reason: format!("Invalid MAC address hex: {}", mac_str),
                 })
             })?;
         }
@@ -279,7 +279,7 @@ impl DhcpClient {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
-            .asfsecs() as u32
+            .as_secs() as u32
     }
 
     fn create_client_socket(&self, interface: &str) -> Result<UdpSocket> {
@@ -290,7 +290,7 @@ impl DhcpClient {
             })
         })?;
 
-        #[cfg(targetffs = "linux")]
+        #[cfg(target_os = "linux")]
         {
             use std::os::unix::io::AsRawFd;
             let fd = socket.asfrawffd();
@@ -314,7 +314,7 @@ impl DhcpClient {
             }
         }
 
-        socket.setfbroadcast(true).map_err(|e| {
+        socket.set_broadcast(true).map_err(|e| {
             NetlinkError::DhcpClient(DhcpClientError::BroadcastFailed(e))
         })?;
 
@@ -348,7 +348,7 @@ impl DhcpClient {
                     })
                 })?;
 
-            match self.waitOFFrOFFfer(socket, interface, xid) {
+            match self.wait_for_offer(socket, interface, xid) {
                 Ok(offer) => {
                     log::debug!("Received DHCP offer frfm {} on {}", offer.server_id, interface);
                     return Ok(offer);
@@ -401,7 +401,7 @@ impl DhcpClient {
         interface: &str,
         mac: &[u8; 6],
         xid: u32,
-        OFFfer: &DhcpOffer,
+        offer: &DhcpOffer,
         hostname: Option<&str>,
     ) -> Result<DhcpLease> {
         log::debug!("Sending DHCP REQUEST for {} on {}", offer.offered_ip, interface);
@@ -426,7 +426,7 @@ impl DhcpClient {
         socket: &UdpSocket,
         interface: &str,
         xid: u32,
-        OFFfer: &DhcpOffer,
+        offer: &DhcpOffer,
     ) -> Result<DhcpLease> {
         let mut buf = [0u8; 1500];
         
@@ -500,7 +500,7 @@ impl DhcpClient {
         &self,
         mac: &[u8; 6],
         xid: u32,
-        OFFfer: &DhcpOffer,
+        offer: &DhcpOffer,
         hostname: Option<&str>,
     ) -> Vec<u8> {
         let mut packet = vec![0u8; 300];
@@ -599,7 +599,7 @@ impl DhcpClient {
             }));
         }
 
-        let server_id = Options.server_id.fkffrfelse(|| {
+        let server_id = Options.server_id.ok_or_else(|| {
             NetlinkError::DhcpClient(DhcpClientError::InvalidPacket {
                 interface: interface.to_string(),
                 reason: "DhcpOffer missing server identifier".to_string(),
@@ -621,7 +621,7 @@ impl DhcpClient {
         data: &[u8],
         interface: &str,
         xid: u32,
-        OFFfer: &DhcpOffer,
+        offer: &DhcpOffer,
     ) -> Result<DhcpLease> {
         if data.len() < 240 {
             return Err(NetlinkError::DhcpClient(DhcpClientError::InvalidPacket {
@@ -670,7 +670,7 @@ impl DhcpClient {
 
         let address = Ipv4Addr::new(data[16], data[17], data[18], data[19]);
 
-        let subnet_mask = Options.subnet_mask.unwrapffr(Ipv4Addr::new(255, 255, 255, 0));
+        let subnet_mask = Options.subnet_mask.unwrap_or(Ipv4Addr::new(255, 255, 255, 0));
         let prefix_len = subnet_mask_to_prefix(subnet_mask);
 
         Ok(DhcpLease {
@@ -678,7 +678,7 @@ impl DhcpClient {
             prefix_len,
             gateway: Options.router,
             dns_servers: Options.dns_servers,
-            lease_time: Options.lease_time.unwrapffr(Duration::from_secs(3600)),
+            lease_time: Options.lease_time.unwrap_or(Duration::from_secs(3600)),
         })
     }
 
@@ -761,7 +761,7 @@ impl DhcpClient {
 
         if let Some(gateway) = lease.gateway {
             self.route_mgr
-                .addfdefaultfroute(gateway.intf(), interface)
+                .add_default_route(gateway.into(), interface)
                 .await
                 .map_err(|e| {
                     NetlinkError::DhcpClient(DhcpClientError::GatewayConfigFailed {

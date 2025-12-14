@@ -264,14 +264,14 @@ pub fn discover_cidr(cidr: &str, timeout: Duration) -> Result<LanDiscoveryResult
 /// Perform an ARP sweep across a CIDR on a specific interface.
 /// This complements ICMP by finding hosts even when ICMP is blocked.
 #[cfg(target_os = "linux")]
-pub fn discover_hosts_arp(
+pub async fn discover_hosts_arp(
     interface: &str,
     network: Ipv4Net,
     rate_limit_pps: Option<u32>,
     timeout: Duration,
 ) -> Result<LanDiscoveryResult> {
     let local_mac = read_iface_mac(interface)?;
-    let local_ip = read_iface_ipv4(interface)?;
+    let local_ip = read_iface_ipv4(interface).await?;
     let ifindex = unsafe { libc::if_nametoindex(CString::new(interface)?.as_ptr()) };
     if ifindex == 0 {
         return Err(anyhow!("failed to resolve ifindex for {}", interface));
@@ -453,15 +453,15 @@ fn read_iface_mac(interface: &str) -> Result<[u8; 6]> {
 }
 
 #[cfg(target_os = "linux")]
-fn read_iface_ipv4(interface: &str) -> Result<Ipv4Addr> {
+async fn read_iface_ipv4(interface: &str) -> Result<Ipv4Addr> {
     let mgr = rustyjack_netlink::InterfaceManager::new()
         .with_context(|| format!("initializing netlink for {}", interface))?;
     
-    let addrs = mgr.get_ipv4_addresses(interface)
+    let addrs = mgr.get_ipv4_addresses(interface).await
         .with_context(|| format!("reading IPv4 addresses for {}", interface))?;
     
     if let Some(addr) = addrs.first() {
-        Ok(addr.addr())
+        Ok(addr.address.into())
     } else {
         Err(anyhow!("No IPv4 address found on {}", interface))
     }

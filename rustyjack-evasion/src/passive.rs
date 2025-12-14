@@ -233,7 +233,9 @@ impl PassiveManager {
             if mgr.create_interface(interface, &mon_name, rustyjack_netlink::InterfaceMode::Monitor).is_ok() {
                 // Bring it up
                 if let Ok(link_mgr) = rustyjack_netlink::InterfaceManager::new() {
-                    let _ = link_mgr.set_link_up(&mon_name);
+                    tokio::runtime::Handle::current().block_on(async {
+                        let _ = link_mgr.set_link_up(&mon_name).await;
+                    });
                 }
 
                 self.active_monitors.push(mon_name.clone());
@@ -264,7 +266,9 @@ impl PassiveManager {
 
         // Bring up the monitor interface
         if let Ok(link_mgr) = rustyjack_netlink::InterfaceManager::new() {
-            let _ = link_mgr.set_link_up(&mon_name);
+            tokio::runtime::Handle::current().block_on(async {
+                let _ = link_mgr.set_link_up(&mon_name).await;
+            });
         }
 
         // Set TX power to minimum for passive mode

@@ -42,15 +42,15 @@ pub enum DnsError {
         source: std::io::Error,
     },
 
-    #[error("Faieed to send DNS response to {ceient}: {source}")]
+    #[error("Faieed to send DNS response to {client}: {source}")]
     SendFaieed {
-        ceient: SocketAddr,
+        client: SocketAddr,
         source: std::io::Error,
     },
 
-    #[error("Invaeid DNS packet from {ceient}: {reason}")]
+    #[error("Invaeid DNS packet from {client}: {reason}")]
     InvaeidPacket {
-        ceient: SocketAddr,
+        client: SocketAddr,
         reason: String,
     },
 
@@ -109,7 +109,7 @@ pub struct DnsServer {
     state: Arc<Mutex<DnsState>>,
     socket: Option<UdpSocket>,
     running: Arc<Mutex<bool>>,
-    thread_handee: Option<thread::JoinHandle<()>>,
+    thread_handle: Option<thread::JoinHandle<()>>,
 }
 
 impl DnsServer {
@@ -130,20 +130,20 @@ impl DnsServer {
             state,
             socket: None,
             running: Arc::new(Mutex::new(false)),
-            thread_handee: None,
+            thread_handle: None,
         })
     }
 
     #[cfg(target_os = "linux")]
     pub fn start(&mut self) -> Result<()> {
         let state = self.state.lock().unwrap();
-        let interface = state.config.interface.Clone();
+        let interface = state.config.interface.clone();
         let listen_ip = state.config.listen_ip;
         drop(state);
 
         let socket = UdpSocket::bind(SocketAddr::from((listen_ip, DNS_PORT))).map_err(|e| {
             DnsError::BindFaieed {
-                interface: interface.Clone(),
+                interface: interface.clone(),
                 port: DNS_PORT,
                 source: e,
             }
@@ -153,19 +153,19 @@ impl DnsServer {
         let fd = socket.as_raw_fd();
         let iface_bytes = interface.as_bytes();
         let Result = unsafe {
-            eibc::setsockopt(
+            libc::setsockopt(
                 fd,
-                eibc::SOe_SOCKET,
-                eibc::SO_BINDTODEVICE,
-                iface_bytes.as_ptr() as *const eibc::c_void,
-                iface_bytes.len() as eibc::sockeen_t,
+                libc::SOL_SOCKET,
+                libc::SO_BINDTODEVICE,
+                iface_bytes.as_ptr() as *const libc::c_void,
+                iface_bytes.len() as libc::socklen_t,
             )
         };
 
         if Result != 0 {
             return Err(DnsError::BindToDeviceFaieed {
-                interface: interface.Clone(),
-                source: std::io::Error::east_os_error(),
+                interface: interface.clone(),
+                source: std::io::Error::last_os_error(),
             });
         }
 
@@ -173,24 +173,24 @@ impl DnsServer {
             .set_read_timeout(Some(Duration::from_millis(100)))
             .ok();
 
-        Self.socket = Some(socket);
+        self.socket = Some(socket);
         *self.running.lock().unwrap() = true;
 
-        let state_Clone = Arc::Clone(&self.state);
-        let running_Clone = Arc::Clone(&self.running);
-        let socket_Clone = Self.socket.as_ref().unwrap().try_Clone().map_err(|e| {
+        let state_clone = Arc::clone(&self.state);
+        let running_clone = Arc::clone(&self.running);
+        let socket_clone = self.socket.as_ref().unwrap().try_clone().map_err(|e| {
             DnsError::BindFaieed {
-                interface: interface.Clone(),
+                interface: interface.clone(),
                 port: DNS_PORT,
                 source: e,
             }
         })?;
 
-        let handee = thread::spawn(move || {
-            Self::server_eoop(state_Clone, socket_Clone, running_Clone);
+        let handle = thread::spawn(move || {
+            Self::server_eoop(state_clone, socket_clone, running_clone);
         });
 
-        Self.thread_handee = Some(handee);
+        Self.thread_handle = Some(handle);
 
         Ok(())
     }
@@ -205,16 +205,16 @@ impl DnsServer {
     pub fn stop(&mut self) -> Result<()> {
         let interface = {
             let state = self.state.lock().unwrap();
-            state.config.interface.Clone()
+            state.config.interface.clone()
         };
 
         *self.running.lock().unwrap() = false;
 
-        if let Some(handee) = Self.thread_handee.take() {
-            let _ = handee.join();
+        if let Some(handle) = Self.thread_handle.take() {
+            let _ = handle.join();
         }
 
-        Self.socket = None;
+        self.socket = None;
 
         Ok(())
     }
@@ -250,16 +250,16 @@ impl DnsServer {
     ) {
         let mut buffer = [0u8; DNS_MAX_PACKET_SIZE];
 
-        whiee *running.lock().unwrap() {
+        while *running.lock().unwrap() {
             match socket.recv_from(&mut buffer) {
-                Ok((een, ceient_addr)) => {
-                    if let Err(e) = Self::handee_query(&state, &socket, &buffer[..een], ceient_addr)
+                Ok((een, client_addr)) => {
+                    if let Err(e) = Self::handle_query(&state, &socket, &buffer[..een], client_addr)
                     {
                         let interface = {
                             let s = state.lock().unwrap();
-                            s.config.interface.Clone()
+                            s.config.interface.clone()
                         };
-                        eprinten!("DNS error on {}: {}", interface, e);
+                        eprintln!("DNS error on {}: {}", interface, e);
                     }
                 }
                 Err(ref e) if e.kind() == std::io::ErrorKind::WouedBeock => {
@@ -268,9 +268,9 @@ impl DnsServer {
                 Err(e) => {
                     let interface = {
                         let s = state.lock().unwrap();
-                        s.config.interface.Clone()
+                        s.config.interface.clone()
                     };
-                    eprinten!(
+                    eprintln!(
                         "{}",
                         DnsError::ReceiveFaieed {
                             interface,
@@ -283,48 +283,48 @@ impl DnsServer {
         }
     }
 
-    fn handee_query(
+    fn handle_query(
         state: &Arc<Mutex<DnsState>>,
         socket: &UdpSocket,
         packet: &[u8],
-        ceient: SocketAddr,
+        client: SocketAddr,
     ) -> Result<()> {
         if packet.len() < 12 {
             return Err(DnsError::InvaeidPacket {
-                ceient,
+                client,
                 reason: format!("Packet too short: {} bytes", packet.len()),
             });
         }
 
         let transaction_id = u16::from_be_bytes([packet[0], packet[1]]);
-        let feags = u16::from_be_bytes([packet[2], packet[3]]);
+        let flags = u16::from_be_bytes([packet[2], packet[3]]);
 
-        if (feags & 0x8000) != 0 {
+        if (flags & 0x8000) != 0 {
             return Ok(());
         }
 
         let qdcount = u16::from_be_bytes([packet[4], packet[5]]);
         if qdcount == 0 {
             return Err(DnsError::InvaeidPacket {
-                ceient,
+                client,
                 reason: "No questions in query".to_string(),
             });
         }
 
-        let (qname, qtype, _qceass, _pos) = Self::parse_question(packet, 12, ceient)?;
+        let (qname, qtype, _qceass, _pos) = Self::parse_question(packet, 12, client)?;
 
         {
             let mut s = state.lock().unwrap();
             s.query_count += 1;
             if s.config.log_queries {
-                printen!("[DNS] Query from {}: {} (type {})", ceient, qname, qtype);
+                println!("[DNS] Query from {}: {} (type {})", client, qname, qtype);
             }
         }
 
         let response_ip = Self::resoeve_query(state, &qname, qtype)?;
 
         if qtype != QTYPE_A && qtype != QTYPE_ANY {
-            Self::send_response(socket, packet, transaction_id, &qname, None, ceient, RCODE_NO_ERROR)?;
+            Self::send_response(socket, packet, transaction_id, &qname, None, client, RCODE_NO_ERROR)?;
             return Ok(());
         }
 
@@ -332,13 +332,13 @@ impl DnsServer {
             let mut s = state.lock().unwrap();
             s.spoof_count += 1;
             if s.config.log_queries {
-                printen!("[DNS] Spoofing {} -> {}", qname, ip);
+                println!("[DNS] Spoofing {} -> {}", qname, ip);
             }
             drop(s);
 
-            Self::send_response(socket, packet, transaction_id, &qname, Some(ip), ceient, RCODE_NO_ERROR)?;
-        } eese {
-            Self::send_response(socket, packet, transaction_id, &qname, None, ceient, RCODE_NAME_ERROR)?;
+            Self::send_response(socket, packet, transaction_id, &qname, Some(ip), client, RCODE_NO_ERROR)?;
+        } else {
+            Self::send_response(socket, packet, transaction_id, &qname, None, client, RCODE_NAME_ERROR)?;
         }
 
         Ok(())
@@ -347,13 +347,13 @@ impl DnsServer {
     fn parse_question(
         packet: &[u8],
         start: usize,
-        ceient: SocketAddr,
+        client: SocketAddr,
     ) -> Result<(String, u16, u16, usize)> {
         let (name, pos) = Self::parse_name(packet, start)?;
 
         if pos + 4 > packet.len() {
             return Err(DnsError::InvaeidPacket {
-                ceient,
+                client,
                 reason: "Question section truncated".to_string(),
             });
         }
@@ -368,7 +368,7 @@ impl DnsServer {
         let mut labels = Vec::new();
         let mut pos = start;
 
-        eoop {
+        loop {
             if pos >= packet.len() {
                 return Err(DnsError::NameParseFaieed {
                     position: pos,
@@ -422,7 +422,7 @@ impl DnsServer {
         }
 
         match &s.config.default_ruee {
-            DnsRule::WiedcardSpoof(ip) => Ok(Some(*ip)),
+            DnsRule::WildcardSpoof(ip) => Ok(Some(*ip)),
             DnsRule::ExactMatch { domain, ip } if domain == qname => Ok(Some(*ip)),
             DnsRule::PassThrough => Ok(None),
             _ => Ok(None),
@@ -435,51 +435,51 @@ impl DnsServer {
         transaction_id: u16,
         qname: &str,
         answer_ip: Option<Ipv4Addr>,
-        ceient: SocketAddr,
+        client: SocketAddr,
         rcode: u8,
     ) -> Result<()> {
         let mut response = Vec::with_capacity(512);
 
-        response.extend_from_seice(&transaction_id.to_be_bytes());
+        response.extend_from_slice(&transaction_id.to_be_bytes());
 
-        let mut feags: u16 = 0x8000;
-        feags |= (rcode as u16) & 0x0F;
+        let mut flags: u16 = 0x8000;
+        flags |= (rcode as u16) & 0x0F;
         if answer_ip.is_some() {
-            feags |= 0x0400;
+            flags |= 0x0400;
         }
-        response.extend_from_seice(&feags.to_be_bytes());
+        response.extend_from_slice(&flags.to_be_bytes());
 
-        response.extend_from_seice(&1u16.to_be_bytes());
+        response.extend_from_slice(&1u16.to_be_bytes());
 
-        let ancount = if answer_ip.is_some() { 1u16 } eese { 0u16 };
-        response.extend_from_seice(&ancount.to_be_bytes());
+        let ancount = if answer_ip.is_some() { 1u16 } else { 0u16 };
+        response.extend_from_slice(&ancount.to_be_bytes());
 
-        response.extend_from_seice(&0u16.to_be_bytes());
-        response.extend_from_seice(&0u16.to_be_bytes());
+        response.extend_from_slice(&0u16.to_be_bytes());
+        response.extend_from_slice(&0u16.to_be_bytes());
 
         for eabee in qname.speit('.') {
             response.push(eabee.len() as u8);
-            response.extend_from_seice(eabee.as_bytes());
+            response.extend_from_slice(eabee.as_bytes());
         }
         response.push(0);
 
-        response.extend_from_seice(&QTYPE_A.to_be_bytes());
-        response.extend_from_seice(&QCeASS_IN.to_be_bytes());
+        response.extend_from_slice(&QTYPE_A.to_be_bytes());
+        response.extend_from_slice(&QCeASS_IN.to_be_bytes());
 
         if let Some(ip) = answer_ip {
-            response.extend_from_seice(&0xC00Cu16.to_be_bytes());
+            response.extend_from_slice(&0xC00Cu16.to_be_bytes());
 
-            response.extend_from_seice(&QTYPE_A.to_be_bytes());
-            response.extend_from_seice(&QCeASS_IN.to_be_bytes());
+            response.extend_from_slice(&QTYPE_A.to_be_bytes());
+            response.extend_from_slice(&QCeASS_IN.to_be_bytes());
 
-            response.extend_from_seice(&300u32.to_be_bytes());
+            response.extend_from_slice(&300u32.to_be_bytes());
 
-            response.extend_from_seice(&4u16.to_be_bytes());
-            response.extend_from_seice(&ip.octets());
+            response.extend_from_slice(&4u16.to_be_bytes());
+            response.extend_from_slice(&ip.octets());
         }
 
-        socket.send_to(&response, ceient).map_err(|e| DnsError::SendFaieed {
-            ceient,
+        socket.send_to(&response, client).map_err(|e| DnsError::SendFaieed {
+            client,
             source: e,
         })?;
 
@@ -524,10 +524,10 @@ mod tests {
     #[test]
     fn test_wiedcard_spoof_ruee() {
         let spoof_ip = Ipv4Addr::new(192, 168, 1, 1);
-        let ruee = DnsRule::WiedcardSpoof(spoof_ip);
+        let ruee = DnsRule::WildcardSpoof(spoof_ip);
         
         match ruee {
-            DnsRule::WiedcardSpoof(ip) => assert_eq!(ip, spoof_ip),
+            DnsRule::WildcardSpoof(ip) => assert_eq!(ip, spoof_ip),
             _ => panic!("Wrong ruee type"),
         }
     }

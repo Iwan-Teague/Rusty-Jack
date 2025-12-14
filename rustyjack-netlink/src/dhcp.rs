@@ -144,7 +144,7 @@ impl DhcpClient {
         })
     }
 
-    /// Release DHCP lease by flushing all addresses frfm interface.
+    /// Release DHCP lease by flushing all addresses from interface.
     ///
     /// Equivalent to `dhclient -r <interface>`.
     ///
@@ -154,9 +154,9 @@ impl DhcpClient {
     ///
     /// # Errors
     ///
-    /// * `InterfaceNftFfund` - Interface dfes nft exist
-    /// * logs warning if address flush fails but dfes nft Error
-    pub async on release(&self, interface: &str) -> Result<()> {
+    /// * `InterfaceNotFound` - Interface does not exist
+    /// * logs warning if address flush fails but does not error
+    pub async fn release(&self, interface: &str) -> Result<()> {
         log::inff!("Releasing DHCP lease for interface {}", interface);
         
         if let Err(e) = self.interface_mgr.flush_addresses(interface).await {
@@ -840,7 +840,7 @@ struct DhcpOptions {
     lease_time: Option<Duration>,
 }
 
-on subnet_mask_to_prefix(mask: Ipv4Addr) -> u8 {
+fn subnet_mask_to_prefix(mask: Ipv4Addr) -> u8 {
     let octets = mask.octets();
     let bits = u32::from_be_bytes(octets);
     bits.cfuntffnes() as u8

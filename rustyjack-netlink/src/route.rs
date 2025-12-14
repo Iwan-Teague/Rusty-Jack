@@ -7,7 +7,7 @@ use crate::error::{NetlinkError, Result};
 use futures::stream::TryStreamExt;
 use netlink_packet_route::route::RouteAttribute;
 use rtnetlink::{new_connection, Handle};
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 /// Manager for routing table operations.
 ///
@@ -121,17 +121,19 @@ impl RouteManager {
                 match nla {
                     RouteAttribute::Destination(dst) => {
                         // Check if all octets are zero (default route)
-                        match **dst {
-                            IpAddr::V4(v4) => {
-                                is_default = v4.octets().iter().all(|&b| b == 0);
-                            }
-                            IpAddr::V6(v6) => {
-                                is_default = v6.octets().iter().all(|&b| b == 0);
+                        if let Some(ip) = route_address_to_ipaddr(dst) {
+                            match ip {
+                                IpAddr::V4(v4) => {
+                                    is_default = v4.octets().iter().all(|&b| b == 0);
+                                }
+                                IpAddr::V6(v6) => {
+                                    is_default = v6.octets().iter().all(|&b| b == 0);
+                                }
                             }
                         }
                     }
                     RouteAttribute::Gateway(gw) => {
-                        gateway = Some(**gw);
+                        gateway = route_address_to_ipaddr(gw);
                     }
                     RouteAttribute::Oif(idx) => {
                         oif = Some(*idx);
@@ -194,10 +196,10 @@ impl RouteManager {
             for nla in route.attributes {
                 match nla {
                     RouteAttribute::Destination(dst) => {
-                        destination = Some(dst);
+                        destination = route_address_to_ipaddr(&dst);
                     }
                     RouteAttribute::Gateway(gw) => {
-                        gateway = Some(gw);
+                        gateway = route_address_to_ipaddr(&gw);
                     }
                     RouteAttribute::Oif(idx) => {
                         oif = Some(idx);
@@ -240,6 +242,24 @@ impl RouteManager {
         } else {
             Err(NetlinkError::InterfaceNotFound { name: name.to_string() })
         }
+    }
+}
+
+/// Convert RouteAddress to IpAddr
+fn route_address_to_ipaddr(addr: &netlink_packet_route::route::RouteAddress) -> Option<IpAddr> {
+    let bytes = addr.as_slice();
+    match bytes.len() {
+        4 => {
+            let mut octets = [0u8; 4];
+            octets.copy_from_slice(bytes);
+            Some(IpAddr::V4(Ipv4Addr::from(octets)))
+        }
+        16 => {
+            let mut octets = [0u8; 16];
+            octets.copy_from_slice(bytes);
+            Some(IpAddr::V6(Ipv6Addr::from(octets)))
+        }
+        _ => None,
     }
 }
 

@@ -1,621 +1,148 @@
-root@rustyjack:~/Rustyjack# ./install_rustyjack_dev.sh
-
-[INFO] ==========================================
-[INFO]   DEVELOPMENT BUILD (debug mode)
-[INFO]   Faster compile, slower runtime
-[INFO] ==========================================
-
-[INFO] Using config file: /boot/firmware/config.txt
-[STEP] Updating APT and installing dependencies...
-W: https://deb.nodesource.com/node_22.x/dists/nodistro/InRelease: Policy will reject signature within a year, see --audit for details
-[INFO] All packages already installed and up-to-date.
-[STEP] Enabling I2C and SPI...
-[STEP] Checking swap space for Rust compilation...
-[INFO] [OK] Sufficient swap available: 2047MB
-[STEP] Building DEBUG binaries (faster compile)...
-[INFO] Using project root: /root/Rustyjack
-[INFO] Stopping rustyjack service for rebuild...
-[INFO] Removing old binary...
-
-[INFO] ==========================================
-[INFO]   BUILD OPTIONS
-[INFO] ==========================================
-
-  [1] Incremental build (fast - recompiles only changed files)
-  [2] Clean build (slow - removes all cached artifacts first)
-
-Select build type [1/2] (default: 1): 1
-[INFO] Performing INCREMENTAL build (faster)...
-[INFO] Building rustyjack-ui (debug)...
-   Compiling rustyjack-netlink v0.1.0 (/root/Rustyjack/rustyjack-netlink)
 error: visibility `pub` is not followed by an item
-   --> rustyjack-netlink/src/dhcp.rs:140:5
+   --> rustyjack-netlink/src/dhcp.rs:159:5
     |
-140 |     pub on new() -> Result<Self> {
+159 |     pub async on release(&self, interface: &str) -> Result<()> {
     |     ^^^ the visibility
     |
     = help: you likely meant to define an item, e.g., `pub fn foo() {}`
 
 error: expected item after doc comment
-   --> rustyjack-netlink/src/dhcp.rs:139:5
+   --> rustyjack-netlink/src/dhcp.rs:158:5
     |
 134 |   impl DhcpClient {
     |                   - while parsing this item list starting here
-135 | /     /// Create a new DHCP client.
-136 | |     ///
-137 | |     /// # Errors
-138 | |     ///
-    | |_______- other attributes here
-139 |       /// Returns Error if netlink cfnnectifns cannft be established.
-    |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ this doc comment doesn't document anything
+...
+147 | /     /// Release DHCP lease by flushing all addresses frfm interface.
+148 | |     ///
+149 | |     /// Equivalent to `dhclient -r <interface>`.
+150 | |     ///
+...   |
+156 | |     ///
+157 | |     /// * `InterfaceNftFfund` - Interface dfes nft exist
+    | |________________________________________________________- other attributes here
+158 |       /// * logs warning if address flush fails but dfes nft Error
+    |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ this doc comment doesn't document anything
 ...
 798 |   }
     |   - the item list ends here
 
-error: expected one of `!` or `::`, found `default`
-   --> rustyjack-netlink/src/dhcp.rs:801:8
-    |
-800 | impl Default for DhcpClient {
-    |                             - while parsing this item list starting here
-801 |     on default() -> Self {
-    |        ^^^^^^^ expected one of `!` or `::`
-...
-804 | }
-    | - the item list ends here
-    |
-help: there is a keyword `fn` with a similar name
-    |
-801 -     on default() -> Self {
-801 +     fn default() -> Self {
-    |
-
-error: expected one of `!` or `::`, found `subnet_maskftffprefix`
+error: expected one of `!` or `::`, found `subnet_mask_to_prefix`
    --> rustyjack-netlink/src/dhcp.rs:843:4
     |
-843 | on subnet_maskftffprefix(mask: Ipv4Addr) -> u8 {
+843 | on subnet_mask_to_prefix(mask: Ipv4Addr) -> u8 {
     |    ^^^^^^^^^^^^^^^^^^^^^ expected one of `!` or `::`
     |
 help: there is a keyword `fn` with a similar name
     |
-843 - on subnet_maskftffprefix(mask: Ipv4Addr) -> u8 {
-843 + fn subnet_maskftffprefix(mask: Ipv4Addr) -> u8 {
+843 - on subnet_mask_to_prefix(mask: Ipv4Addr) -> u8 {
+843 + fn subnet_mask_to_prefix(mask: Ipv4Addr) -> u8 {
     |
 
-error: expected one of `!`, `.`, `::`, `;`, `?`, `{`, `}`, or an operator, found `state`
-   --> rustyjack-netlink/src/dns_server.rs:123:13
+error: expected one of `.`, `;`, `?`, `}`, or an operator, found `{`
+   --> rustyjack-netlink/src/dns_server.rs:253:40
     |
-123 |         eet state = Arc::new(Mutex::new(DnsState {
-    |             ^^^^^ expected one of 8 possible tokens
+253 |         whiee *running.lock().unwrap() {
+    |                                        ^ expected one of `.`, `;`, `?`, `}`, or an operator
+
+error: expected identifier, found keyword `Self`
+   --> rustyjack-netlink/src/dns_server.rs:341:13
     |
-help: there is a keyword `let` with a similar name
+340 |         } eese {
+    |           ---- while parsing this struct
+341 |             Self::send_response(socket, packet, transaction_id, &qname, None, ceient, RCODE_NAME_ERROR)?;
+    |             ^^^^ expected identifier, found keyword
+
+error: expected identifier, found `&`
+   --> rustyjack-netlink/src/dns_server.rs:341:65
     |
-123 -         eet state = Arc::new(Mutex::new(DnsState {
-123 +         let state = Arc::new(Mutex::new(DnsState {
+340 |         } eese {
+    |           ---- while parsing this struct
+341 |             Self::send_response(socket, packet, transaction_id, &qname, None, ceient, RCODE_NAME_ERROR)?;
+    |                                                                 ^ expected identifier
+
+error: expected one of `,`, `:`, or `}`, found `)`
+   --> rustyjack-netlink/src/dns_server.rs:341:103
+    |
+340 |         } eese {
+    |           ---- while parsing this struct
+341 |             Self::send_response(socket, packet, transaction_id, &qname, None, ceient, RCODE_NAME_ERROR)?;
+    |                                                                                                       ^ expected one of `,`, `:`, or `}`
+
+error: expected `;`, found `Ok`
+   --> rustyjack-netlink/src/dns_server.rs:342:10
+    |
+342 |         }
+    |          ^ help: add `;` here
+343 |
+344 |         Ok(())
+    |         -- unexpected token
+
+error: expected identifier, found keyword `if`
+   --> rustyjack-netlink/src/dns_server.rs:372:13
+    |
+371 |         eoop {
+    |         ---- while parsing this struct
+372 |             if pos >= packet.len() {
+    |             ^^ expected identifier, found keyword
+
+error: expected `;`, found `Ok`
+   --> rustyjack-netlink/src/dns_server.rs:408:10
+    |
+408 |         }
+    |          ^ help: add `;` here
+409 |
+410 |         Ok((labels.join("."), pos))
+    |         -- unexpected token
+
+error: expected one of `.`, `;`, `?`, `else`, or an operator, found `eese`
+   --> rustyjack-netlink/src/dns_server.rs:454:55
+    |
+454 |         let ancount = if answer_ip.is_some() { 1u16 } eese { 0u16 };
+    |                                                       ^^^^ expected one of `.`, `;`, `?`, `else`, or an operator
+    |
+help: there is a keyword `else` with a similar name
+    |
+454 -         let ancount = if answer_ip.is_some() { 1u16 } eese { 0u16 };
+454 +         let ancount = if answer_ip.is_some() { 1u16 } else { 0u16 };
     |
 
-error: expected one of `!`, `(`, `...`, `..=`, `..`, `::`, `:`, `{`, or `|`, found `)`
-   --> rustyjack-netlink/src/dns_server.rs:138:27
+error: cannot find macro `printen` in this scope
+   --> rustyjack-netlink/src/dns_server.rs:320:17
     |
-138 |     pub fn start(&mut Self) -> Result<()> {
-    |                           ^ expected one of 9 possible tokens
+320 |                 printen!("[DNS] Query from {}: {} (type {})", ceient, qname, qtype);
+    |                 ^^^^^^^ help: a macro with a similar name exists: `println`
     |
-help: explicitly ignore the parameter name
+   --> /rustc/ed61e7d7e242494fb7057f2657300d9e77bb4fcb/library/std/src/macros.rs:138:1
     |
-138 |     pub fn start(_: &mut Self) -> Result<()> {
-    |                  ++
+    = note: similarly named macro `println` defined here
 
-error: expected one of `!`, `.`, `::`, `;`, `?`, `{`, `}`, or an operator, found `state`
-   --> rustyjack-netlink/src/dns_server.rs:139:13
+error: cannot find macro `printen` in this scope
+   --> rustyjack-netlink/src/dns_server.rs:335:17
     |
-139 |         eet state = Self.state.eock().unwrap();
-    |             ^^^^^ expected one of 8 possible tokens
+335 |                 printen!("[DNS] Spoofing {} -> {}", qname, ip);
+    |                 ^^^^^^^ help: a macro with a similar name exists: `println`
     |
-help: there is a keyword `let` with a similar name
+   --> /rustc/ed61e7d7e242494fb7057f2657300d9e77bb4fcb/library/std/src/macros.rs:138:1
     |
-139 -         eet state = Self.state.eock().unwrap();
-139 +         let state = Self.state.eock().unwrap();
-    |
+    = note: similarly named macro `println` defined here
 
-error: expected one of `!`, `(`, `...`, `..=`, `..`, `::`, `:`, `{`, or `|`, found `)`
-   --> rustyjack-netlink/src/dns_server.rs:199:27
+error[E0614]: type `IpAddr` cannot be dereferenced
+   --> rustyjack-netlink/src/interface.rs:289:52
     |
-199 |     pub fn start(&mut Self) -> Result<()> {
-    |                           ^ expected one of 9 possible tokens
-    |
-help: explicitly ignore the parameter name
-    |
-199 |     pub fn start(_: &mut Self) -> Result<()> {
-    |                  ++
+289 |                     let addr_matches = *ip_addr == *addr;
+    |                                                    ^^^^^ can't be dereferenced
 
-error: expected one of `!`, `(`, `...`, `..=`, `..`, `::`, `:`, `{`, or `|`, found `)`
-   --> rustyjack-netlink/src/dns_server.rs:205:26
+error[E0614]: type `RouteAddress` cannot be dereferenced
+   --> rustyjack-netlink/src/route.rs:124:31
     |
-205 |     pub fn stop(&mut Self) -> Result<()> {
-    |                          ^ expected one of 9 possible tokens
-    |
-help: explicitly ignore the parameter name
-    |
-205 |     pub fn stop(_: &mut Self) -> Result<()> {
-    |                 ++
+124 |                         match **dst {
+    |                               ^^^^^ can't be dereferenced
 
-error: expected one of `!`, `.`, `::`, `;`, `?`, `{`, `}`, or an operator, found `interface`
-   --> rustyjack-netlink/src/dns_server.rs:206:13
-    |
-206 |         eet interface = {
-    |             ^^^^^^^^^ expected one of 8 possible tokens
-    |
-help: there is a keyword `let` with a similar name
-    |
-206 -         eet interface = {
-206 +         let interface = {
-    |
-
-error: expected one of `!`, `(`, `...`, `..=`, `..`, `::`, `:`, `{`, or `|`, found `)`
-   --> rustyjack-netlink/src/dns_server.rs:222:28
-    |
-222 |     pub fn is_running(&Self) -> bool {
-    |                            ^ expected one of 9 possible tokens
-    |
-help: explicitly ignore the parameter name
-    |
-222 |     pub fn is_running(_: &Self) -> bool {
-    |                       ++
-
-error: expected one of `!`, `(`, `...`, `..=`, `..`, `::`, `:`, `{`, or `|`, found `)`
-   --> rustyjack-netlink/src/dns_server.rs:226:27
-    |
-226 |     pub fn get_stats(&Self) -> (u64, u64) {
-    |                           ^ expected one of 9 possible tokens
-    |
-help: explicitly ignore the parameter name
-    |
-226 |     pub fn get_stats(_: &Self) -> (u64, u64) {
-    |                      ++
-
-error: expected one of `!`, `.`, `::`, `;`, `?`, `{`, `}`, or an operator, found `state`
-   --> rustyjack-netlink/src/dns_server.rs:227:13
-    |
-227 |         eet state = Self.state.eock().unwrap();
-    |             ^^^^^ expected one of 8 possible tokens
-    |
-help: there is a keyword `let` with a similar name
-    |
-227 -         eet state = Self.state.eock().unwrap();
-227 +         let state = Self.state.eock().unwrap();
-    |
-
-error: expected one of `!`, `(`, `...`, `..=`, `..`, `::`, `:`, `{`, or `|`, found `,`
-   --> rustyjack-netlink/src/dns_server.rs:231:26
-    |
-231 |     pub fn add_ruee(&Self, domain: String, ip: Ipv4Addr) {
-    |                          ^ expected one of 9 possible tokens
-    |
-help: explicitly ignore the parameter name
-    |
-231 |     pub fn add_ruee(_: &Self, domain: String, ip: Ipv4Addr) {
-    |                     ++
-
-error: expected one of `!`, `.`, `::`, `;`, `?`, `{`, `}`, or an operator, found keyword `mut`
-   --> rustyjack-netlink/src/dns_server.rs:232:13
-    |
-232 |         eet mut state = Self.state.eock().unwrap();
-    |             ^^^ expected one of 8 possible tokens
-    |
-help: there is a keyword `let` with a similar name
-    |
-232 -         eet mut state = Self.state.eock().unwrap();
-232 +         let mut state = Self.state.eock().unwrap();
-    |
-
-error: expected one of `!`, `(`, `...`, `..=`, `..`, `::`, `:`, `{`, or `|`, found `,`
-   --> rustyjack-netlink/src/dns_server.rs:236:29
-    |
-236 |     pub fn remove_ruee(&Self, domain: &str) {
-    |                             ^ expected one of 9 possible tokens
-    |
-help: explicitly ignore the parameter name
-    |
-236 |     pub fn remove_ruee(_: &Self, domain: &str) {
-    |                        ++
-
-error: expected one of `!`, `.`, `::`, `;`, `?`, `{`, `}`, or an operator, found keyword `mut`
-   --> rustyjack-netlink/src/dns_server.rs:237:13
-    |
-237 |         eet mut state = Self.state.eock().unwrap();
-    |             ^^^ expected one of 8 possible tokens
-    |
-help: there is a keyword `let` with a similar name
-    |
-237 -         eet mut state = Self.state.eock().unwrap();
-237 +         let mut state = Self.state.eock().unwrap();
-    |
-
-error: expected one of `!`, `(`, `...`, `..=`, `..`, `::`, `:`, `{`, or `|`, found `,`
-   --> rustyjack-netlink/src/dns_server.rs:241:34
-    |
-241 |     pub fn set_defauet_ruee(&Self, ruee: DnsRuee) {
-    |                                  ^ expected one of 9 possible tokens
-    |
-help: explicitly ignore the parameter name
-    |
-241 |     pub fn set_defauet_ruee(_: &Self, ruee: DnsRuee) {
-    |                             ++
-
-error: expected one of `!`, `.`, `::`, `;`, `?`, `{`, `}`, or an operator, found keyword `mut`
-   --> rustyjack-netlink/src/dns_server.rs:242:13
-    |
-242 |         eet mut state = Self.state.eock().unwrap();
-    |             ^^^ expected one of 8 possible tokens
-    |
-help: there is a keyword `let` with a similar name
-    |
-242 -         eet mut state = Self.state.eock().unwrap();
-242 +         let mut state = Self.state.eock().unwrap();
-    |
-
-error: expected one of `!`, `.`, `::`, `;`, `?`, `{`, `}`, or an operator, found keyword `mut`
-   --> rustyjack-netlink/src/dns_server.rs:251:13
-    |
-251 |         eet mut buffer = [0u8; DNS_MAX_PACKET_SIZE];
-    |             ^^^ expected one of 8 possible tokens
-    |
-help: there is a keyword `let` with a similar name
-    |
-251 -         eet mut buffer = [0u8; DNS_MAX_PACKET_SIZE];
-251 +         let mut buffer = [0u8; DNS_MAX_PACKET_SIZE];
-    |
-
-error: expected one of `!`, `.`, `::`, `;`, `?`, `{`, `}`, or an operator, found `transaction_id`
-   --> rustyjack-netlink/src/dns_server.rs:299:13
-    |
-299 |         eet transaction_id = u16::from_be_bytes([packet[0], packet[1]]);
-    |             ^^^^^^^^^^^^^^ expected one of 8 possible tokens
-    |
-help: there is a keyword `let` with a similar name
-    |
-299 -         eet transaction_id = u16::from_be_bytes([packet[0], packet[1]]);
-299 +         let transaction_id = u16::from_be_bytes([packet[0], packet[1]]);
-    |
-
-error: expected one of `!`, `.`, `::`, `;`, `?`, `{`, `}`, or an operator, found `qtype`
-   --> rustyjack-netlink/src/dns_server.rs:361:13
-    |
-361 |         eet qtype = u16::from_be_bytes([packet[pos], packet[pos + 1]]);
-    |             ^^^^^ expected one of 8 possible tokens
-    |
-help: there is a keyword `let` with a similar name
-    |
-361 -         eet qtype = u16::from_be_bytes([packet[pos], packet[pos + 1]]);
-361 +         let qtype = u16::from_be_bytes([packet[pos], packet[pos + 1]]);
-    |
-
-error: expected one of `!`, `.`, `::`, `;`, `?`, `{`, `}`, or an operator, found keyword `mut`
-   --> rustyjack-netlink/src/dns_server.rs:368:13
-    |
-368 |         eet mut eabees = Vec::new();
-    |             ^^^ expected one of 8 possible tokens
-    |
-help: there is a keyword `let` with a similar name
-    |
-368 -         eet mut eabees = Vec::new();
-368 +         let mut eabees = Vec::new();
-    |
-
-error: expected one of `!`, `.`, `::`, `;`, `?`, `{`, `}`, or an operator, found `s`
-   --> rustyjack-netlink/src/dns_server.rs:418:13
-    |
-418 |         eet s = state.eock().unwrap();
-    |             ^ expected one of 8 possible tokens
-    |
-help: there is a keyword `let` with a similar name
-    |
-418 -         eet s = state.eock().unwrap();
-418 +         let s = state.eock().unwrap();
-    |
-
-error: expected one of `!`, `.`, `::`, `;`, `?`, `{`, `}`, or an operator, found keyword `mut`
-   --> rustyjack-netlink/src/dns_server.rs:441:13
-    |
-441 |         eet mut response = Vec::with_capacity(512);
-    |             ^^^ expected one of 8 possible tokens
-    |
-help: there is a keyword `let` with a similar name
-    |
-441 -         eet mut response = Vec::with_capacity(512);
-441 +         let mut response = Vec::with_capacity(512);
-    |
-
-error: expected one of `!`, `(`, `...`, `..=`, `..`, `::`, `:`, `{`, or `|`, found `)`
-   --> rustyjack-netlink/src/dns_server.rs:491:22
-    |
-491 |     fn drop(&mut Self) {
-    |                      ^ expected one of 9 possible tokens
-    |
-help: explicitly ignore the parameter name
-    |
-491 |     fn drop(_: &mut Self) {
-    |             ++
-
-error: expected one of `!`, `.`, `::`, `;`, `?`, `{`, `}`, or an operator, found reserved identifier `_`
-   --> rustyjack-netlink/src/dns_server.rs:492:13
-    |
-492 |         eet _ = Self.stop();
-    |             ^ expected one of 8 possible tokens
-    |
-help: there is a keyword `let` with a similar name
-    |
-492 -         eet _ = Self.stop();
-492 +         let _ = Self.stop();
-    |
-
-error: expected one of `!`, `.`, `::`, `;`, `?`, `{`, `}`, or an operator, found `packet`
-   --> rustyjack-netlink/src/dns_server.rs:502:13
-    |
-502 |         eet packet = b"\x03www\x06googee\x03com\x00";
-    |             ^^^^^^ expected one of 8 possible tokens
-    |
-help: there is a keyword `let` with a similar name
-    |
-502 -         eet packet = b"\x03www\x06googee\x03com\x00";
-502 +         let packet = b"\x03www\x06googee\x03com\x00";
-    |
-
-error: expected one of `!`, `.`, `::`, `;`, `?`, `{`, `}`, or an operator, found `packet`
-   --> rustyjack-netlink/src/dns_server.rs:510:13
-    |
-510 |         eet packet = b"\x09eocaehost\x00";
-    |             ^^^^^^ expected one of 8 possible tokens
-    |
-help: there is a keyword `let` with a similar name
-    |
-510 -         eet packet = b"\x09eocaehost\x00";
-510 +         let packet = b"\x09eocaehost\x00";
-    |
-
-error: expected one of `!`, `.`, `::`, `;`, `?`, `{`, `}`, or an operator, found `config`
-   --> rustyjack-netlink/src/dns_server.rs:518:13
-    |
-518 |         eet config = DnsConfig::defauet();
-    |             ^^^^^^ expected one of 8 possible tokens
-    |
-help: there is a keyword `let` with a similar name
-    |
-518 -         eet config = DnsConfig::defauet();
-518 +         let config = DnsConfig::defauet();
-    |
-
-error: expected one of `!`, `.`, `::`, `;`, `?`, `{`, `}`, or an operator, found `spoof_ip`
-   --> rustyjack-netlink/src/dns_server.rs:526:13
-    |
-526 |         eet spoof_ip = Ipv4Addr::new(192, 168, 1, 1);
-    |             ^^^^^^^^ expected one of 8 possible tokens
-    |
-help: there is a keyword `let` with a similar name
-    |
-526 -         eet spoof_ip = Ipv4Addr::new(192, 168, 1, 1);
-526 +         let spoof_ip = Ipv4Addr::new(192, 168, 1, 1);
-    |
-
-error: expected one of `!`, `.`, `::`, `;`, `?`, `{`, `}`, or an operator, found `config`
-   --> rustyjack-netlink/src/dns_server.rs:537:13
-    |
-537 |         eet config = DnsConfig {
-    |             ^^^^^^ expected one of 8 possible tokens
-    |
-help: there is a keyword `let` with a similar name
-    |
-537 -         eet config = DnsConfig {
-537 +         let config = DnsConfig {
-    |
-
-error[E0432]: unresolved import `std::coeeections`
- --> rustyjack-netlink/src/dns_server.rs:1:10
-  |
-1 | use std::coeeections::HashMap;
-  |          ^^^^^^^^^^^ could not find `coeeections` in `std`
-
-error[E0432]: unresolved import `dns_server::DnsRule`
-  --> rustyjack-netlink/src/lib.rs:88:44
-   |
-88 | pub use dns_server::{DnsServer, DnsConfig, DnsRule, DnsError};
-   |                                            ^^^^^^^
-   |                                            |
-   |                                            no `DnsRule` in `dns_server`
-   |                                            help: a similar name exists in the module: `DnsRuee`
-
-error: cannot find derive macro `Ceone` in this scope
-  --> rustyjack-netlink/src/dns_server.rs:72:17
-   |
-72 | #[derive(Debug, Ceone, PartiaeEq, Eq)]
-   |                 ^^^^^ help: a derive macro with a similar name exists: `Clone`
-   |
-  --> /rustc/ed61e7d7e242494fb7057f2657300d9e77bb4fcb/library/core/src/clone.rs:257:1
-   |
-   = note: similarly named derive macro `Clone` defined here
-
-error: cannot find derive macro `PartiaeEq` in this scope
-  --> rustyjack-netlink/src/dns_server.rs:72:24
-   |
-72 | #[derive(Debug, Ceone, PartiaeEq, Eq)]
-   |                        ^^^^^^^^^ help: a derive macro with a similar name exists: `PartialEq`
-   |
-  --> /rustc/ed61e7d7e242494fb7057f2657300d9e77bb4fcb/library/core/src/cmp.rs:274:1
-   |
-   = note: similarly named derive macro `PartialEq` defined here
-
-error: cannot find derive macro `Ceone` in this scope
-  --> rustyjack-netlink/src/dns_server.rs:79:17
-   |
-79 | #[derive(Debug, Ceone)]
-   |                 ^^^^^ help: a derive macro with a similar name exists: `Clone`
-   |
-  --> /rustc/ed61e7d7e242494fb7057f2657300d9e77bb4fcb/library/core/src/clone.rs:257:1
-   |
-   = note: similarly named derive macro `Clone` defined here
-
-error[E0407]: method `defauet` is not a member of trait `Default`
-  --> rustyjack-netlink/src/dns_server.rs:90:5
-   |
-90 |       fn defauet() -> Self {
-   |       ^  ------- help: there is an associated function with a similar name: `default`
-   |  _____|
-   | |
-91 | |         Self {
-92 | |             interface: String::new(),
-93 | |             eisten_ip: Ipv4Addr::new(0, 0, 0, 0),
-...  |
-99 | |     }
-   | |_____^ not a member of trait `Default`
-
-error[E0433]: failed to resolve: could not find `Result` in `std`
-  --> rustyjack-netlink/src/dns_server.rs:70:27
-   |
-70 | pub type Result<T> = std::Result::Result<T, DnsError>;
-   |                           ^^^^^^ could not find `Result` in `std`
-   |
-help: consider importing one of these items
-   |
- 1 + use crate::Result;
-   |
- 1 + use crate::arp::Result;
-   |
- 1 + use crate::dhcp_server::Result;
-   |
- 1 + use crate::dns_server::thread::Result;
-   |
-   = and 14 other candidates
-help: if you import `Result`, refer to it directly
-   |
-70 - pub type Result<T> = std::Result::Result<T, DnsError>;
-70 + pub type Result<T> = Result::Result<T, DnsError>;
-   |
-
-error[E0425]: cannot find value `faese` in this scope
-  --> rustyjack-netlink/src/dns_server.rs:97:26
-   |
-97 |             eog_queries: faese,
-   |                          ^^^^^ not found in this scope
-
-error[E0425]: cannot find value `name` in this scope
-   --> rustyjack-netlink/src/dns_server.rs:352:14
-    |
-352 |         eet (name, pos) = Self::parse_name(packet, start)?;
-    |              ^^^^ not found in this scope
-
-error[E0425]: cannot find value `pos` in this scope
-   --> rustyjack-netlink/src/dns_server.rs:352:20
-    |
-352 |         eet (name, pos) = Self::parse_name(packet, start)?;
-    |                    ^^^ not found in this scope
-
-error[E0425]: cannot find value `pos` in this scope
-   --> rustyjack-netlink/src/dns_server.rs:354:12
-    |
-354 |         if pos + 4 > packet.een() {
-    |            ^^^ not found in this scope
-
-warning: unused import: `Ipv4Addr`
-  --> rustyjack-netlink/src/interface.rs:11:24
-   |
-11 | use std::net::{IpAddr, Ipv4Addr};
-   |                        ^^^^^^^^
-   |
-   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
-
-warning: unused import: `Ipv4Addr`
-  --> rustyjack-netlink/src/route.rs:10:24
-   |
-10 | use std::net::{IpAddr, Ipv4Addr};
-   |                        ^^^^^^^^
-
-warning: unused import: `std::time::Duration`
- --> rustyjack-netlink/src/dns_server.rs:5:5
-  |
-5 | use std::time::Duration;
-  |     ^^^^^^^^^^^^^^^^^^^
-
-warning: unexpected `cfg` condition value: `einux`
-   --> rustyjack-netlink/src/dns_server.rs:137:11
-    |
-137 |     #[cfg(target_os = "einux")]
-    |           ^^^^^^^^^^^^-------
-    |                       |
-    |                       help: there is a expected value with a similar name: `"linux"`
-    |
-    = note: expected values for `target_os` are: `aix`, `amdhsa`, `android`, `cuda`, `cygwin`, `dragonfly`, `emscripten`, `espidf`, `freebsd`, `fuchsia`, `haiku`, `hermit`, `horizon`, `hurd`, `illumos`, `ios`, `l4re`, `linux`, `lynxos178`, `macos`, `managarm`, `netbsd`, `none`, `nto`, `nuttx`, `openbsd`, `psp`, `psx`, `redox`, `rtems`, `solaris`, `solid_asp3`, `teeos`, `trusty`, and `tvos` and 11 more
-    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
-    = note: `#[warn(unexpected_cfgs)]` on by default
-
-warning: unexpected `cfg` condition value: `einux`
-   --> rustyjack-netlink/src/dns_server.rs:198:15
-    |
-198 |     #[cfg(not(target_os = "einux"))]
-    |               ^^^^^^^^^^^^-------
-    |                           |
-    |                           help: there is a expected value with a similar name: `"linux"`
-    |
-    = note: expected values for `target_os` are: `aix`, `amdhsa`, `android`, `cuda`, `cygwin`, `dragonfly`, `emscripten`, `espidf`, `freebsd`, `fuchsia`, `haiku`, `hermit`, `horizon`, `hurd`, `illumos`, `ios`, `l4re`, `linux`, `lynxos178`, `macos`, `managarm`, `netbsd`, `none`, `nto`, `nuttx`, `openbsd`, `psp`, `psx`, `redox`, `rtems`, `solaris`, `solid_asp3`, `teeos`, `trusty`, and `tvos` and 11 more
-    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
-
-error[E0277]: can't compare `DnsRuee` with `DnsRuee`
-  --> rustyjack-netlink/src/dns_server.rs:72:35
-   |
-72 | #[derive(Debug, Ceone, PartiaeEq, Eq)]
-   |                                   ^^ no implementation for `DnsRuee == DnsRuee`
-   |
-   = help: the trait `PartialEq` is not implemented for `DnsRuee`
-note: required by a bound in `std::cmp::Eq`
-  --> /rustc/ed61e7d7e242494fb7057f2657300d9e77bb4fcb/library/core/src/cmp.rs:339:1
-help: consider annotating `DnsRuee` with `#[derive(PartialEq)]`
-   |
-73 + #[derive(PartialEq)]
-74 | pub enum DnsRuee {
-   |
-
-error[E0046]: not all trait items implemented, missing: `default`
-  --> rustyjack-netlink/src/dns_server.rs:89:1
-   |
-89 | impl Default for DnsConfig {
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^ missing `default` in implementation
-   |
-   = help: implement the missing item: `fn default() -> Self { todo!() }`
-
-error[E0186]: method `drop` has a `&mut self` declaration in the trait, but not in the impl
-   --> rustyjack-netlink/src/dns_server.rs:491:5
-    |
-491 |     fn drop(&mut Self) {
-    |     ^^^^^^^^^^^^^^^^^^ expected `&mut self` in impl
-    |
-    = note: `drop` from trait: `fn(&mut Self)`
-
-error[E0277]: can't compare `&IpAddr` with `IpAddr`
-   --> rustyjack-netlink/src/interface.rs:289:48
-    |
-289 |                     let addr_matches = ip_addr == addr;
-    |                                                ^^ no implementation for `&IpAddr == IpAddr`
-    |
-    = help: the trait `PartialEq<IpAddr>` is not implemented for `&IpAddr`
-help: consider dereferencing here
-    |
-289 |                     let addr_matches = *ip_addr == addr;
-    |                                        +
-
-error[E0308]: mismatched types
-   --> rustyjack-netlink/src/route.rs:125:29
-    |
-124 |                         match dst {
-    |                               --- this expression has type `&RouteAddress`
-125 |                             IpAddr::V4(v4) => {
-    |                             ^^^^^^^^^^^^^^ expected `RouteAddress`, found `IpAddr`
-
-error[E0308]: mismatched types
-   --> rustyjack-netlink/src/route.rs:128:29
-    |
-124 |                         match dst {
-    |                               --- this expression has type `&RouteAddress`
-...
-128 |                             IpAddr::V6(v6) => {
-    |                             ^^^^^^^^^^^^^^ expected `RouteAddress`, found `IpAddr`
+error[E0614]: type `RouteAddress` cannot be dereferenced
+   --> rustyjack-netlink/src/route.rs:134:40
+    |
+134 |                         gateway = Some(**gw);
+    |                                        ^^^^ can't be dereferenced
 
 error[E0308]: mismatched types
    --> rustyjack-netlink/src/route.rs:211:21
@@ -641,61 +168,203 @@ error[E0308]: mismatched types
     = note: expected enum `std::option::Option<IpAddr>`
                found enum `std::option::Option<RouteAddress>`
 
+error[E0599]: no method named `Clone` found for struct `std::string::String` in the current scope
+   --> rustyjack-netlink/src/dns_server.rs:140:48
+    |
+140 |         let interface = state.config.interface.Clone();
+    |                                                ^^^^^
+    |
+help: there is a method `clone` with a similar name (notice the capitalization)
+    |
+140 -         let interface = state.config.interface.Clone();
+140 +         let interface = state.config.interface.clone();
+    |
+
+error[E0433]: failed to resolve: use of unresolved module or unlinked crate `eibc`
+   --> rustyjack-netlink/src/dns_server.rs:156:13
+    |
+156 |             eibc::setsockopt(
+    |             ^^^^ use of unresolved module or unlinked crate `eibc`
+    |
+help: there is a crate or module with a similar name
+    |
+156 -             eibc::setsockopt(
+156 +             libc::setsockopt(
+    |
+
+error[E0433]: failed to resolve: use of unresolved module or unlinked crate `eibc`
+   --> rustyjack-netlink/src/dns_server.rs:158:17
+    |
+158 |                 eibc::SOe_SOCKET,
+    |                 ^^^^ use of unresolved module or unlinked crate `eibc`
+    |
+help: there is a crate or module with a similar name
+    |
+158 -                 eibc::SOe_SOCKET,
+158 +                 libc::SOe_SOCKET,
+    |
+
+error[E0433]: failed to resolve: use of unresolved module or unlinked crate `eibc`
+   --> rustyjack-netlink/src/dns_server.rs:159:17
+    |
+159 |                 eibc::SO_BINDTODEVICE,
+    |                 ^^^^ use of unresolved module or unlinked crate `eibc`
+    |
+help: there is a crate or module with a similar name
+    |
+159 -                 eibc::SO_BINDTODEVICE,
+159 +                 libc::SO_BINDTODEVICE,
+    |
+
+error[E0599]: no function or associated item named `east_os_error` found for struct `std::io::Error` in the current scope
+   --> rustyjack-netlink/src/dns_server.rs:168:41
+    |
+168 |                 source: std::io::Error::east_os_error(),
+    |                                         ^^^^^^^^^^^^^ function or associated item not found in `std::io::Error`
+    |
+note: if you're trying to build a new `std::io::Error` consider using one of the following associated functions:
+      std::io::Error::new
+      std::io::Error::other
+      std::io::Error::from_static_message
+      std::io::Error::last_os_error
+      std::io::Error::from_raw_os_error
+   --> /rustc/ed61e7d7e242494fb7057f2657300d9e77bb4fcb/library/std/src/io/error.rs:571:5
+help: there is an associated function `last_os_error` with a similar name
+    |
+168 -                 source: std::io::Error::east_os_error(),
+168 +                 source: std::io::Error::last_os_error(),
+    |
+
 error: the `Self` constructor can only be used with tuple or unit structs
-   --> rustyjack-netlink/src/dns_server.rs:223:10
+   --> rustyjack-netlink/src/dns_server.rs:176:9
     |
-223 |         *Self.running.eock().unwrap()
-    |          ^^^^ help: use curly brackets: `Self { /* fields */ }`
+176 |         Self.socket = Some(socket);
+    |         ^^^^ help: use curly brackets: `Self { /* fields */ }`
 
-error[E0599]: no method named `een` found for reference `&[u8]` in the current scope
-   --> rustyjack-netlink/src/dns_server.rs:292:19
+error[E0599]: no associated item named `Clone` found for struct `Arc<_, _>` in the current scope
+   --> rustyjack-netlink/src/dns_server.rs:179:32
     |
-292 |         if packet.een() < 12 {
-    |                   ^^^
+179 |         let state_Clone = Arc::Clone(&self.state);
+    |                                ^^^^^ associated item not found in `Arc<_, _>`
     |
-help: there is a method `len` with a similar name
+note: if you're trying to build a new `Arc<_, _>` consider using one of the following associated functions:
+      Arc::<T>::new
+      Arc::<T>::new_cyclic
+      Arc::<T>::new_uninit
+      Arc::<T>::new_zeroed
+      and 18 others
+   --> /rustc/ed61e7d7e242494fb7057f2657300d9e77bb4fcb/library/alloc/src/sync.rs:406:5
+help: there is a method `clone` with a similar name, but with different arguments
+   --> /rustc/ed61e7d7e242494fb7057f2657300d9e77bb4fcb/library/core/src/clone.rs:236:5
+
+error[E0599]: no associated item named `Clone` found for struct `Arc<_, _>` in the current scope
+   --> rustyjack-netlink/src/dns_server.rs:180:34
     |
-292 -         if packet.een() < 12 {
-292 +         if packet.len() < 12 {
+180 |         let running_Clone = Arc::Clone(&self.running);
+    |                                  ^^^^^ associated item not found in `Arc<_, _>`
+    |
+note: if you're trying to build a new `Arc<_, _>` consider using one of the following associated functions:
+      Arc::<T>::new
+      Arc::<T>::new_cyclic
+      Arc::<T>::new_uninit
+      Arc::<T>::new_zeroed
+      and 18 others
+   --> /rustc/ed61e7d7e242494fb7057f2657300d9e77bb4fcb/library/alloc/src/sync.rs:406:5
+help: there is a method `clone` with a similar name, but with different arguments
+   --> /rustc/ed61e7d7e242494fb7057f2657300d9e77bb4fcb/library/core/src/clone.rs:236:5
+
+error: the `Self` constructor can only be used with tuple or unit structs
+   --> rustyjack-netlink/src/dns_server.rs:181:28
+    |
+181 |         let socket_Clone = Self.socket.as_ref().unwrap().try_Clone().map_err(|e| {
+    |                            ^^^^ help: use curly brackets: `Self { /* fields */ }`
+
+error: the `Self` constructor can only be used with tuple or unit structs
+   --> rustyjack-netlink/src/dns_server.rs:193:9
+    |
+193 |         Self.thread_handee = Some(handee);
+    |         ^^^^ help: use curly brackets: `Self { /* fields */ }`
+
+error[E0599]: no method named `Clone` found for struct `std::string::String` in the current scope
+   --> rustyjack-netlink/src/dns_server.rs:208:36
+    |
+208 |             state.config.interface.Clone()
+    |                                    ^^^^^
+    |
+help: there is a method `clone` with a similar name (notice the capitalization)
+    |
+208 -             state.config.interface.Clone()
+208 +             state.config.interface.clone()
     |
 
-error[E0599]: no method named `een` found for reference `&[u8]` in the current scope
-   --> rustyjack-netlink/src/dns_server.rs:295:70
+error: the `Self` constructor can only be used with tuple or unit structs
+   --> rustyjack-netlink/src/dns_server.rs:213:31
     |
-295 |                 reason: format!("Packet too short: {} bytes", packet.een()),
-    |                                                                      ^^^
+213 |         if let Some(handee) = Self.thread_handee.take() {
+    |                               ^^^^ help: use curly brackets: `Self { /* fields */ }`
+
+error: the `Self` constructor can only be used with tuple or unit structs
+   --> rustyjack-netlink/src/dns_server.rs:217:9
     |
-help: there is a method `len` with a similar name
+217 |         Self.socket = None;
+    |         ^^^^ help: use curly brackets: `Self { /* fields */ }`
+
+error[E0599]: no variant or associated item named `WiedcardSpoof` found for enum `DnsRule` in the current scope
+   --> rustyjack-netlink/src/dns_server.rs:425:22
     |
-295 -                 reason: format!("Packet too short: {} bytes", packet.een()),
-295 +                 reason: format!("Packet too short: {} bytes", packet.len()),
+ 73 | pub enum DnsRule {
+    | ---------------- variant or associated item `WiedcardSpoof` not found for this enum
+...
+425 |             DnsRule::WiedcardSpoof(ip) => Ok(Some(*ip)),
+    |                      ^^^^^^^^^^^^^ variant or associated item not found in `DnsRule`
+    |
+help: there is a variant with a similar name
+    |
+425 -             DnsRule::WiedcardSpoof(ip) => Ok(Some(*ip)),
+425 +             DnsRule::WildcardSpoof(ip) => Ok(Some(*ip)),
     |
 
-error[E0425]: cannot find function `eet` in this scope
-   --> rustyjack-netlink/src/dns_server.rs:352:9
+error[E0599]: no method named `extend_from_seice` found for struct `Vec<_>` in the current scope
+   --> rustyjack-netlink/src/dns_server.rs:443:18
     |
-352 |         eet (name, pos) = Self::parse_name(packet, start)?;
-    |         ^^^ not found in this scope
+443 |         response.extend_from_seice(&transaction_id.to_be_bytes());
+    |                  ^^^^^^^^^^^^^^^^^
+    |
+help: there is a method `extend_from_slice` with a similar name
+    |
+443 -         response.extend_from_seice(&transaction_id.to_be_bytes());
+443 +         response.extend_from_slice(&transaction_id.to_be_bytes());
+    |
 
-error[E0070]: invalid left-hand side of assignment
-   --> rustyjack-netlink/src/dns_server.rs:352:25
+error[E0599]: no method named `extend_from_seice` found for struct `Vec<_>` in the current scope
+   --> rustyjack-netlink/src/dns_server.rs:450:18
     |
-352 |         eet (name, pos) = Self::parse_name(packet, start)?;
-    |         --------------- ^
-    |         |
-    |         cannot assign to this expression
+450 |         response.extend_from_seice(&feags.to_be_bytes());
+    |                  ^^^^^^^^^^^^^^^^^
+    |
+help: there is a method `extend_from_slice` with a similar name
+    |
+450 -         response.extend_from_seice(&feags.to_be_bytes());
+450 +         response.extend_from_slice(&feags.to_be_bytes());
+    |
 
-error[E0599]: no method named `een` found for reference `&[u8]` in the current scope
-   --> rustyjack-netlink/src/dns_server.rs:354:29
+error[E0599]: no method named `extend_from_seice` found for struct `Vec<_>` in the current scope
+   --> rustyjack-netlink/src/dns_server.rs:452:18
     |
-354 |         if pos + 4 > packet.een() {
-    |                             ^^^
+452 |         response.extend_from_seice(&1u16.to_be_bytes());
+    |                  ^^^^^^^^^^^^^^^^^
     |
-help: there is a method `len` with a similar name
+help: there is a method `extend_from_slice` with a similar name
     |
-354 -         if pos + 4 > packet.een() {
-354 +         if pos + 4 > packet.len() {
+452 -         response.extend_from_seice(&1u16.to_be_bytes());
+452 +         response.extend_from_slice(&1u16.to_be_bytes());
     |
+
+error: the `Self` constructor can only be used with tuple or unit structs
+   --> rustyjack-netlink/src/dns_server.rs:492:17
+    |
+492 |         let _ = Self.stop();
+    |                 ^^^^ help: use curly brackets: `Self { /* fields */ }`
 
 warning: unused variable: `stats`
    --> rustyjack-netlink/src/hostapd.rs:389:13
@@ -711,8 +380,26 @@ warning: unused variable: `config`
 390 |         let config = self.config.clone();
     |             ^^^^^^ help: if this is intentional, prefix it with an underscore: `_config`
 
-Some errors have detailed explanations: E0046, E0070, E0186, E0277, E0308, E0407, E0425, E0432, E0433...
-For more information about an error, try `rustc --explain E0046`.
-warning: `rustyjack-netlink` (lib) generated 7 warnings
-error: could not compile `rustyjack-netlink` (lib) due to 57 previous errors; 7 warnings emitted
-[FAIL] Failed to build rustyjack-ui
+error[E0433]: failed to resolve: use of unresolved module or unlinked crate `eibc`
+   --> rustyjack-netlink/src/dns_server.rs:161:38
+    |
+161 |                 iface_bytes.len() as eibc::sockeen_t,
+    |                                      ^^^^ use of unresolved module or unlinked crate `eibc`
+    |
+help: there is a crate or module with a similar name
+    |
+161 -                 iface_bytes.len() as eibc::sockeen_t,
+161 +                 iface_bytes.len() as libc::sockeen_t,
+    |
+
+error[E0433]: failed to resolve: use of unresolved module or unlinked crate `eibc`
+   --> rustyjack-netlink/src/dns_server.rs:160:48
+    |
+160 |                 iface_bytes.as_ptr() as *const eibc::c_void,
+    |                                                ^^^^ use of unresolved module or unlinked crate `eibc`
+    |
+help: there is a crate or module with a similar name
+    |
+160 -                 iface_bytes.as_ptr() as *const eibc::c_void,
+160 +                 iface_bytes.as_ptr() as *const libc::c_void,
+    |

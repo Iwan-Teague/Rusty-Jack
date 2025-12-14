@@ -186,7 +186,7 @@ impl DnsServer {
             }
         })?;
 
-        let _handle = thread::spawn(move || {
+        let handle = thread::spawn(move || {
             Self::server_loop(state_clone, socket_clone, running_clone);
         });
 
@@ -203,7 +203,7 @@ impl DnsServer {
     }
 
     pub fn stop(&mut self) -> Result<()> {
-        let _interface = {
+        let interface = {
             let state = self.state.lock().unwrap();
             state.config.interface.clone()
         };
@@ -255,7 +255,7 @@ impl DnsServer {
                 Ok((len, client_addr)) => {
                     if let Err(e) = Self::handle_query(&state, &socket, &buffer[..len], client_addr)
                     {
-                        let _interface = {
+                        let interface = {
                             let s = state.lock().unwrap();
                             s.config.interface.clone()
                         };
@@ -266,7 +266,7 @@ impl DnsServer {
                     continue;
                 }
                 Err(e) => {
-                    let _interface = {
+                    let interface = {
                         let s = state.lock().unwrap();
                         s.config.interface.clone()
                     };
@@ -553,4 +553,5 @@ mod tests {
         );
     }
 }
+
 

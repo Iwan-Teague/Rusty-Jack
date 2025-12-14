@@ -233,7 +233,7 @@ impl WirelessManager {
         let nlhdr = Nlmsghdr::new(
             None,
             self.family_id,
-            NlmFFlags::new(NlmFFlags::new(&[NlmF::Request, NlmF::Ack])),
+            NlmFFlags::new(&[NlmF::Request, NlmF::Ack]),
             None,
             None,
             NlPayload::Payload(genlhdr),
@@ -306,7 +306,7 @@ impl WirelessManager {
         let nlhdr = Nlmsghdr::new(
             None,
             self.family_id,
-            NlmFFlags::new(NlmFFlags::new(&[NlmF::Request, NlmF::Ack])),
+            NlmFFlags::new(&[NlmF::Request, NlmF::Ack]),
             None,
             None,
             NlPayload::Payload(genlhdr),
@@ -421,7 +421,7 @@ impl WirelessManager {
         let nlhdr = Nlmsghdr::new(
             None,
             self.family_id,
-            NlmFFlags::new(NlmFFlags::new(&[NlmF::Request, NlmF::Ack])),
+            NlmFFlags::new(&[NlmF::Request, NlmF::Ack]),
             None,
             None,
             NlPayload::Payload(genlhdr),
@@ -467,7 +467,7 @@ impl WirelessManager {
         let nlhdr = Nlmsghdr::new(
             None,
             self.family_id,
-            NlmFFlags::new(NlmFFlags::new(&[NlmF::Request, NlmF::Ack])),
+            NlmFFlags::new(&[NlmF::Request, NlmF::Ack]),
             None,
             None,
             NlPayload::Payload(genlhdr),
@@ -537,27 +537,25 @@ impl WirelessManager {
             for attr in attrs.iter() {
                 match attr.nla_type.nla_type {
                     NL80211_ATTR_WIPHY => {
-                        if let Ok(wiphy_bytes) = attr.get_payload_as::<&[u8]>() {
-                            if wiphy_bytes.len() >= 4 {
-                                info.wiphy = u32::from_ne_bytes([wiphy_bytes[0], wiphy_bytes[1], wiphy_bytes[2], wiphy_bytes[3]]);
-                            }
+                        // Payload returns Buffer which is Vec<u8>
+                        let payload = attr.get_payload().map_err(|e| NetlinkError::OperationFailed(format!("Failed to get payload: {}", e)))?;
+                        if payload.len() >= 4 {
+                            info.wiphy = u32::from_ne_bytes([payload[0], payload[1], payload[2], payload[3]]);
                         }
                     }
                     NL80211_ATTR_IFTYPE => {
-                        if let Ok(iftype_bytes) = attr.get_payload_as::<&[u8]>() {
-                            if iftype_bytes.len() >= 4 {
-                                let iftype = u32::from_ne_bytes([iftype_bytes[0], iftype_bytes[1], iftype_bytes[2], iftype_bytes[3]]);
-                                info.mode = InterfaceMode::from_nl80211(iftype);
-                            }
+                        let payload = attr.get_payload().map_err(|e| NetlinkError::OperationFailed(format!("Failed to get payload: {}", e)))?;
+                        if payload.len() >= 4 {
+                            let iftype = u32::from_ne_bytes([payload[0], payload[1], payload[2], payload[3]]);
+                            info.mode = InterfaceMode::from_nl80211(iftype);
                         }
                     }
                     NL80211_ATTR_WIPHY_FREQ => {
-                        if let Ok(freq_bytes) = attr.get_payload_as::<&[u8]>() {
-                            if freq_bytes.len() >= 4 {
-                                let freq = u32::from_ne_bytes([freq_bytes[0], freq_bytes[1], freq_bytes[2], freq_bytes[3]]);
-                                info.frequency = Some(freq);
-                                info.channel = Self::frequency_to_channel(freq);
-                            }
+                        let payload = attr.get_payload().map_err(|e| NetlinkError::OperationFailed(format!("Failed to get payload: {}", e)))?;
+                        if payload.len() >= 4 {
+                            let freq = u32::from_ne_bytes([payload[0], payload[1], payload[2], payload[3]]);
+                            info.frequency = Some(freq);
+                            info.channel = Self::frequency_to_channel(freq);
                         }
                     }
                     _ => {}
@@ -615,10 +613,9 @@ impl WirelessManager {
             for attr in attrs.iter() {
                 match attr.nla_type.nla_type {
                     NL80211_ATTR_WIPHY_NAME => {
-                        if let Ok(name_bytes) = attr.get_payload_as::<&[u8]>() {
-                            if let Ok(name) = std::str::from_utf8(name_bytes) {
-                                caps.name = name.trim_end_matches('\0').to_string();
-                            }
+                        let payload = attr.get_payload().map_err(|e| NetlinkError::OperationFailed(format!("Failed to get payload: {}", e)))?;
+                        if let Ok(name) = std::str::from_utf8(&payload) {
+                            caps.name = name.trim_end_matches('\0').to_string();
                         }
                     }
                     NL80211_ATTR_SUPPORTED_IFTYPES => {
@@ -732,6 +729,7 @@ impl WirelessManager {
         }
     }
 }
+
 
 
 

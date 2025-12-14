@@ -1,10 +1,11 @@
 use crate::error::{NetlinkError, Result};
 use neli::{
-    consts::nl::NlmF,
+    attr::Attribute,
+    consts::nl::{NlmF, NlmFFlags},
     genl::{Genlmsghdr, Nlattr},
     nl::{NlPayload, Nlmsghdr},
     socket::NlSocketHandle,
-    types::{GenlBuffer, NlmFFlags},
+    types::GenlBuffer,
 };
 
 // Re-export commonly used types from neli
@@ -532,8 +533,9 @@ impl WirelessManager {
         };
 
         if let NlPayload::Payload(genlhdr) = &response.nl_payload {
-            for attr in genlhdr.get_attr_handle().iter() {
-                match attr.nla_type.nla_type() {
+            let attrs = genlhdr.get_attr_handle();
+            for attr in attrs.iter() {
+                match attr.nla_type.nla_type {
                     NL80211_ATTR_WIPHY => {
                         if let Ok(wiphy) = attr.get_payload_as::<u32>() {
                             info.wiphy = *wiphy;
@@ -601,11 +603,14 @@ impl WirelessManager {
         };
 
         if let NlPayload::Payload(genlhdr) = &response.nl_payload {
-            for attr in genlhdr.get_attr_handle().iter() {
-                match attr.nla_type.nla_type() {
+            let attrs = genlhdr.get_attr_handle();
+            for attr in attrs.iter() {
+                match attr.nla_type.nla_type {
                     NL80211_ATTR_WIPHY_NAME => {
-                        if let Ok(name) = std::str::from_utf8(attr.payload()) {
-                            caps.name = name.trim_end_matches('\0').to_string();
+                        if let Ok(name_bytes) = attr.get_payload_as::<&[u8]>() {
+                            if let Ok(name) = std::str::from_utf8(name_bytes) {
+                                caps.name = name.trim_end_matches('\0').to_string();
+                            }
                         }
                     }
                     NL80211_ATTR_SUPPORTED_IFTYPES => {
@@ -719,6 +724,7 @@ impl WirelessManager {
         }
     }
 }
+
 
 
 

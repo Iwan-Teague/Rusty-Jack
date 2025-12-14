@@ -6,7 +6,7 @@
 //! Supports all rfkill device types (WLAN, Bluetooth, GPS, NFC, etc.) and provides both
 //! individual device control and type-based bulk operations.
 
-use std::fs::{File, OpenOptions};
+use std::fs::OpenOptions;
 use std::io::{Read, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;

@@ -295,7 +295,7 @@ impl DhcpServer {
     }
 
     pub fn release_lease(&self, mac: &[u8; 6]) {
-        let mut leases = self.leases.lock().unwrap();
+        let leases = self.leases.lock().unwrap();
         leases.remove(mac);
     }
 
@@ -440,7 +440,7 @@ impl DhcpServer {
     }
 
     fn get_or_allocate_ip(&self, mac: &[u8; 6]) -> Result<Ipv4Addr> {
-        let mut leases = self.leases.lock().unwrap();
+        let leases = self.leases.lock().unwrap();
 
         if let Some(lease) = leases.get(mac) {
             if !lease.is_expired() {
@@ -905,3 +905,4 @@ mod tests {
         assert!(DhcpServer::new(config).is_err());
     }
 }
+

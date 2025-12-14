@@ -2,7 +2,7 @@ use std::net::Ipv4Addr;
 use std::time::{Duration, Instant};
 use libc::{AF_PACKET, SOCK_RAW, sockaddr_ll, socket};
 
-use crate::arp::{subnet_to_ips, parse_mac_address, format_mac_address};
+use crate::arp::{subnet_to_ips, parse_mac_address};
 use super::{ArpError, ArpPacket, ArpScanConfig, ArpScanResult};
 use crate::error::{NetlinkError, Result};
 use crate::interface::InterfaceManager;

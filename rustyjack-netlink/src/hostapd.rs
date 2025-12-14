@@ -37,9 +37,8 @@
 //! ```
 
 use std::collections::HashMap;
-use std::net::Ipv4Addr;
 use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use tokio::sync::{Mutex, RwLock};
 use tokio::task::JoinHandle;
@@ -286,8 +285,6 @@ impl AccessPoint {
                 format!("Failed to set channel {} on {}: {}", self.config.channel, self.config.interface, e)
             ))?;
         
-        Ok(())
-        
         *self.running.lock().await = true;
         self.start_time = Some(Instant::now());
         
@@ -361,9 +358,9 @@ impl AccessPoint {
     
     /// Spawn beacon transmission task
     fn spawn_beacon_task(&self) -> JoinHandle<()> {
-        let config = self.config.clone();
+        let _config = self.config.clone();
         let running = Arc::clone(&self.running);
-        let stats = Arc::clone(&self.stats);
+        let _stats = Arc::clone(&self.stats);
         let interface = self.config.interface.clone();
         
         tokio::spawn(async move {
@@ -389,8 +386,8 @@ impl AccessPoint {
     fn spawn_mgmt_task(&self) -> JoinHandle<()> {
         let running = Arc::clone(&self.running);
         let clients = Arc::clone(&self.clients);
-        let stats = Arc::clone(&self.stats);
-        let config = self.config.clone();
+        let _stats = Arc::clone(&self.stats);
+        let _config = self.config.clone();
         let interface = self.config.interface.clone();
         
         tokio::spawn(async move {
@@ -468,7 +465,7 @@ enum DeauthReason {
 
 /// Helper to generate WPA2 Pairwise Master Key from passphrase and SSID
 pub fn generate_pmk(passphrase: &str, ssid: &str) -> Result<[u8; 32]> {
-    use sha2::{Sha256, Digest};
+    use sha2::Sha256;
     use pbkdf2::pbkdf2_hmac;
     
     if passphrase.len() < 8 || passphrase.len() > 63 {
@@ -534,4 +531,6 @@ mod tests {
         assert!(invalid.is_err());
     }
 }
+
+
 

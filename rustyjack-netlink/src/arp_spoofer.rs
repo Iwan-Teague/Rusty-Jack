@@ -92,7 +92,7 @@ impl ArpSpoofer {
         self.running.store(true, Ordering::Relaxed);
         let running = Arc::clone(&self.running);
 
-        let handle = thread::spawn(move || {
+        let _handle = thread::spawn(move || {
             log::info!(
                 "Starting ARP spoof: {} ({}) -> {} on {}",
                 config.spoof_ip,
@@ -178,7 +178,7 @@ impl ArpSpoofer {
         let running = Arc::clone(&self.running);
 
         let interface = interface.to_string();
-        let handle = thread::spawn(move || {
+        let _handle = thread::spawn(move || {
             log::info!(
                 "Starting bidirectional MITM: {} <-> {} on {}",
                 target_ip,
@@ -302,3 +302,4 @@ impl Drop for ArpSpoofer {
         self.stop();
     }
 }
+

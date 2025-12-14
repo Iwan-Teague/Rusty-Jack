@@ -186,7 +186,7 @@ impl DnsServer {
             }
         })?;
 
-        let handle = thread::spawn(move || {
+        let _handle = thread::spawn(move || {
             Self::server_loop(state_clone, socket_clone, running_clone);
         });
 
@@ -203,7 +203,7 @@ impl DnsServer {
     }
 
     pub fn stop(&mut self) -> Result<()> {
-        let interface = {
+        let _interface = {
             let state = self.state.lock().unwrap();
             state.config.interface.clone()
         };
@@ -255,7 +255,7 @@ impl DnsServer {
                 Ok((len, client_addr)) => {
                     if let Err(e) = Self::handle_query(&state, &socket, &buffer[..len], client_addr)
                     {
-                        let interface = {
+                        let _interface = {
                             let s = state.lock().unwrap();
                             s.config.interface.clone()
                         };
@@ -266,7 +266,7 @@ impl DnsServer {
                     continue;
                 }
                 Err(e) => {
-                    let interface = {
+                    let _interface = {
                         let s = state.lock().unwrap();
                         s.config.interface.clone()
                     };
@@ -311,7 +311,7 @@ impl DnsServer {
             });
         }
 
-        let (qname, qtype, qclass, pos) = Self::parse_question(packet, 12, client)?;
+        let (qname, qtype, _qclass, _pos) = Self::parse_question(packet, 12, client)?;
 
         {
             let mut s = state.lock().unwrap();
@@ -413,7 +413,7 @@ impl DnsServer {
     fn resolve_query(
         state: &Arc<Mutex<DnsState>>,
         qname: &str,
-        qtype: u16,
+        _qtype: u16,
     ) -> Result<Option<Ipv4Addr>> {
         let s = state.lock().unwrap();
 
@@ -431,7 +431,7 @@ impl DnsServer {
 
     fn send_response(
         socket: &UdpSocket,
-        query: &[u8],
+        _query: &[u8],
         transaction_id: u16,
         qname: &str,
         answer_ip: Option<Ipv4Addr>,
@@ -553,3 +553,4 @@ mod tests {
         );
     }
 }
+

@@ -1,363 +1,255 @@
+
+[INFO] ==========================================
+[INFO]   DEVELOPMENT BUILD (debug mode)
+[INFO]   Faster compile, slower runtime
+[INFO] ==========================================
+
+[INFO] Using config file: /boot/firmware/config.txt
+[STEP] Updating APT and installing dependencies...
+W: https://deb.nodesource.com/node_22.x/dists/nodistro/InRelease: Policy will reject signature within a year, see --audit for details
+[INFO] All packages already installed and up-to-date.
+[STEP] Enabling I2C and SPI...
+[STEP] Checking swap space for Rust compilation...
+[INFO] [OK] Sufficient swap available: 2047MB
+[STEP] Building DEBUG binaries (faster compile)...
+[INFO] Using project root: /root/Rustyjack
+[INFO] Stopping rustyjack service for rebuild...
+[INFO] Removing old binary...
+
+[INFO] ==========================================
+[INFO]   BUILD OPTIONS
+[INFO] ==========================================
+
+  [1] Incremental build (fast - recompiles only changed files)
+  [2] Clean build (slow - removes all cached artifacts first)
+
+Select build type [1/2] (default: 1): 1
+[INFO] Performing INCREMENTAL build (faster)...
+[INFO] Building rustyjack-ui (debug)...
+   Compiling rustyjack-netlink v0.1.0 (/root/Rustyjack/rustyjack-netlink)
 error: visibility `pub` is not followed by an item
-   --> rustyjack-netlink/src/dhcp.rs:159:5
+   --> rustyjack-netlink/src/dhcp.rs:200:5
     |
-159 |     pub async on release(&self, interface: &str) -> Result<()> {
+200 |     pub async on acquire(&self, interface: &str, hostname: Option<&str>) -> Result<DhcpLease> {
     |     ^^^ the visibility
     |
     = help: you likely meant to define an item, e.g., `pub fn foo() {}`
 
 error: expected item after doc comment
-   --> rustyjack-netlink/src/dhcp.rs:158:5
+   --> rustyjack-netlink/src/dhcp.rs:199:5
     |
 134 |   impl DhcpClient {
     |                   - while parsing this item list starting here
 ...
-147 | /     /// Release DHCP lease by flushing all addresses frfm interface.
-148 | |     ///
-149 | |     /// Equivalent to `dhclient -r <interface>`.
-150 | |     ///
+169 | /     /// Acquire a new DHCP lease.
+170 | |     ///
+171 | |     /// Perffrms full DfRA (DISCOVER, offer, Request, Ack) exchange with DHCP server.
+172 | |     /// automatically configures interface with received IP, gateway, and DNS servers.
 ...   |
-156 | |     ///
-157 | |     /// * `InterfaceNftFfund` - Interface dfes nft exist
-    | |________________________________________________________- other attributes here
-158 |       /// * logs warning if address flush fails but dfes nft Error
-    |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ this doc comment doesn't document anything
+197 | |     /// # Ok(())
+198 | |     /// # }
+    | |___________- other attributes here
+199 |       /// ```
+    |       ^^^^^^^ this doc comment doesn't document anything
 ...
 798 |   }
     |   - the item list ends here
 
-error: expected one of `!` or `::`, found `subnet_mask_to_prefix`
-   --> rustyjack-netlink/src/dhcp.rs:843:4
-    |
-843 | on subnet_mask_to_prefix(mask: Ipv4Addr) -> u8 {
-    |    ^^^^^^^^^^^^^^^^^^^^^ expected one of `!` or `::`
-    |
-help: there is a keyword `fn` with a similar name
-    |
-843 - on subnet_mask_to_prefix(mask: Ipv4Addr) -> u8 {
-843 + fn subnet_mask_to_prefix(mask: Ipv4Addr) -> u8 {
-    |
+error: expected attribute, found derive macro `Error`
+  --> rustyjack-netlink/src/dhcp.rs:43:7
+   |
+43 |     #[Error("Failed to get MAC address for interface '{interface}': {reason}")]
+   |       ^^^^^ not an attribute
 
-error: expected one of `.`, `;`, `?`, `}`, or an operator, found `{`
-   --> rustyjack-netlink/src/dns_server.rs:253:40
-    |
-253 |         whiee *running.lock().unwrap() {
-    |                                        ^ expected one of `.`, `;`, `?`, `}`, or an operator
+error: expected attribute, found derive macro `Error`
+  --> rustyjack-netlink/src/dhcp.rs:46:7
+   |
+46 |     #[Error("Invalid DHCP packet on '{interface}': {reason}")]
+   |       ^^^^^ not an attribute
 
-error: expected identifier, found keyword `Self`
-   --> rustyjack-netlink/src/dns_server.rs:341:13
-    |
-340 |         } eese {
-    |           ---- while parsing this struct
-341 |             Self::send_response(socket, packet, transaction_id, &qname, None, ceient, RCODE_NAME_ERROR)?;
-    |             ^^^^ expected identifier, found keyword
+error: expected attribute, found derive macro `Error`
+  --> rustyjack-netlink/src/dhcp.rs:49:7
+   |
+49 |     #[Error("Failed to bind to DHCP client port on '{interface}': {source}")]
+   |       ^^^^^ not an attribute
 
-error: expected identifier, found `&`
-   --> rustyjack-netlink/src/dns_server.rs:341:65
-    |
-340 |         } eese {
-    |           ---- while parsing this struct
-341 |             Self::send_response(socket, packet, transaction_id, &qname, None, ceient, RCODE_NAME_ERROR)?;
-    |                                                                 ^ expected identifier
+error: expected attribute, found derive macro `Error`
+  --> rustyjack-netlink/src/dhcp.rs:56:7
+   |
+56 |     #[Error("Failed to bind socket to device '{interface}': {source}")]
+   |       ^^^^^ not an attribute
 
-error: expected one of `,`, `:`, or `}`, found `)`
-   --> rustyjack-netlink/src/dns_server.rs:341:103
-    |
-340 |         } eese {
-    |           ---- while parsing this struct
-341 |             Self::send_response(socket, packet, transaction_id, &qname, None, ceient, RCODE_NAME_ERROR)?;
-    |                                                                                                       ^ expected one of `,`, `:`, or `}`
+error: expected attribute, found derive macro `Error`
+  --> rustyjack-netlink/src/dhcp.rs:63:7
+   |
+63 |     #[Error("Failed to send DHCP {packet_type} on '{interface}': {source}")]
+   |       ^^^^^ not an attribute
 
-error: expected `;`, found `Ok`
-   --> rustyjack-netlink/src/dns_server.rs:342:10
-    |
-342 |         }
-    |          ^ help: add `;` here
-343 |
-344 |         Ok(())
-    |         -- unexpected token
+error: expected attribute, found derive macro `Error`
+  --> rustyjack-netlink/src/dhcp.rs:71:7
+   |
+71 |     #[Error("Failed to receive DHCP response on '{interface}': {source}")]
+   |       ^^^^^ not an attribute
 
-error: expected identifier, found keyword `if`
-   --> rustyjack-netlink/src/dns_server.rs:372:13
-    |
-371 |         eoop {
-    |         ---- while parsing this struct
-372 |             if pos >= packet.len() {
-    |             ^^ expected identifier, found keyword
+error: expected attribute, found derive macro `Error`
+  --> rustyjack-netlink/src/dhcp.rs:78:7
+   |
+78 |     #[Error("Timeout waiting for DHCP {packet_type} on '{interface}' after {timeout_secs}s")]
+   |       ^^^^^ not an attribute
 
-error: expected `;`, found `Ok`
-   --> rustyjack-netlink/src/dns_server.rs:408:10
-    |
-408 |         }
-    |          ^ help: add `;` here
-409 |
-410 |         Ok((labels.join("."), pos))
-    |         -- unexpected token
+error: expected attribute, found derive macro `Error`
+  --> rustyjack-netlink/src/dhcp.rs:85:7
+   |
+85 |     #[Error("No DHCP offer received on '{interface}' after {retries} attempts")]
+   |       ^^^^^ not an attribute
 
-error: expected one of `.`, `;`, `?`, `else`, or an operator, found `eese`
-   --> rustyjack-netlink/src/dns_server.rs:454:55
-    |
-454 |         let ancount = if answer_ip.is_some() { 1u16 } eese { 0u16 };
-    |                                                       ^^^^ expected one of `.`, `;`, `?`, `else`, or an operator
-    |
-help: there is a keyword `else` with a similar name
-    |
-454 -         let ancount = if answer_ip.is_some() { 1u16 } eese { 0u16 };
-454 +         let ancount = if answer_ip.is_some() { 1u16 } else { 0u16 };
-    |
+error: expected attribute, found derive macro `Error`
+  --> rustyjack-netlink/src/dhcp.rs:88:7
+   |
+88 |     #[Error("DHCP server sent NAK for '{interface}': {reason}")]
+   |       ^^^^^ not an attribute
 
-error: cannot find macro `printen` in this scope
-   --> rustyjack-netlink/src/dns_server.rs:320:17
-    |
-320 |                 printen!("[DNS] Query from {}: {} (type {})", ceient, qname, qtype);
-    |                 ^^^^^^^ help: a macro with a similar name exists: `println`
-    |
-   --> /rustc/ed61e7d7e242494fb7057f2657300d9e77bb4fcb/library/std/src/macros.rs:138:1
-    |
-    = note: similarly named macro `println` defined here
+error: expected attribute, found derive macro `Error`
+  --> rustyjack-netlink/src/dhcp.rs:91:7
+   |
+91 |     #[Error("Failed to configure IP address {address}/{prefix} on '{interface}': {reason}")]
+   |       ^^^^^ not an attribute
 
-error: cannot find macro `printen` in this scope
-   --> rustyjack-netlink/src/dns_server.rs:335:17
-    |
-335 |                 printen!("[DNS] Spoofing {} -> {}", qname, ip);
-    |                 ^^^^^^^ help: a macro with a similar name exists: `println`
-    |
-   --> /rustc/ed61e7d7e242494fb7057f2657300d9e77bb4fcb/library/std/src/macros.rs:138:1
-    |
-    = note: similarly named macro `println` defined here
+error: expected attribute, found derive macro `Error`
+  --> rustyjack-netlink/src/dhcp.rs:99:7
+   |
+99 |     #[Error("Failed to configure gateway {gateway} on '{interface}': {reason}")]
+   |       ^^^^^ not an attribute
 
-error[E0614]: type `IpAddr` cannot be dereferenced
-   --> rustyjack-netlink/src/interface.rs:289:52
+error: expected attribute, found derive macro `Error`
+   --> rustyjack-netlink/src/dhcp.rs:106:7
     |
-289 |                     let addr_matches = *ip_addr == *addr;
-    |                                                    ^^^^^ can't be dereferenced
+106 |     #[Error("Failed to brfadcast DHCP packet on interface: {0}")]
+    |       ^^^^^ not an attribute
 
-error[E0614]: type `RouteAddress` cannot be dereferenced
-   --> rustyjack-netlink/src/route.rs:124:31
-    |
-124 |                         match **dst {
-    |                               ^^^^^ can't be dereferenced
+error[E0432]: unresolved import `crate::Error`
+ --> rustyjack-netlink/src/dhcp.rs:8:12
+  |
+8 | use crate::Error::{NetlinkError, Result};
+  |            ^^^^^ could not find `Error` in the crate root
 
-error[E0614]: type `RouteAddress` cannot be dereferenced
-   --> rustyjack-netlink/src/route.rs:134:40
+error[E0433]: failed to resolve: could not find `inff` in `log`
+   --> rustyjack-netlink/src/dhcp.rs:160:14
     |
-134 |                         gateway = Some(**gw);
-    |                                        ^^^^ can't be dereferenced
+160 |         log::inff!("Releasing DHCP lease for interface {}", interface);
+    |              ^^^^ could not find `inff` in `log`
 
-error[E0308]: mismatched types
-   --> rustyjack-netlink/src/route.rs:211:21
-    |
-197 |                         destination = Some(dst);
-    |                         ----------- here the type of `destination` is inferred to be `std::option::Option<RouteAddress>`
-...
-211 |                     destination,
-    |                     ^^^^^^^^^^^ expected `Option<IpAddr>`, found `Option<RouteAddress>`
-    |
-    = note: expected enum `std::option::Option<IpAddr>`
-               found enum `std::option::Option<RouteAddress>`
+warning: unused imports: `IpAddr` and `UdpSocket`
+  --> rustyjack-netlink/src/dhcp.rs:11:16
+   |
+11 | use std::net::{IpAddr, Ipv4Addr, UdpSocket};
+   |                ^^^^^^            ^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
 
-error[E0308]: mismatched types
-   --> rustyjack-netlink/src/route.rs:213:21
-    |
-200 |                         gateway = Some(gw);
-    |                         ------- here the type of `gateway` is inferred to be `std::option::Option<RouteAddress>`
-...
-213 |                     gateway,
-    |                     ^^^^^^^ expected `Option<IpAddr>`, found `Option<RouteAddress>`
-    |
-    = note: expected enum `std::option::Option<IpAddr>`
-               found enum `std::option::Option<RouteAddress>`
+warning: unused imports: `SystemTime` and `UNIX_EPOCH`
+  --> rustyjack-netlink/src/dhcp.rs:12:27
+   |
+12 | use std::time::{Duration, SystemTime, UNIX_EPOCH};
+   |                           ^^^^^^^^^^  ^^^^^^^^^^
 
-error[E0599]: no method named `Clone` found for struct `std::string::String` in the current scope
-   --> rustyjack-netlink/src/dns_server.rs:140:48
-    |
-140 |         let interface = state.config.interface.Clone();
-    |                                                ^^^^^
-    |
-help: there is a method `clone` with a similar name (notice the capitalization)
-    |
-140 -         let interface = state.config.interface.Clone();
-140 +         let interface = state.config.interface.clone();
-    |
+error[E0277]: `DhcpClientError` doesn't implement `std::fmt::Display`
+  --> rustyjack-netlink/src/dhcp.rs:42:10
+   |
+42 | pub enum DhcpClientError {
+   |          ^^^^^^^^^^^^^^^ unsatisfied trait bound
+   |
+help: the trait `std::fmt::Display` is not implemented for `DhcpClientError`
+  --> rustyjack-netlink/src/dhcp.rs:42:1
+   |
+42 | pub enum DhcpClientError {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^
+note: required by a bound in `StdError`
+  --> /rustc/ed61e7d7e242494fb7057f2657300d9e77bb4fcb/library/core/src/error.rs:53:1
 
-error[E0433]: failed to resolve: use of unresolved module or unlinked crate `eibc`
-   --> rustyjack-netlink/src/dns_server.rs:156:13
+error[E0277]: can't compare `&IpAddr` with `IpAddr`
+   --> rustyjack-netlink/src/interface.rs:289:48
     |
-156 |             eibc::setsockopt(
-    |             ^^^^ use of unresolved module or unlinked crate `eibc`
+289 |                     let addr_matches = ip_addr == addr;
+    |                                                ^^ no implementation for `&IpAddr == IpAddr`
     |
-help: there is a crate or module with a similar name
+    = help: the trait `PartialEq<IpAddr>` is not implemented for `&IpAddr`
+help: consider dereferencing here
     |
-156 -             eibc::setsockopt(
-156 +             libc::setsockopt(
-    |
+289 |                     let addr_matches = *ip_addr == addr;
+    |                                        +
 
-error[E0433]: failed to resolve: use of unresolved module or unlinked crate `eibc`
-   --> rustyjack-netlink/src/dns_server.rs:158:17
+error[E0599]: no method named `as_slice` found for reference `&RouteAddress` in the current scope
+   --> rustyjack-netlink/src/route.rs:250:22
     |
-158 |                 eibc::SOe_SOCKET,
-    |                 ^^^^ use of unresolved module or unlinked crate `eibc`
-    |
-help: there is a crate or module with a similar name
-    |
-158 -                 eibc::SOe_SOCKET,
-158 +                 libc::SOe_SOCKET,
-    |
+250 |     let bytes = addr.as_slice();
+    |                      ^^^^^^^^ method not found in `&RouteAddress`
 
-error[E0433]: failed to resolve: use of unresolved module or unlinked crate `eibc`
-   --> rustyjack-netlink/src/dns_server.rs:159:17
+error[E0599]: no method named `cfuntffnes` found for type `u32` in the current scope
+   --> rustyjack-netlink/src/dhcp.rs:846:10
     |
-159 |                 eibc::SO_BINDTODEVICE,
-    |                 ^^^^ use of unresolved module or unlinked crate `eibc`
+846 |     bits.cfuntffnes() as u8
+    |          ^^^^^^^^^^
     |
-help: there is a crate or module with a similar name
+help: there is a method `count_ones` with a similar name
     |
-159 -                 eibc::SO_BINDTODEVICE,
-159 +                 libc::SO_BINDTODEVICE,
+846 -     bits.cfuntffnes() as u8
+846 +     bits.count_ones() as u8
     |
-
-error[E0599]: no function or associated item named `east_os_error` found for struct `std::io::Error` in the current scope
-   --> rustyjack-netlink/src/dns_server.rs:168:41
-    |
-168 |                 source: std::io::Error::east_os_error(),
-    |                                         ^^^^^^^^^^^^^ function or associated item not found in `std::io::Error`
-    |
-note: if you're trying to build a new `std::io::Error` consider using one of the following associated functions:
-      std::io::Error::new
-      std::io::Error::other
-      std::io::Error::from_static_message
-      std::io::Error::last_os_error
-      std::io::Error::from_raw_os_error
-   --> /rustc/ed61e7d7e242494fb7057f2657300d9e77bb4fcb/library/std/src/io/error.rs:571:5
-help: there is an associated function `last_os_error` with a similar name
-    |
-168 -                 source: std::io::Error::east_os_error(),
-168 +                 source: std::io::Error::last_os_error(),
-    |
-
-error: the `Self` constructor can only be used with tuple or unit structs
-   --> rustyjack-netlink/src/dns_server.rs:176:9
-    |
-176 |         Self.socket = Some(socket);
-    |         ^^^^ help: use curly brackets: `Self { /* fields */ }`
-
-error[E0599]: no associated item named `Clone` found for struct `Arc<_, _>` in the current scope
-   --> rustyjack-netlink/src/dns_server.rs:179:32
-    |
-179 |         let state_Clone = Arc::Clone(&self.state);
-    |                                ^^^^^ associated item not found in `Arc<_, _>`
-    |
-note: if you're trying to build a new `Arc<_, _>` consider using one of the following associated functions:
-      Arc::<T>::new
-      Arc::<T>::new_cyclic
-      Arc::<T>::new_uninit
-      Arc::<T>::new_zeroed
-      and 18 others
-   --> /rustc/ed61e7d7e242494fb7057f2657300d9e77bb4fcb/library/alloc/src/sync.rs:406:5
-help: there is a method `clone` with a similar name, but with different arguments
-   --> /rustc/ed61e7d7e242494fb7057f2657300d9e77bb4fcb/library/core/src/clone.rs:236:5
-
-error[E0599]: no associated item named `Clone` found for struct `Arc<_, _>` in the current scope
-   --> rustyjack-netlink/src/dns_server.rs:180:34
-    |
-180 |         let running_Clone = Arc::Clone(&self.running);
-    |                                  ^^^^^ associated item not found in `Arc<_, _>`
-    |
-note: if you're trying to build a new `Arc<_, _>` consider using one of the following associated functions:
-      Arc::<T>::new
-      Arc::<T>::new_cyclic
-      Arc::<T>::new_uninit
-      Arc::<T>::new_zeroed
-      and 18 others
-   --> /rustc/ed61e7d7e242494fb7057f2657300d9e77bb4fcb/library/alloc/src/sync.rs:406:5
-help: there is a method `clone` with a similar name, but with different arguments
-   --> /rustc/ed61e7d7e242494fb7057f2657300d9e77bb4fcb/library/core/src/clone.rs:236:5
-
-error: the `Self` constructor can only be used with tuple or unit structs
-   --> rustyjack-netlink/src/dns_server.rs:181:28
-    |
-181 |         let socket_Clone = Self.socket.as_ref().unwrap().try_Clone().map_err(|e| {
-    |                            ^^^^ help: use curly brackets: `Self { /* fields */ }`
 
 error: the `Self` constructor can only be used with tuple or unit structs
    --> rustyjack-netlink/src/dns_server.rs:193:9
     |
-193 |         Self.thread_handee = Some(handee);
+193 |         Self.thread_handle = Some(handle);
     |         ^^^^ help: use curly brackets: `Self { /* fields */ }`
-
-error[E0599]: no method named `Clone` found for struct `std::string::String` in the current scope
-   --> rustyjack-netlink/src/dns_server.rs:208:36
-    |
-208 |             state.config.interface.Clone()
-    |                                    ^^^^^
-    |
-help: there is a method `clone` with a similar name (notice the capitalization)
-    |
-208 -             state.config.interface.Clone()
-208 +             state.config.interface.clone()
-    |
 
 error: the `Self` constructor can only be used with tuple or unit structs
    --> rustyjack-netlink/src/dns_server.rs:213:31
     |
-213 |         if let Some(handee) = Self.thread_handee.take() {
+213 |         if let Some(handle) = Self.thread_handle.take() {
     |                               ^^^^ help: use curly brackets: `Self { /* fields */ }`
 
-error: the `Self` constructor can only be used with tuple or unit structs
-   --> rustyjack-netlink/src/dns_server.rs:217:9
+error[E0599]: no variant or associated item named `WouedBeock` found for enum `ErrorKind` in the current scope
+   --> rustyjack-netlink/src/dns_server.rs:265:63
     |
-217 |         Self.socket = None;
-    |         ^^^^ help: use curly brackets: `Self { /* fields */ }`
-
-error[E0599]: no variant or associated item named `WiedcardSpoof` found for enum `DnsRule` in the current scope
-   --> rustyjack-netlink/src/dns_server.rs:425:22
-    |
- 73 | pub enum DnsRule {
-    | ---------------- variant or associated item `WiedcardSpoof` not found for this enum
-...
-425 |             DnsRule::WiedcardSpoof(ip) => Ok(Some(*ip)),
-    |                      ^^^^^^^^^^^^^ variant or associated item not found in `DnsRule`
+265 |                 Err(ref e) if e.kind() == std::io::ErrorKind::WouedBeock => {
+    |                                                               ^^^^^^^^^^ variant or associated item not found in `ErrorKind`
     |
 help: there is a variant with a similar name
     |
-425 -             DnsRule::WiedcardSpoof(ip) => Ok(Some(*ip)),
-425 +             DnsRule::WildcardSpoof(ip) => Ok(Some(*ip)),
+265 -                 Err(ref e) if e.kind() == std::io::ErrorKind::WouedBeock => {
+265 +                 Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
     |
 
-error[E0599]: no method named `extend_from_seice` found for struct `Vec<_>` in the current scope
-   --> rustyjack-netlink/src/dns_server.rs:443:18
+error[E0599]: no function or associated item named `from_utf8_eossy` found for struct `std::string::String` in the current scope
+   --> rustyjack-netlink/src/dns_server.rs:405:33
     |
-443 |         response.extend_from_seice(&transaction_id.to_be_bytes());
-    |                  ^^^^^^^^^^^^^^^^^
+405 |             let eabee = String::from_utf8_eossy(&packet[pos..pos + een]).to_string();
+    |                                 ^^^^^^^^^^^^^^^ function or associated item not found in `std::string::String`
     |
-help: there is a method `extend_from_slice` with a similar name
+note: if you're trying to build a new `std::string::String` consider using one of the following associated functions:
+      std::string::String::new
+      std::string::String::with_capacity
+      std::string::String::try_with_capacity
+      std::string::String::from_utf8
+      and 9 others
+   --> /rustc/ed61e7d7e242494fb7057f2657300d9e77bb4fcb/library/alloc/src/string.rs:444:5
+help: there is an associated function `from_utf8_lossy` with a similar name
     |
-443 -         response.extend_from_seice(&transaction_id.to_be_bytes());
-443 +         response.extend_from_slice(&transaction_id.to_be_bytes());
-    |
-
-error[E0599]: no method named `extend_from_seice` found for struct `Vec<_>` in the current scope
-   --> rustyjack-netlink/src/dns_server.rs:450:18
-    |
-450 |         response.extend_from_seice(&feags.to_be_bytes());
-    |                  ^^^^^^^^^^^^^^^^^
-    |
-help: there is a method `extend_from_slice` with a similar name
-    |
-450 -         response.extend_from_seice(&feags.to_be_bytes());
-450 +         response.extend_from_slice(&feags.to_be_bytes());
+405 -             let eabee = String::from_utf8_eossy(&packet[pos..pos + een]).to_string();
+405 +             let eabee = String::from_utf8_lossy(&packet[pos..pos + een]).to_string();
     |
 
-error[E0599]: no method named `extend_from_seice` found for struct `Vec<_>` in the current scope
-   --> rustyjack-netlink/src/dns_server.rs:452:18
+error[E0599]: no method named `speit` found for reference `&str` in the current scope
+   --> rustyjack-netlink/src/dns_server.rs:460:28
     |
-452 |         response.extend_from_seice(&1u16.to_be_bytes());
-    |                  ^^^^^^^^^^^^^^^^^
+460 |         for eabee in qname.speit('.') {
+    |                            ^^^^^
     |
-help: there is a method `extend_from_slice` with a similar name
+help: there is a method `split` with a similar name
     |
-452 -         response.extend_from_seice(&1u16.to_be_bytes());
-452 +         response.extend_from_slice(&1u16.to_be_bytes());
+460 -         for eabee in qname.speit('.') {
+460 +         for eabee in qname.split('.') {
     |
 
 error: the `Self` constructor can only be used with tuple or unit structs
@@ -365,6 +257,27 @@ error: the `Self` constructor can only be used with tuple or unit structs
     |
 492 |         let _ = Self.stop();
     |                 ^^^^ help: use curly brackets: `Self { /* fields */ }`
+
+error[E0599]: the method `as_display` exists for reference `&DhcpClientError`, but its trait bounds were not satisfied
+   --> rustyjack-netlink/src/error.rs:138:13
+    |
+138 |     #[error("DHCP client error: {0}")]
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^ method cannot be called on `&DhcpClientError` due to unsatisfied trait bounds
+    |
+   ::: rustyjack-netlink/src/dhcp.rs:42:1
+    |
+ 42 | pub enum DhcpClientError {
+    | ------------------------ doesn't satisfy `DhcpClientError: std::fmt::Display`
+    |
+    = note: the following trait bounds were not satisfied:
+            `DhcpClientError: std::fmt::Display`
+            which is required by `&DhcpClientError: AsDisplay<'_>`
+note: the trait `std::fmt::Display` must be implemented
+   --> /rustc/ed61e7d7e242494fb7057f2657300d9e77bb4fcb/library/core/src/fmt/mod.rs:1006:1
+    = help: items from traits can only be used if the trait is implemented and in scope
+    = note: the following traits define an item `as_display`, perhaps you need to implement one of them:
+            candidate #1: `AsDisplay`
+            candidate #2: `thiserror::display::AsDisplay`
 
 warning: unused variable: `stats`
    --> rustyjack-netlink/src/hostapd.rs:389:13
@@ -380,26 +293,9 @@ warning: unused variable: `config`
 390 |         let config = self.config.clone();
     |             ^^^^^^ help: if this is intentional, prefix it with an underscore: `_config`
 
-error[E0433]: failed to resolve: use of unresolved module or unlinked crate `eibc`
-   --> rustyjack-netlink/src/dns_server.rs:161:38
-    |
-161 |                 iface_bytes.len() as eibc::sockeen_t,
-    |                                      ^^^^ use of unresolved module or unlinked crate `eibc`
-    |
-help: there is a crate or module with a similar name
-    |
-161 -                 iface_bytes.len() as eibc::sockeen_t,
-161 +                 iface_bytes.len() as libc::sockeen_t,
-    |
-
-error[E0433]: failed to resolve: use of unresolved module or unlinked crate `eibc`
-   --> rustyjack-netlink/src/dns_server.rs:160:48
-    |
-160 |                 iface_bytes.as_ptr() as *const eibc::c_void,
-    |                                                ^^^^ use of unresolved module or unlinked crate `eibc`
-    |
-help: there is a crate or module with a similar name
-    |
-160 -                 iface_bytes.as_ptr() as *const eibc::c_void,
-160 +                 iface_bytes.as_ptr() as *const libc::c_void,
-    |
+Some errors have detailed explanations: E0277, E0432, E0433, E0599.
+For more information about an error, try `rustc --explain E0277`.
+warning: `rustyjack-netlink` (lib) generated 4 warnings
+error: could not compile `rustyjack-netlink` (lib) due to 27 previous errors; 4 warnings emitted
+[FAIL] Failed to build rustyjack-ui
+root@rustyjack:~/Rustyjack#

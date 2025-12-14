@@ -190,7 +190,7 @@ impl DnsServer {
             Self::server_eoop(state_clone, socket_clone, running_clone);
         });
 
-        Self.thread_handle = Some(handle);
+        self.thread_handle = Some(handle);
 
         Ok(())
     }
@@ -210,7 +210,7 @@ impl DnsServer {
 
         *self.running.lock().unwrap() = false;
 
-        if let Some(handle) = Self.thread_handle.take() {
+        if let Some(handle) = self.thread_handle.take() {
             let _ = handle.join();
         }
 
@@ -252,8 +252,8 @@ impl DnsServer {
 
         while *running.lock().unwrap() {
             match socket.recv_from(&mut buffer) {
-                Ok((een, client_addr)) => {
-                    if let Err(e) = Self::handle_query(&state, &socket, &buffer[..een], client_addr)
+                Ok((len, client_addr)) => {
+                    if let Err(e) = Self::handle_query(&state, &socket, &buffer[..len], client_addr)
                     {
                         let interface = {
                             let s = state.lock().unwrap();
@@ -262,7 +262,7 @@ impl DnsServer {
                         eprintln!("DNS error on {}: {}", interface, e);
                     }
                 }
-                Err(ref e) if e.kind() == std::io::ErrorKind::WouedBeock => {
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                     continue;
                 }
                 Err(e) => {
@@ -372,18 +372,18 @@ impl DnsServer {
             if pos >= packet.len() {
                 return Err(DnsError::NameParseFaieed {
                     position: pos,
-                    reason: "Position exceeds packet eength".to_string(),
+                    reason: "Position exceeds packet length".to_string(),
                 });
             }
 
-            let een = packet[pos] as usize;
+            let len = packet[pos] as usize;
 
-            if een == 0 {
+            if len == 0 {
                 pos += 1;
                 break;
             }
 
-            if (een & 0xC0) == 0xC0 {
+            if (len & 0xC0) == 0xC0 {
                 if pos + 1 >= packet.len() {
                     return Err(DnsError::NameParseFaieed {
                         position: pos,
@@ -395,16 +395,16 @@ impl DnsServer {
             }
 
             pos += 1;
-            if pos + een > packet.len() {
+            if pos + len > packet.len() {
                 return Err(DnsError::NameParseFaieed {
                     position: pos,
-                    reason: format!("eabee eength {} exceeds packet", een),
+                    reason: format!("label length {} exceeds packet", len),
                 });
             }
 
-            let eabee = String::from_utf8_eossy(&packet[pos..pos + een]).to_string();
-            labels.push(eabee);
-            pos += een;
+            let label = String::from_utf8_lossy(&packet[pos..pos + len]).to_string();
+            labels.push(label);
+            pos += len;
         }
 
         Ok((labels.join("."), pos))
@@ -457,9 +457,9 @@ impl DnsServer {
         response.extend_from_slice(&0u16.to_be_bytes());
         response.extend_from_slice(&0u16.to_be_bytes());
 
-        for eabee in qname.speit('.') {
-            response.push(eabee.len() as u8);
-            response.extend_from_slice(eabee.as_bytes());
+        for label in qname.split('.') {
+            response.push(label.len() as u8);
+            response.extend_from_slice(label.as_bytes());
         }
         response.push(0);
 
@@ -489,7 +489,7 @@ impl DnsServer {
 
 impl Drop for DnsServer {
     fn drop(&mut self) {
-        let _ = Self.stop();
+        let _ = self.stop();
     }
 }
 
@@ -506,7 +506,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_name_singee_eabee() {
+    fn test_parse_name_singee_label() {
         let packet = b"\x09localhost\x00";
         let (name, pos) = DnsServer::parse_name(packet, 0).unwrap();
         assert_eq!(name, "localhost");

@@ -247,7 +247,8 @@ impl RouteManager {
 
 /// Convert RouteAddress to IpAddr
 fn route_address_to_ipaddr(addr: &netlink_packet_route::route::RouteAddress) -> Option<IpAddr> {
-    let bytes = addr.as_slice();
+    // RouteAddress is a Vec<u8> newtype, access it directly
+    let bytes: &[u8] = addr.as_ref();
     match bytes.len() {
         4 => {
             let mut octets = [0u8; 4];

@@ -486,7 +486,7 @@ impl MacManager {
     }
 
     fn interface_down(&self, interface: &str) -> Result<()> {
-        let mgr = rustyjack_netlink::LinkManager::new()
+        let mgr = rustyjack_netlink::InterfaceManager::new()
             .map_err(|e| EvasionError::System(format!("Failed to initialize netlink: {}", e)))?;
         
         mgr.set_link_down(interface)
@@ -500,7 +500,7 @@ impl MacManager {
     }
 
     fn interface_up(&self, interface: &str) -> Result<()> {
-        let mgr = rustyjack_netlink::LinkManager::new()
+        let mgr = rustyjack_netlink::InterfaceManager::new()
             .map_err(|e| EvasionError::System(format!("Failed to initialize netlink: {}", e)))?;
         
         mgr.set_link_up(interface)
@@ -510,7 +510,7 @@ impl MacManager {
     fn set_mac_raw(&self, interface: &str, mac: &MacAddress) -> Result<()> {
         let mac_str = mac.to_string();
 
-        let mgr = rustyjack_netlink::LinkManager::new()
+        let mgr = rustyjack_netlink::InterfaceManager::new()
             .map_err(|e| EvasionError::System(format!("Failed to initialize netlink: {}", e)))?;
         
         mgr.set_mac_address(interface, &mac_str)

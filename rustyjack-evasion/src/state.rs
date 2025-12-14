@@ -277,7 +277,7 @@ impl StateManager {
     }
 
     fn restore_mac(&self, interface: &str, mac: &str) -> Result<()> {
-        let mgr = rustyjack_netlink::LinkManager::new()
+        let mgr = rustyjack_netlink::InterfaceManager::new()
             .map_err(|e| EvasionError::System(format!("Failed to initialize netlink: {}", e)))?;
         
         // Bring down

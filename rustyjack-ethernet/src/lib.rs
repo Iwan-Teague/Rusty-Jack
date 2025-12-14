@@ -454,7 +454,7 @@ fn read_iface_mac(interface: &str) -> Result<[u8; 6]> {
 
 #[cfg(target_os = "linux")]
 fn read_iface_ipv4(interface: &str) -> Result<Ipv4Addr> {
-    let mgr = rustyjack_netlink::LinkManager::new()
+    let mgr = rustyjack_netlink::InterfaceManager::new()
         .with_context(|| format!("initializing netlink for {}", interface))?;
     
     let addrs = mgr.get_ipv4_addresses(interface)

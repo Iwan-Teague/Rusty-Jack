@@ -68,10 +68,28 @@ claim_resolv_conf() {
     fi
   fi
 
-  sudo sh -c "printf '# Managed by Rustyjack\n# Updated by ensure-route\n' > $resolv"
+  sudo sh -c "printf '# Managed by Rustyjack\n# Updated by ensure-route\nnameserver 1.1.1.1\nnameserver 8.8.8.8\n' > $resolv"
   sudo chmod 644 "$resolv"
   sudo chown root:root "$resolv"
   info "[OK] $resolv now owned by Rustyjack (plain file, root-writable)"
+}
+
+bootstrap_resolvers() {
+  local resolv="/etc/resolv.conf"
+  local content="# Managed by Rustyjack (bootstrap)\n# Ensures DNS during install\nnameserver 1.1.1.1\nnameserver 8.8.8.8\n"
+  info "Bootstrapping $resolv for installer DNS..."
+  if command -v lsattr >/dev/null 2>&1; then
+    if lsattr -d "$resolv" 2>/dev/null | awk '{print $1}' | grep -q 'i'; then
+      sudo chattr -i "$resolv" 2>/dev/null || true
+    fi
+  fi
+  if [ -L "$resolv" ]; then
+    warn "Replacing symlinked $resolv with static resolver file for install"
+    sudo rm -f "$resolv"
+  fi
+  echo -e "$content" | sudo tee "$resolv" >/dev/null
+  sudo chmod 644 "$resolv"
+  sudo chown root:root "$resolv"
 }
 
 ensure_rw_root() {
@@ -94,6 +112,9 @@ if grep -q $'\r' "$0"; then
   cmd dos2unix || { sudo apt-get update -qq && sudo apt-get install -y dos2unix; }
   dos2unix "$0"
 fi
+
+# ---- 0.5: ensure working DNS for git/apt --------------------
+bootstrap_resolvers
 
 # ---- 1: locate active config.txt ----------------------------
 CFG=/boot/firmware/config.txt; [[ -f $CFG ]] || CFG=/boot/config.txt

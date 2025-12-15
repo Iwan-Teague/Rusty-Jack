@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use anyhow::{anyhow, Result};
 
+#[allow(dead_code)]
 #[derive(Clone)]
 pub enum MenuAction {
     Submenu(&'static str),

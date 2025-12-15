@@ -1,4 +1,3 @@
-use std::process::Command;
 use crate::error::{Result, WirelessError};
 
 pub fn netlink_set_interface_up(interface: &str) -> Result<()> {

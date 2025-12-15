@@ -1,5 +1,4 @@
 use crate::error::{Result, WirelessError};
-use std::collections::HashMap;
 
 /// Scan result entry
 #[derive(Debug, Clone)]

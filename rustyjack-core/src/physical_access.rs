@@ -7,7 +7,7 @@ use std::{
 };
 
 use anyhow::{Result, Context, anyhow};
-use log::{info, warn, debug};
+use log::{info, debug};
 use serde::{Serialize, Deserialize};
 use regex::Regex;
 
@@ -221,7 +221,7 @@ fn extract_ssid_from_dhcp(content: &str) -> Option<String> {
 }
 
 /// Extract WiFi creds from mDNS/Bonjour
-fn extract_from_mdns(gateway: &str) -> Result<Vec<WifiCredential>> {
+fn extract_from_mdns(_gateway: &str) -> Result<Vec<WifiCredential>> {
     let mut creds = Vec::new();
     
     // Use avahi-browse to discover services
@@ -269,7 +269,7 @@ fn extract_from_upnp(gateway: &str) -> Result<Vec<WifiCredential>> {
     let mut creds = Vec::new();
     
     // Get device description
-    if let Ok((model, _)) = get_upnp_device_info(gateway) {
+    if let Ok((_model, _)) = get_upnp_device_info(gateway) {
         // Some routers expose WiFi info via UPnP
         // Try GetInfo action on WLANConfiguration service
         let services = vec![
@@ -342,13 +342,13 @@ fn extract_xml_value(xml: &str, tag: &str) -> Option<String> {
 }
 
 fn query_upnp_service(
-    ip: &str,
+    _ip: &str,
     service: &str,
     action: &str,
 ) -> Result<std::collections::HashMap<String, String>> {
     // This is a simplified implementation
     // Real implementation would need full SOAP XML parsing
-    let mut result = std::collections::HashMap::new();
+    let result = std::collections::HashMap::new();
     
     // Try to query service (implementation depends on router)
     debug!("Querying UPnP service {} action {}", service, action);

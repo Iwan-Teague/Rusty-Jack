@@ -6,15 +6,15 @@ use std::time::Instant;
 use std::net::Ipv4Addr;
 
 use rand::{distributions::Alphanumeric, rngs::OsRng, Rng};
-use rustyjack_netlink::{AccessPoint, ApConfig, ApSecurity, DhcpServer, DhcpConfig as NetlinkDhcpConfig, DnsServer, IptablesManager};
+use rustyjack_netlink::{AccessPoint, ApConfig, ApSecurity, IptablesManager};
 // TODO: These helpers need to be implemented
 // use rustyjack_core::dhcp_helpers::start_hotspot_dhcp_server;
 // use rustyjack_core::dns_helpers::start_hotspot_dns;
 
 use crate::error::{Result, WirelessError};
-use crate::netlink_helpers::{netlink_set_interface_down, netlink_flush_addresses, netlink_add_address};
+use crate::netlink_helpers::{netlink_set_interface_down, netlink_flush_addresses};
 use crate::rfkill_helpers::{rfkill_unblock_all, rfkill_unblock, rfkill_list};
-use crate::process_helpers::{pkill_pattern, pkill_pattern_force, process_running};
+use crate::process_helpers::pkill_pattern;
 
 // Global lock to prevent concurrent hotspot operations
 static HOTSPOT_LOCK: Mutex<()> = Mutex::new(());
@@ -95,7 +95,7 @@ pub fn start_hotspot(config: HotspotConfig) -> Result<HotspotState> {
         .map_err(|_| WirelessError::System(
             "Hotspot mutex poisoned - another thread panicked while starting hotspot".to_string()
         ))?;
-    let start_time = Instant::now();
+    let _start_time = Instant::now();
     
     eprintln!("[HOTSPOT] ========== HOTSPOT START ATTEMPT ==========");
     eprintln!("[HOTSPOT] Starting hotspot: AP={}, upstream={}, SSID={}, channel={}", 
@@ -376,11 +376,7 @@ pub fn start_hotspot(config: HotspotConfig) -> Result<HotspotState> {
     
     // Start DHCP server
     eprintln!("[HOTSPOT] Starting Rust DHCP server on {}...", config.ap_interface);
-    let gateway_ip: Ipv4Addr = AP_GATEWAY.parse()
-        .map_err(|e| WirelessError::System(format!("Invalid gateway IP {}: {}", AP_GATEWAY, e)))?;
-    
-    // TODO: Implement DHCP server properly
-    // For now, these need to be implemented using rustyjack_netlink::DhcpServer
+    // TODO: Implement DHCP server properly; currently not wired up
     eprintln!("[HOTSPOT] Note: DHCP/DNS servers need to be started separately");
     log::warn!("DHCP and DNS server integration not yet implemented");
     
@@ -529,22 +525,6 @@ fn persist_state(state: &HotspotState) -> Result<()> {
     Ok(())
 }
 
-fn spawn_background(cmd: &str, args: &[&str]) -> Result<Option<i32>> {
-    let child = Command::new(cmd)
-        .args(args)
-        .spawn()
-        .map_err(|e| WirelessError::System(format!("spawn {}: {}", cmd, e)))?;
-    let pid = i32::try_from(child.id())
-        .map_err(|_| WirelessError::System(format!("{}: PID does not fit in i32", cmd)))?;
-    Ok(Some(pid))
-}
-
-fn ensure_tools_present() -> Result<()> {
-    // No external tools needed - we use Rust implementations
-    // (AP, DHCP, DNS, iptables all via rustyjack-netlink)
-    Ok(())
-}
-
 fn run_cmd(cmd: &str, args: &[&str]) -> Result<()> {
     eprintln!("[HOTSPOT] Running command: {} {}", cmd, args.join(" "));
     let start = Instant::now();
@@ -575,14 +555,6 @@ fn run_cmd(cmd: &str, args: &[&str]) -> Result<()> {
     }
     
     Ok(())
-}
-
-fn get_pid_by_pattern(pattern: &str) -> Option<i32> {
-    use crate::process_helpers::pgrep_pattern;
-    pgrep_pattern(pattern)
-        .ok()?
-        .into_iter()
-        .next()
 }
 
 fn ensure_interface_exists(name: &str) -> Result<()> {

@@ -43,9 +43,9 @@ use serde_json::{json, Map, Value};
 use zeroize::Zeroize;
 
 use crate::netlink_helpers::{
-    netlink_set_interface_up, netlink_set_interface_down, netlink_flush_addresses, 
+    netlink_set_interface_up, netlink_set_interface_down,
     rfkill_block, rfkill_unblock, rfkill_find_index,
-    process_kill_pattern, process_kill_pattern_force, process_find_pattern, process_running
+    process_kill_pattern, process_running
 };
 
 #[derive(Debug, Clone, Serialize)]

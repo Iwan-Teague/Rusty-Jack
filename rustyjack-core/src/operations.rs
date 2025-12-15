@@ -1,6 +1,6 @@
 use std::{
     fs,
-    io::{BufRead, BufReader},
+    io::{BufRead, BufReader, Write},
     net::Ipv4Addr,
     path::{Path, PathBuf},
     process::Command,
@@ -254,6 +254,22 @@ fn handle_eth_discover(root: &Path, args: EthernetDiscoverArgs) -> Result<Handle
         Some(&sanitize_label(&net.to_string())),
     );
 
+    let log_file = write_scoped_log(
+        root,
+        "Ethernet",
+        &net.to_string(),
+        "Discovery",
+        "discovery",
+        &[
+            format!("LAN discovery on {}", net),
+            format!("Interface: {}", interface.name),
+            format!("Timeout: {:?}", timeout),
+            format!("Hosts found: {}", hosts.len()),
+            format!("Output: {}", file.display()),
+        ],
+    )
+    .map(|p| p.display().to_string());
+
     let data = json!({
         "network": net.to_string(),
         "interface": interface.name,
@@ -270,6 +286,7 @@ fn handle_eth_discover(root: &Path, args: EthernetDiscoverArgs) -> Result<Handle
             })
         }).collect::<Vec<_>>(),
         "loot_path": file.display().to_string(),
+        "log_file": log_file,
     });
     Ok((
         format!("LAN discovery complete ({} hosts)", hosts.len()),
@@ -345,6 +362,29 @@ fn handle_eth_port_scan(root: &Path, args: EthernetPortScanArgs) -> Result<Handl
         }).collect::<Vec<_>>(),
         "loot_path": file.display().to_string(),
     });
+    let log_file = write_scoped_log(
+        root,
+        "Ethernet",
+        &target.to_string(),
+        "PortScan",
+        "portscan",
+        &[
+            format!("Port scan on {}", target),
+            format!("Interface: {}", interface.name),
+            format!("Timeout: {:?} per port", timeout),
+            format!("Ports tested: {}", ports.len()),
+            format!("Open ports: {}", result.open_ports.len()),
+        ],
+    )
+    .map(|p| p.display().to_string());
+    let data = {
+        let mut base = data;
+        if let Some(log) = log_file {
+            base.as_object_mut()
+                .map(|obj| obj.insert("log_file".to_string(), json!(log)));
+        }
+        base
+    };
     Ok((
         format!("Port scan complete ({} open)", result.open_ports.len()),
         data,
@@ -426,12 +466,29 @@ fn handle_eth_inventory(root: &Path, args: EthernetInventoryArgs) -> Result<Hand
         })
         .collect();
 
+    let log_file = write_scoped_log(
+        root,
+        "Ethernet",
+        &net.to_string(),
+        "Inventory",
+        "inventory",
+        &[
+            format!("Inventory on {}", net),
+            format!("Interface: {}", interface.name),
+            format!("Hosts discovered: {}", hosts.len()),
+            format!("Devices profiled: {}", devices.len()),
+            format!("Output: {}", path.display()),
+        ],
+    )
+    .map(|p| p.display().to_string());
+
     let output = json!({
         "interface": interface.name,
         "network": net.to_string(),
         "hosts_found": hosts.len(),
         "devices": serializable,
         "loot_file": path.display().to_string(),
+        "log_file": log_file,
     });
 
     fs::write(&path, serde_json::to_vec_pretty(&serializable)?)
@@ -773,6 +830,21 @@ fn handle_mitm_start(root: &Path, args: MitmStartArgs) -> Result<HandlerResult> 
         "isolation_enforced": true,
     });
 
+    let _ = write_scoped_log(
+        root,
+        "Ethernet",
+        &network,
+        "MITM",
+        "mitm",
+        &[
+            format!("MITM started on {}", network),
+            format!("Interface: {}", interface_info.name),
+            format!("Victims: {}", capped.len()),
+            format!("Gateway: {}", gateway),
+            format!("PCAP: {}", pcap_path.display()),
+        ],
+    );
+
     Ok(("MITM started".to_string(), data))
 }
 
@@ -978,6 +1050,21 @@ fn handle_eth_site_cred_capture(root: &Path, args: EthernetSiteCredArgs) -> Resu
     );
 
     let victim_ips: Vec<String> = human_devices.iter().map(|d| d.ip.to_string()).collect();
+    let _ = write_scoped_log(
+        root,
+        "Ethernet",
+        &cidr,
+        "SiteCredCapture",
+        "sitecred",
+        &[
+            format!("Site credential capture on {}", cidr),
+            format!("Site: {}", site),
+            format!("Interface: {}", interface_info.name),
+            format!("Victims: {}", victim_ips.len()),
+            format!("PCAP: {}", pcap_path.display()),
+            format!("DNS capture dir: {}", dns_capture_dir.display()),
+        ],
+    );
     let data = json!({
         "interface": interface_info.name,
         "network": cidr,
@@ -2097,10 +2184,37 @@ fn handle_wifi_deauth(root: &Path, args: WifiDeauthArgs) -> Result<HandlerResult
         log::debug!("Deauth progress: {:.0}% - {}", progress * 100.0, status);
     })?;
 
+    let target_label = args.ssid.clone().unwrap_or_else(|| args.bssid.clone());
     let log_file = if result.log_file.as_os_str().is_empty() {
-        None
+        let summary = vec![
+            format!("Deauth attack on {}", ssid_display),
+            format!("Interface: {}", args.interface),
+            format!("Channel: {}", args.channel),
+            format!("Packets per burst: {}", args.packets),
+            format!("Bursts: {}", result.bursts),
+            format!("Packets sent: {}", result.packets_sent),
+            format!("Duration (s): {}", result.duration_secs),
+            format!("Handshake captured: {}", result.handshake_captured),
+        ];
+        write_scoped_log(
+            root,
+            "Wireless",
+            &target_label,
+            "Deauth",
+            "deauth",
+            &summary,
+        )
+        .map(|p| p.display().to_string())
     } else {
-        Some(result.log_file.display().to_string())
+        move_log_into_scope(
+            root,
+            "Wireless",
+            &target_label,
+            "Deauth",
+            &result.log_file,
+            "deauth",
+        )
+        .map(|p| p.display().to_string())
     };
 
     // Build response data
@@ -2216,10 +2330,37 @@ fn handle_wifi_evil_twin(root: &Path, args: WifiEvilTwinArgs) -> Result<HandlerR
     })
     .map_err(|e| anyhow::anyhow!("Evil Twin attack failed: {}", e))?;
 
+    let target_label = args.ssid.clone();
     let log_file = if result.log_path.as_os_str().is_empty() {
-        None
+        let summary = vec![
+            format!("Evil Twin on {}", target_label),
+            format!("Interface: {}", args.interface),
+            format!("Channel: {}", args.channel),
+            format!("Duration (s): {}", args.duration),
+            format!("Clients: {}", result.stats.clients_connected),
+            format!("Handshakes: {}", result.stats.handshakes_captured),
+            format!("Credentials: {}", result.stats.credentials_captured),
+            format!("Deauth packets: {}", result.stats.deauth_packets),
+        ];
+        write_scoped_log(
+            root,
+            "Wireless",
+            target_label.as_str(),
+            "EvilTwin",
+            "eviltwin",
+            &summary,
+        )
+        .map(|p| p.display().to_string())
     } else {
-        Some(result.log_path.display().to_string())
+        move_log_into_scope(
+            root,
+            "Wireless",
+            target_label.as_str(),
+            "EvilTwin",
+            &result.log_path,
+            "eviltwin",
+        )
+        .map(|p| p.display().to_string())
     };
 
     let data = json!({
@@ -2299,6 +2440,36 @@ fn handle_wifi_pmkid(root: &Path, args: WifiPmkidArgs) -> Result<HandlerResult> 
         log::debug!("PMKID progress: {:.0}% - {}", progress * 100.0, status);
     })?;
 
+    let target_label = args
+        .ssid
+        .clone()
+        .or_else(|| args.bssid.clone())
+        .unwrap_or_else(|| "unknown".to_string());
+    let log_file = write_scoped_log(
+        root,
+        "Wireless",
+        &target_label,
+        "PMKID",
+        "pmkid",
+        &[
+            format!("PMKID capture on {}", target_label),
+            format!("Interface: {}", args.interface),
+            format!("Channel: {}", args.channel),
+            format!("Duration (s): {}", args.duration),
+            format!("PMKIDs: {}", result.pmkids_captured),
+            format!("Networks seen: {}", result.networks_seen),
+            format!(
+                "Hashcat file: {}",
+                result
+                    .hashcat_file
+                    .as_ref()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|| "none".to_string())
+            ),
+        ],
+    )
+    .map(|p| p.display().to_string());
+
     let data = json!({
         "interface": args.interface,
         "bssid": args.bssid,
@@ -2309,6 +2480,7 @@ fn handle_wifi_pmkid(root: &Path, args: WifiPmkidArgs) -> Result<HandlerResult> 
         "networks_seen": result.networks_seen,
         "hashcat_file": result.hashcat_file.as_ref().map(|p| p.display().to_string()),
         "loot_directory": result.loot_path.display().to_string(),
+        "log_file": log_file,
         "isolation_enforced": true,
     });
 
@@ -2376,6 +2548,23 @@ fn handle_wifi_probe_sniff(root: &Path, args: WifiProbeSniffArgs) -> Result<Hand
         );
     })?;
 
+    let log_file = write_scoped_log(
+        root,
+        "Wireless",
+        &args.interface,
+        "ProbeSniff",
+        "probesniff",
+        &[
+            format!("Probe sniff on {}", args.interface),
+            format!("Channel: {}", args.channel),
+            format!("Duration (s): {}", args.duration),
+            format!("Total probes: {}", result.probes_captured),
+            format!("Unique clients: {}", result.unique_clients),
+            format!("Unique networks: {}", result.unique_networks),
+        ],
+    )
+    .map(|p| p.display().to_string());
+
     let data = json!({
         "interface": args.interface,
         "channel": args.channel,
@@ -2384,6 +2573,7 @@ fn handle_wifi_probe_sniff(root: &Path, args: WifiProbeSniffArgs) -> Result<Hand
         "unique_clients": result.unique_clients,
         "unique_networks": result.unique_networks,
         "loot_directory": result.loot_path.display().to_string(),
+        "log_file": log_file,
     });
 
     Ok((
@@ -2455,6 +2645,25 @@ fn handle_wifi_karma(root: &Path, args: WifiKarmaArgs) -> Result<HandlerResult> 
         log::debug!("Karma progress: {:.0}% - {}", progress * 100.0, status);
     })?;
 
+    let log_file = write_scoped_log(
+        root,
+        "Wireless",
+        &args.interface,
+        "Karma",
+        "karma",
+        &[
+            format!("Karma attack on {}", args.interface),
+            format!("Channel: {}", args.channel),
+            format!("Duration (s): {}", args.duration),
+            format!("With AP: {}", args.with_ap),
+            format!("Probes: {}", result.probes_seen),
+            format!("Unique SSIDs: {}", result.unique_ssids),
+            format!("Unique clients: {}", result.unique_clients),
+            format!("Victims: {}", result.victims),
+        ],
+    )
+    .map(|p| p.display().to_string());
+
     let data = json!({
         "interface": args.interface,
         "ap_interface": args.ap_interface,
@@ -2468,6 +2677,7 @@ fn handle_wifi_karma(root: &Path, args: WifiKarmaArgs) -> Result<HandlerResult> 
         "unique_clients": result.unique_clients,
         "victims": result.victims,
         "loot_directory": result.loot_path.display().to_string(),
+        "log_file": log_file,
     });
 
     Ok((
@@ -2846,6 +3056,88 @@ fn loot_directory(root: &Path, kind: LootKind) -> PathBuf {
         LootKind::Dnsspoof => root.join("DNSSpoof").join("captures"),
         LootKind::Ethernet => root.join("loot").join("Ethernet"),
         LootKind::Wireless => root.join("loot").join("Wireless"),
+    }
+}
+
+fn scoped_log_dir(root: &Path, scope: &str, target: &str, action: &str) -> Option<PathBuf> {
+    if rustyjack_evasion::logs_disabled() {
+        return None;
+    }
+    let safe_target = if target.trim().is_empty() {
+        "Unknown".to_string()
+    } else {
+        sanitize_label(target)
+    };
+    let safe_action = if action.trim().is_empty() {
+        "logs".to_string()
+    } else {
+        sanitize_label(action)
+    };
+    let dir = root
+        .join("loot")
+        .join(scope)
+        .join(safe_target)
+        .join(safe_action)
+        .join("logs");
+    fs::create_dir_all(&dir).ok()?;
+    Some(dir)
+}
+
+fn move_log_into_scope(
+    root: &Path,
+    scope: &str,
+    target: &str,
+    action: &str,
+    src: &Path,
+    hint: &str,
+) -> Option<PathBuf> {
+    if !src.exists() {
+        return None;
+    }
+    let dir = scoped_log_dir(root, scope, target, action)?;
+    let filename = src
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| {
+            format!(
+                "{}_{}.log",
+                sanitize_label(hint),
+                Local::now().format("%Y%m%d_%H%M%S")
+            )
+        });
+    let dest = dir.join(filename);
+    if fs::rename(src, &dest).is_err() {
+        let _ = fs::copy(src, &dest);
+    }
+    Some(dest)
+}
+
+fn write_scoped_log(
+    root: &Path,
+    scope: &str,
+    target: &str,
+    action: &str,
+    hint: &str,
+    lines: &[String],
+) -> Option<PathBuf> {
+    if rustyjack_evasion::logs_disabled() || lines.is_empty() {
+        return None;
+    }
+    let dir = scoped_log_dir(root, scope, target, action)?;
+    let fname = format!(
+        "{}_{}.log",
+        sanitize_label(hint),
+        Local::now().format("%Y%m%d_%H%M%S")
+    );
+    let path = dir.join(fname);
+    if let Ok(mut file) = fs::File::create(&path) {
+        for line in lines {
+            let _ = writeln!(file, "{line}");
+        }
+        Some(path)
+    } else {
+        None
     }
 }
 

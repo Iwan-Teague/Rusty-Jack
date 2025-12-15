@@ -30,7 +30,7 @@ use chrono::Local;
 use crate::deauth::{DeauthAttacker, DeauthConfig};
 use crate::error::{Result, WirelessError};
 use crate::netlink_helpers::{netlink_set_interface_down, netlink_set_interface_up, netlink_flush_addresses, netlink_add_address};
-use crate::process_helpers::{pkill_exact_force, pgrep_pattern};
+use crate::process_helpers::pkill_exact_force;
 use crate::frames::MacAddress;
 use crate::handshake::HandshakeCapture;
 use crate::interface::WirelessInterface;
@@ -150,7 +150,7 @@ impl EvilTwin {
 
     /// Check if required tools are available
     pub fn check_requirements() -> Result<Vec<String>> {
-        let mut missing = Vec::new();
+        let missing = Vec::new();
 
         // No external tools needed - we use Rust implementations
         // (AP, DHCP, DNS, iptables all via rustyjack-netlink)

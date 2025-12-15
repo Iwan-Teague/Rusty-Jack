@@ -231,7 +231,6 @@ pub fn get_interface_state(name: &str) -> Result<InterfaceState> {
 
 /// Set interface up or down using ioctl
 pub fn set_interface_state(name: &str, up: bool) -> Result<()> {
-    use std::process::Command;
 
     let state = if up { "up" } else { "down" };
     let status = Command::new("ip")

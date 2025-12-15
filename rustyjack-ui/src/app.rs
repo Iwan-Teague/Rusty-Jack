@@ -10043,7 +10043,7 @@ Do not remove power/USB",
         lines.push(String::new());
     }
 
-    fn generate_network_report(&self, network: &str) -> Result<(PathBuf, Vec<String>)> {
+    fn generate_network_report(&mut self, network: &str) -> Result<(PathBuf, Vec<String>)> {
         let reports_root = self.root.join("loot").join("reports");
         fs::create_dir_all(&reports_root).ok();
         let reports_dir = reports_root.join(network);

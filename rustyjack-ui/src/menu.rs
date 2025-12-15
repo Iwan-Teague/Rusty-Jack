@@ -195,6 +195,7 @@ impl MenuTree {
         nodes.insert("aethp", MenuNode::Static(ethernet_pipeline_menu));
         nodes.insert("enc", MenuNode::Static(encryption_menu));
         nodes.insert("encadv", MenuNode::Static(encryption_advanced_menu));
+        nodes.insert("encusb", MenuNode::Static(encryption_usb_menu));
         Self { nodes }
     }
 
@@ -252,6 +253,7 @@ fn wifi_menu() -> Vec<MenuEntry> {
 fn wireless_menu() -> Vec<MenuEntry> {
     vec![
         MenuEntry::new("Get Connected", MenuAction::Submenu("awa")),
+        MenuEntry::new("Add Network Profile", MenuAction::ConnectKnownNetwork),
         MenuEntry::new("Post Connection", MenuAction::Submenu("awc")),
         MenuEntry::new("Hotspot", MenuAction::Hotspot),
         MenuEntry::new("Manage Saved Networks", MenuAction::ManageSavedNetworks),
@@ -261,7 +263,6 @@ fn wireless_menu() -> Vec<MenuEntry> {
 fn wifi_access_menu() -> Vec<MenuEntry> {
     vec![
         MenuEntry::new("Select Target Network", MenuAction::ScanNetworks),
-        MenuEntry::new("Set Network Connection", MenuAction::ConnectKnownNetwork),
         MenuEntry::new("Pipelines", MenuAction::Submenu("ap")),
         MenuEntry::new("Recon", MenuAction::Submenu("awar")),
         MenuEntry::new("Offence", MenuAction::Submenu("awao")),
@@ -338,8 +339,7 @@ fn encryption_menu() -> Vec<MenuEntry> {
         MenuEntry::new("Webhook [OFF]", MenuAction::ToggleEncryptWebhook),
         MenuEntry::new("Loot [OFF]", MenuAction::ToggleEncryptLoot),
         MenuEntry::new("WiFi Profiles [OFF]", MenuAction::ToggleEncryptWifiProfiles),
-        MenuEntry::new("Load Key from USB", MenuAction::EncryptionLoadKey),
-        MenuEntry::new("Generate Key on USB", MenuAction::EncryptionGenerateKey),
+        MenuEntry::new("USB Settings", MenuAction::Submenu("encusb")),
         MenuEntry::new("Advanced", MenuAction::Submenu("encadv")),
     ]
 }
@@ -348,9 +348,16 @@ fn encryption_advanced_menu() -> Vec<MenuEntry> {
     vec![
         MenuEntry::new("Full Disk Encryption", MenuAction::FullDiskEncryptionSetup),
         MenuEntry::new(
-            "Run Migration (dry/destructive)",
+            "Migration (dry/de)",
             MenuAction::FullDiskEncryptionMigrate,
         ),
+    ]
+}
+
+fn encryption_usb_menu() -> Vec<MenuEntry> {
+    vec![
+        MenuEntry::new("Load Key from USB", MenuAction::EncryptionLoadKey),
+        MenuEntry::new("Generate Key on USB", MenuAction::EncryptionGenerateKey),
     ]
 }
 
@@ -541,6 +548,7 @@ pub fn menu_title(id: &str) -> &'static str {
         "aopp" => "Operating Mode",
         "atx" => "TX Power",
         "enc" => "Encryption",
+        "encusb" => "USB Settings",
         "encadv" => "Encryption: Advanced",
         _ => "Menu",
     }

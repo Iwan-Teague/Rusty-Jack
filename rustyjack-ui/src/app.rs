@@ -3114,7 +3114,7 @@ impl App {
             ],
         )?;
         let proceed_opts = vec![
-            "Proceed to device selection".to_string(),
+            "Select USB".to_string(),
             "Cancel".to_string(),
         ];
         if self

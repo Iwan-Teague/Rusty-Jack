@@ -1239,16 +1239,13 @@ impl App {
                 "No captures yet",
             ),
             LootSection::Reports => {
-                let lower = self.root.join("loot").join("reports");
-                let fallback = self.root.join("loot").join("Reports");
-                let mut list = Vec::new();
-                list.push(lower);
-                if fallback != list[0] {
-                    list.push(fallback);
-                }
-                (list, "Reports", "No reports yet")
+                (vec![self.root.join("loot").join("reports")], "Reports", "No reports yet")
             }
         };
+
+        if !bases.iter().any(|b| b.exists()) {
+            return self.show_message("Loot", [empty_msg]);
+        }
 
         // Get list of network folders (or special folders like probe_sniff, karma)
         let mut networks: Vec<(String, PathBuf)> = Vec::new();
@@ -9599,7 +9596,7 @@ Do not remove power/USB",
     fn collect_network_names(&self) -> Vec<String> {
         let mut set: HashSet<String> = HashSet::new();
         let loot = self.root.join("loot");
-        for name in ["Ethernet", "Wireless", "Reports", "reports"] {
+        for name in ["Ethernet", "Wireless", "reports"] {
             if let Ok(entries) = fs::read_dir(loot.join(name)) {
                 for entry in entries.flatten() {
                     if entry.path().is_dir() {

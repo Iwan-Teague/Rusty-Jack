@@ -61,5 +61,5 @@ else
     echo "Removed all loot under $loot_dir"
 fi
 
-mkdir -p "$loot_dir"/{Wireless,Ethernet,reports,Hotspot,Responder} "$loot_dir/Reports"
+mkdir -p "$loot_dir"/{Wireless,Ethernet,reports,Hotspot,Responder}
 echo "Recreated base loot directories."

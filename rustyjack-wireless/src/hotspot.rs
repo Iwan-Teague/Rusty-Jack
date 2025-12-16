@@ -13,6 +13,7 @@ use rustyjack_netlink::{AccessPoint, ApConfig, ApSecurity, IptablesManager};
 
 use crate::error::{Result, WirelessError};
 use crate::netlink_helpers::{netlink_set_interface_down, netlink_flush_addresses};
+use crate::nl80211::{set_interface_type_iw, Nl80211IfType};
 use crate::rfkill_helpers::{rfkill_unblock_all, rfkill_unblock, rfkill_list};
 use crate::process_helpers::pkill_pattern;
 
@@ -255,6 +256,21 @@ pub fn start_hotspot(config: HotspotConfig) -> Result<HotspotState> {
     
     eprintln!("[HOTSPOT] Flushing addresses...");
     run_cmd("ip", &["addr", "flush", "dev", &config.ap_interface])?;
+
+    // Ensure interface is in AP mode before setting channel to avoid EBUSY from nl80211
+    eprintln!("[HOTSPOT] Setting interface {} to AP mode...", config.ap_interface);
+    match set_interface_type_iw(&config.ap_interface, Nl80211IfType::Ap) {
+        Ok(_) => {
+            eprintln!("[HOTSPOT] Interface {} set to AP mode", config.ap_interface);
+        }
+        Err(e) => {
+            eprintln!("[HOTSPOT] ERROR: Failed to set interface to AP mode: {}", e);
+            return Err(WirelessError::System(format!(
+                "Failed to set {} to AP mode: {}",
+                config.ap_interface, e
+            )));
+        }
+    }
     
     eprintln!("[HOTSPOT] Adding IP address {}...", AP_GATEWAY);
     run_cmd(

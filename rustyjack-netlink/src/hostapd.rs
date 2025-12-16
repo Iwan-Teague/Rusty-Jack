@@ -39,6 +39,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use std::process::Command;
 
 use tokio::sync::{Mutex, RwLock};
 use tokio::task::JoinHandle;
@@ -281,11 +282,46 @@ impl AccessPoint {
         // Note: Interface mode setting would be done via iw command externally if needed
         // as set_interface_mode is not available in WirelessManager
         
-        // Set channel
-        self.wireless_mgr.set_channel(&self.config.interface, self.config.channel)
-            .map_err(|e| NetlinkError::System(
-                format!("Failed to set channel {} on {}: {}", self.config.channel, self.config.interface, e)
-            ))?;
+        // Set channel (fallback to iw if nl80211 returns EBUSY)
+        if let Err(e) = self.wireless_mgr.set_channel(&self.config.interface, self.config.channel) {
+            log::warn!(
+                "nl80211 set_channel failed for {} (ch {}): {}. Falling back to iw.",
+                self.config.interface,
+                self.config.channel,
+                e
+            );
+
+            let status = Command::new("iw")
+                .args([
+                    "dev",
+                    &self.config.interface,
+                    "set",
+                    "channel",
+                    &self.config.channel.to_string(),
+                ])
+                .status()
+                .map_err(|err| {
+                    NetlinkError::System(format!(
+                        "Failed to set channel {} on {} (netlink error: {e}); iw fallback failed to run: {err}",
+                        self.config.channel, self.config.interface
+                    ))
+                })?;
+
+            if !status.success() {
+                return Err(NetlinkError::System(format!(
+                    "Failed to set channel {} on {} (netlink error: {e}); iw exit status {}",
+                    self.config.channel,
+                    self.config.interface,
+                    status
+                )));
+            }
+
+            log::info!(
+                "Channel set via iw fallback on {} (ch {})",
+                self.config.interface,
+                self.config.channel
+            );
+        }
         
         *self.running.lock().await = true;
         self.start_time = Some(Instant::now());
@@ -535,7 +571,6 @@ mod tests {
         assert!(invalid.is_err());
     }
 }
-
 
 
 

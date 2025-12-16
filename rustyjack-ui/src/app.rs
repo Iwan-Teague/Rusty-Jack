@@ -8334,6 +8334,40 @@ Do not remove power/USB",
 
         #[cfg(target_os = "linux")]
         {
+            let mut connected_warn = false;
+            if let Ok(status) = self.fetch_wifi_status(Some(active_interface.clone())) {
+                if status.connected {
+                    connected_warn = true;
+                    let _ = self.show_message(
+                        "Randomize MAC",
+                        [
+                            &format!(
+                                "Interface {} is connected{}",
+                                active_interface,
+                                status
+                                    .ssid
+                                    .as_ref()
+                                    .map(|s| format!(" ({})", s))
+                                    .unwrap_or_default()
+                            ),
+                            "Changing MAC will force reconnect",
+                            "Proceed?",
+                        ],
+                    );
+                    let opts = vec![
+                        "Proceed (reconnect)".to_string(),
+                        "Cancel".to_string(),
+                    ];
+                    if self
+                        .choose_from_list("Randomize MAC", &opts)?
+                        .map(|i| i != 0)
+                        .unwrap_or(true)
+                    {
+                        return Ok(());
+                    }
+                }
+            }
+
             self.show_progress(
                 "Randomize MAC",
                 [
@@ -8344,7 +8378,7 @@ Do not remove power/USB",
             )?;
 
             match randomize_mac_with_reconnect(&active_interface) {
-                Ok((state, reconnect_ok)) => {
+                Ok((state, reconnect_ok, vendor_reused)) => {
                     let original_mac = state.original_mac.to_string();
                     let new_mac = state.current_mac.to_string();
 
@@ -8363,11 +8397,13 @@ Do not remove power/USB",
                     let mut lines = vec![
                         format!("Interface: {}", active_interface),
                         "".to_string(),
-                        "New MAC:".to_string(),
-                        new_mac,
+                        format!("Old -> New"),
+                        format!("{original_mac} -> {new_mac}"),
                         "".to_string(),
-                        "Original saved:".to_string(),
-                        original_mac,
+                        format!(
+                            "Vendor OUI reused: {}",
+                            if vendor_reused { "yes" } else { "no" }
+                        ),
                         "".to_string(),
                     ];
 
@@ -8378,6 +8414,20 @@ Do not remove power/USB",
                         lines.push("Warning: reconnect may".to_string());
                         lines.push("have failed. Check DHCP.".to_string());
                     }
+
+                    if connected_warn {
+                        lines.push("Note: Interface was connected;".to_string());
+                        lines.push("MAC change forced reconnect.".to_string());
+                    }
+
+                    let _ = write_scoped_log(
+                        &self.root,
+                        "Wireless",
+                        &active_interface,
+                        "Mac",
+                        "mac_randomize",
+                        &lines,
+                    );
 
                     self.scrollable_text_viewer("MAC Randomized", &lines, false)
                 }

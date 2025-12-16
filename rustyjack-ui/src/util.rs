@@ -4,12 +4,14 @@
 //! require access to the App state.
 
 use anyhow::{Context, Result};
+use chrono::Local;
 use std::{
     fs,
     io::{BufRead, BufReader},
-    path::Path,
+    path::{Path, PathBuf},
     process::Command,
 };
+use rustyjack_evasion::logs_disabled;
 
 /// Count the number of lines in a file
 pub fn count_lines(path: &Path) -> std::io::Result<usize> {
@@ -63,6 +65,59 @@ pub fn shorten_for_display(value: &str, max_len: usize) -> String {
     let start = &value[..prefix.min(value.len())];
     let end = &value[value.len().saturating_sub(suffix)..];
     format!("{start}...{end}")
+}
+
+fn sanitize_component(input: &str) -> String {
+    if input.trim().is_empty() {
+        return "unknown".to_string();
+    }
+    let mut out = String::with_capacity(input.len());
+    for ch in input.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+            out.push(ch);
+        } else {
+            out.push('_');
+        }
+    }
+    out
+}
+
+/// Write a scoped log under loot/<scope>/<target>/<action>/logs/.
+/// Respects RUSTYJACK_LOGS_DISABLED and returns the written path if successful.
+pub fn write_scoped_log(
+    root: &Path,
+    scope: &str,
+    target: &str,
+    action: &str,
+    name: &str,
+    lines: &[String],
+) -> Option<PathBuf> {
+    if logs_disabled() || lines.is_empty() {
+        return None;
+    }
+    let dir = root
+        .join("loot")
+        .join(scope)
+        .join(sanitize_component(target))
+        .join(sanitize_component(action))
+        .join("logs");
+    if fs::create_dir_all(&dir).is_err() {
+        return None;
+    }
+    let fname = format!(
+        "{}_{}.log",
+        sanitize_component(name),
+        Local::now().format("%Y%m%d_%H%M%S")
+    );
+    let path = dir.join(fname);
+    if let Ok(mut file) = fs::File::create(&path) {
+        for line in lines {
+            let _ = writeln!(file, "{line}");
+        }
+        Some(path)
+    } else {
+        None
+    }
 }
 
 /// Get a human-readable description of a port's typical service
@@ -192,7 +247,9 @@ pub fn renew_dhcp_and_reconnect(interface: &str) -> bool {
 }
 
 #[cfg(target_os = "linux")]
-pub fn generate_vendor_aware_mac(interface: &str) -> Result<rustyjack_evasion::MacAddress> {
+pub fn generate_vendor_aware_mac(
+    interface: &str,
+) -> Result<(rustyjack_evasion::MacAddress, bool)> {
     use rustyjack_evasion::{MacAddress, VendorOui};
 
     let current = std::fs::read_to_string(format!("/sys/class/net/{}/address", interface))
@@ -206,29 +263,29 @@ pub fn generate_vendor_aware_mac(interface: &str) -> Result<rustyjack_evasion::M
             // Preserve vendor flavor but force locally administered + unicast bits
             bytes[0] = (bytes[0] | 0x02) & 0xFE;
             candidate = MacAddress::new(bytes);
-            return Ok(candidate);
+            return Ok((candidate, true));
         }
     }
 
-    Ok(MacAddress::random()?)
+    Ok((MacAddress::random()?, false))
 }
 
 #[cfg(target_os = "linux")]
 pub fn randomize_mac_with_reconnect(
     interface: &str,
-) -> Result<(rustyjack_evasion::MacState, bool)> {
+) -> Result<(rustyjack_evasion::MacState, bool, bool)> {
     use rustyjack_evasion::MacManager;
 
     let mut manager = MacManager::new().context("creating MacManager")?;
     manager.set_auto_restore(false);
 
-    let new_mac = generate_vendor_aware_mac(interface)?;
+    let (new_mac, vendor_reused) = generate_vendor_aware_mac(interface)?;
     let state = manager
         .set_mac(interface, &new_mac)
         .context("setting randomized MAC")?;
 
     let reconnect_ok = renew_dhcp_and_reconnect(interface);
-    Ok((state, reconnect_ok))
+    Ok((state, reconnect_ok, vendor_reused))
 }
 
 /// Auto-randomize MAC before attack if enabled in settings

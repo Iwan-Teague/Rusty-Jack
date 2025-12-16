@@ -18,12 +18,11 @@ use rand::rngs::OsRng;
 use rand::RngCore;
 use rustyjack_core::anti_forensics::perform_complete_purge;
 use rustyjack_core::cli::{
-    Commands, DiscordCommand, DiscordSendArgs,
-    DnsSpoofCommand, DnsSpoofStartArgs, EthernetCommand, EthernetDiscoverArgs,
-    EthernetInventoryArgs, EthernetPortScanArgs, EthernetSiteCredArgs, HardwareCommand,
-    HotspotCommand, HotspotStartArgs, LootCommand, LootReadArgs, MitmCommand, MitmStartArgs,
-    NotifyCommand, ResponderArgs, ResponderCommand, ReverseCommand, ReverseLaunchArgs,
-    SystemCommand, WifiCommand, WifiDeauthArgs, WifiDisconnectArgs,
+    Commands, DiscordCommand, DiscordSendArgs, DnsSpoofCommand, DnsSpoofStartArgs, EthernetCommand,
+    EthernetDiscoverArgs, EthernetInventoryArgs, EthernetPortScanArgs, EthernetSiteCredArgs,
+    HardwareCommand, HotspotCommand, HotspotStartArgs, LootCommand, LootReadArgs, MitmCommand,
+    MitmStartArgs, NotifyCommand, ResponderArgs, ResponderCommand, ReverseCommand,
+    ReverseLaunchArgs, SystemCommand, WifiCommand, WifiDeauthArgs, WifiDisconnectArgs,
     WifiProfileCommand, WifiProfileConnectArgs, WifiProfileDeleteArgs, WifiProfileSaveArgs,
     WifiRouteCommand, WifiRouteEnsureArgs, WifiScanArgs, WifiStatusArgs,
 };
@@ -36,11 +35,9 @@ use zeroize::Zeroize;
 use zip::{write::FileOptions, CompressionMethod, ZipWriter};
 
 #[cfg(target_os = "linux")]
-use rustyjack_wireless::{
-    crack::{
-        generate_common_passwords, generate_ssid_passwords, CrackProgress, CrackResult,
-        CrackerConfig, WpaCracker,
-    },
+use rustyjack_wireless::crack::{
+    generate_common_passwords, generate_ssid_passwords, CrackProgress, CrackResult, CrackerConfig,
+    WpaCracker,
 };
 
 use crate::{
@@ -1166,10 +1163,7 @@ impl App {
             ("Navy", "#000080"),
             ("Purple", "#AA00FF"),
         ];
-        let labels: Vec<String> = choices
-            .iter()
-            .map(|(name, _)| name.to_string())
-            .collect();
+        let labels: Vec<String> = choices.iter().map(|(name, _)| name.to_string()).collect();
 
         if let Some(idx) = self.choose_from_menu("Pick Color", &labels)? {
             let (_name, hex) = choices[idx];
@@ -1225,7 +1219,6 @@ impl App {
         }
     }
 
-
     fn show_loot(&mut self, section: LootSection) -> Result<()> {
         let (bases, menu_title, empty_msg) = match section {
             LootSection::Wireless => (
@@ -1238,9 +1231,11 @@ impl App {
                 "Ethernet Targets",
                 "No captures yet",
             ),
-            LootSection::Reports => {
-                (vec![self.root.join("loot").join("reports")], "Reports", "No reports yet")
-            }
+            LootSection::Reports => (
+                vec![self.root.join("loot").join("reports")],
+                "Reports",
+                "No reports yet",
+            ),
         };
 
         if !bases.iter().any(|b| b.exists()) {
@@ -1403,19 +1398,16 @@ impl App {
 
     fn view_loot_file(&mut self, path: &str) -> Result<()> {
         let file_path = PathBuf::from(path);
-        
+
         // Check if file is encrypted
         if path.ends_with(".enc") {
-            let opts = vec![
-                "Decrypt in RAM".to_string(),
-                "Cancel".to_string(),
-            ];
-            
+            let opts = vec!["Decrypt in RAM".to_string(), "Cancel".to_string()];
+
             let choice = self.choose_from_list("Encrypted File", &opts)?;
             if choice != Some(0) {
                 return Ok(());
             }
-            
+
             // Decrypt in RAM
             let decrypted_bytes = match rustyjack_encryption::decrypt_file(&file_path) {
                 Ok(bytes) => bytes,
@@ -1429,7 +1421,7 @@ impl App {
                     );
                 }
             };
-            
+
             // Convert to string
             let content = match String::from_utf8(decrypted_bytes) {
                 Ok(s) => s,
@@ -1440,12 +1432,12 @@ impl App {
                     );
                 }
             };
-            
+
             // Split into lines with limit
             let max_lines = 5000;
             let mut lines = Vec::new();
             let mut truncated = false;
-            
+
             for (idx, line) in content.lines().enumerate() {
                 if idx >= max_lines {
                     truncated = true;
@@ -1453,21 +1445,21 @@ impl App {
                 }
                 lines.push(line.to_string());
             }
-            
+
             if lines.is_empty() {
                 return self.show_message("Loot", ["File is empty"]);
             }
-            
+
             let filename = file_path
                 .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or("file")
                 .to_string();
-            
+
             // Display decrypted content (content will be dropped after this returns)
             return self.scrollable_text_viewer(&filename, &lines, truncated);
         }
-        
+
         // For non-encrypted files, use the normal read path
         let read_args = LootReadArgs {
             path: file_path.clone(),
@@ -1950,16 +1942,13 @@ impl App {
             if self.wifi_encryption_active() && !used_key {
                 return Ok(());
             }
-            
+
             // Directly load profile from disk without connecting
             use rustyjack_core::system::load_wifi_profile;
             let profile_data = match load_wifi_profile(&self.root, ssid) {
                 Ok(Some(stored)) => stored,
                 Ok(None) => {
-                    return self.show_message(
-                        "Saved Networks",
-                        ["Profile not found"],
-                    );
+                    return self.show_message("Saved Networks", ["Profile not found"]);
                 }
                 Err(e) => {
                     return self.show_message(
@@ -1972,7 +1961,9 @@ impl App {
                 }
             };
 
-            let pwd = profile_data.profile.password
+            let pwd = profile_data
+                .profile
+                .password
                 .as_deref()
                 .unwrap_or("<no password>");
 
@@ -2520,10 +2511,10 @@ impl App {
     fn generate_encryption_key_on_usb(&mut self) -> Result<()> {
         // Guard rail: Prevent key generation if encryption is active with encrypted data
         if self.config.settings.encryption_enabled {
-            let has_encrypted_data = self.config.settings.encrypt_loot 
-                || self.config.settings.encrypt_wifi_profiles 
+            let has_encrypted_data = self.config.settings.encrypt_loot
+                || self.config.settings.encrypt_wifi_profiles
                 || self.config.settings.encrypt_discord_webhook;
-            
+
             if has_encrypted_data {
                 let warning = vec![
                     "DANGER: Encryption Active".to_string(),
@@ -2702,18 +2693,21 @@ impl App {
             let transport = parts.pop().unwrap_or_default();
             let removable = parts.get(1).map(|s| s == "1").unwrap_or(false);
             let name = parts.get(0).cloned().unwrap_or_default();
-            
+
             // Skip known system devices
-            if name.starts_with("/dev/mmcblk") || name.starts_with("/dev/loop") || name.starts_with("/dev/ram") {
+            if name.starts_with("/dev/mmcblk")
+                || name.starts_with("/dev/loop")
+                || name.starts_with("/dev/ram")
+            {
                 continue;
             }
-            
+
             // Accept if EITHER removable=1 OR transport=usb (more permissive)
             let is_usb_transport = transport.eq_ignore_ascii_case("usb");
             if !removable && !is_usb_transport {
                 continue;
             }
-            
+
             let size = parts.get(2).cloned().unwrap_or_default();
             let model = if parts.len() > 3 {
                 parts[3..].join(" ")
@@ -3113,10 +3107,7 @@ impl App {
                 "and re-encrypting the SD root; power loss can brick.",
             ],
         )?;
-        let proceed_opts = vec![
-            "Select USB".to_string(),
-            "Cancel".to_string(),
-        ];
+        let proceed_opts = vec!["Select USB".to_string(), "Cancel".to_string()];
         if self
             .choose_from_list("Continue?", &proceed_opts)?
             .map(|i| i != 0)
@@ -3175,7 +3166,10 @@ impl App {
         // FDE migration feature not yet implemented
         self.show_message(
             "FDE Migration",
-            ["Feature not yet implemented", "Use command line tools instead"],
+            [
+                "Feature not yet implemented",
+                "Use command line tools instead",
+            ],
         )?;
         Ok(())
     }
@@ -3662,7 +3656,7 @@ Do not remove power/USB",
 
     fn find_all_usb_mounts(&self) -> Result<Vec<PathBuf>> {
         let mut found_mounts = Vec::new();
-        
+
         // First, find USB block devices by checking /sys/block/
         let usb_devices = self.find_usb_block_devices();
 
@@ -3704,8 +3698,10 @@ Do not remove power/USB",
                         if let Ok(sub_entries) = fs::read_dir(&path) {
                             for sub_entry in sub_entries.flatten() {
                                 let sub_path = sub_entry.path();
-                                if sub_path.is_dir() && self.is_usb_storage_mount(&sub_path) 
-                                    && !found_mounts.contains(&sub_path) {
+                                if sub_path.is_dir()
+                                    && self.is_usb_storage_mount(&sub_path)
+                                    && !found_mounts.contains(&sub_path)
+                                {
                                     found_mounts.push(sub_path);
                                 }
                             }
@@ -3736,7 +3732,7 @@ Do not remove power/USB",
 
     fn select_usb_mount(&mut self) -> Result<Option<PathBuf>> {
         let all_usb = self.find_all_usb_mounts()?;
-        
+
         if all_usb.is_empty() {
             self.show_message(
                 "USB",
@@ -3744,29 +3740,27 @@ Do not remove power/USB",
             )?;
             return Ok(None);
         }
-        
+
         if all_usb.len() == 1 {
             return Ok(Some(all_usb.into_iter().next().unwrap()));
         }
-        
+
         // Multiple USB drives found, let user choose
         let options: Vec<String> = all_usb
             .iter()
             .map(|p| {
-                let name = p.file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("USB");
+                let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("USB");
                 format!("{} ({})", name, p.display())
             })
             .collect();
-        
+
         if let Some(idx) = self.choose_from_list("Select USB Drive", &options)? {
             Ok(Some(all_usb[idx].clone()))
         } else {
             Ok(None)
         }
     }
-    
+
     /// Attempt to automatically mount a USB device
     fn try_auto_mount_usb(&self, usb_devices: &[String]) -> Result<Option<PathBuf>> {
         for usb_dev in usb_devices {
@@ -3775,9 +3769,9 @@ Do not remove power/USB",
             if !sys_dev.exists() {
                 continue;
             }
-            
+
             let mut candidates = Vec::new();
-            
+
             // Look for partition subdirectories (e.g., sda1, sda2)
             if let Ok(entries) = fs::read_dir(&sys_dev) {
                 for entry in entries.flatten() {
@@ -3787,25 +3781,25 @@ Do not remove power/USB",
                     }
                 }
             }
-            
+
             // If no partitions, try the device itself
             if candidates.is_empty() {
                 candidates.push(format!("/dev/{}", usb_dev));
             }
-            
+
             // Try mounting each candidate
             for device in candidates {
                 let mount_point = PathBuf::from("/mnt/rustyjack_usb");
-                
+
                 // Create mount point
                 let _ = fs::create_dir_all(&mount_point);
-                
+
                 // Try to mount with various common filesystems
                 let mount_result = Command::new("mount")
                     .arg(&device)
                     .arg(&mount_point)
                     .output();
-                
+
                 if mount_result.is_ok() && mount_result.unwrap().status.success() {
                     // Verify it's writable
                     if self.is_writable_mount(&mount_point) {
@@ -3817,7 +3811,7 @@ Do not remove power/USB",
                 }
             }
         }
-        
+
         Ok(None)
     }
 
@@ -3865,7 +3859,7 @@ Do not remove power/USB",
                         lower.contains("usb-storage") || lower.contains("usb")
                     })
                     .unwrap_or(false);
-                
+
                 // Additional check: look for USB subsystem in device hierarchy
                 let subsystem_path = entry.path().join("device").join("subsystem");
                 let has_usb_subsystem = fs::read_link(&subsystem_path)
@@ -4222,14 +4216,14 @@ Do not remove power/USB",
                                         } else {
                                             lines.push("Other interfaces disabled".to_string());
                                         }
-                                        
+
                                         // Try to ensure route (will succeed if already connected)
                                         if let Some(route_msg) =
                                             self.ensure_route_for_interface(&interface_name)?
                                         {
                                             lines.push(route_msg);
                                         }
-                                        
+
                                         self.show_message(
                                             "Active Interface",
                                             lines.iter().map(|s| s.as_str()),
@@ -4290,7 +4284,6 @@ Do not remove power/USB",
         Ok(())
     }
 
-
     fn start_responder(&mut self) -> Result<()> {
         let Some(iface) = self.require_connected_wireless("Responder")? else {
             return Ok(());
@@ -4348,7 +4341,7 @@ Do not remove power/USB",
         // Check current status
         use rustyjack_core::system::process_running_pattern;
         let is_running = process_running_pattern("Responder.py").unwrap_or(false);
-        
+
         if is_running {
             self.stop_responder()
         } else {
@@ -4360,7 +4353,7 @@ Do not remove power/USB",
         // Check current status
         use rustyjack_core::system::process_running_exact;
         let is_running = process_running_exact("ettercap").unwrap_or(false);
-        
+
         if is_running {
             self.stop_dns_spoof()
         } else {
@@ -5138,7 +5131,6 @@ Do not remove power/USB",
         }
     }
 
-
     fn scan_wifi_networks(&mut self) -> Result<()> {
         if !self.mode_allows_active("Wi-Fi scanning disabled in Stealth")? {
             return Ok(());
@@ -5356,7 +5348,7 @@ Do not remove power/USB",
         let quarter = duration_secs / 4;
         let half = duration_secs / 2;
         let three_quarter = (duration_secs * 3) / 4;
-        
+
         let progress_stages = vec![
             (0, "Killing processes..."),
             (2, "Monitor mode enabled"),
@@ -6959,14 +6951,11 @@ Do not remove power/USB",
             "Indefinite Mode".to_string(),
             "Cancel".to_string(),
         ];
-        let mode_choice = self.choose_from_list(
-            "Pipeline Mode",
-            &mode_options,
-        )?;
+        let mode_choice = self.choose_from_list("Pipeline Mode", &mode_options)?;
 
         let indefinite_mode = match mode_choice {
-            Some(0) => false, // Standard
-            Some(1) => true,  // Indefinite
+            Some(0) => false,   // Standard
+            Some(1) => true,    // Indefinite
             _ => return Ok(()), // Cancel
         };
 
@@ -7226,12 +7215,8 @@ Do not remove power/USB",
                 } else {
                     format!("{} [LEFT=Cancel]", step)
                 };
-                self.display.draw_progress_dialog(
-                    title,
-                    &status_text,
-                    progress,
-                    &overlay,
-                )?;
+                self.display
+                    .draw_progress_dialog(title, &status_text, progress, &overlay)?;
 
                 // Execute the step based on pipeline type and step index
                 let step_result = match pipeline_type {
@@ -7266,7 +7251,13 @@ Do not remove power/USB",
 
                 // Update result from step
                 match step_result {
-                    StepOutcome::Completed(Some((pmkids, handshakes, password, networks, clients))) => {
+                    StepOutcome::Completed(Some((
+                        pmkids,
+                        handshakes,
+                        password,
+                        networks,
+                        clients,
+                    ))) => {
                         result.pmkids_captured += pmkids;
                         result.handshakes_captured += handshakes;
                         let password_found = password.is_some();
@@ -7275,17 +7266,17 @@ Do not remove power/USB",
                         }
                         result.networks_found += networks;
                         result.clients_found += clients;
-                        
+
                         // In indefinite mode, check if step actually captured what it needed
                         if indefinite_mode {
                             step_successful = match i {
-                                0 => networks > 0,  // Scan needs to find networks
-                                1 => pmkids > 0,    // PMKID needs captures
+                                0 => networks > 0,       // Scan needs to find networks
+                                1 => pmkids > 0,         // PMKID needs captures
                                 2 | 3 => handshakes > 0, // Deauth/capture needs handshakes
-                                4 => password_found, // Crack needs password
-                                _ => true, // Other steps always progress
+                                4 => password_found,     // Crack needs password
+                                _ => true,               // Other steps always progress
                             };
-                            
+
                             // Log what we're waiting for if not successful
                             if !step_successful {
                                 let waiting_for = match i {
@@ -7295,7 +7286,11 @@ Do not remove power/USB",
                                     4 => "password to be cracked",
                                     _ => "results",
                                 };
-                                eprintln!("[PIPELINE] Step {} incomplete: waiting for {}", i + 1, waiting_for);
+                                eprintln!(
+                                    "[PIPELINE] Step {} incomplete: waiting for {}",
+                                    i + 1,
+                                    waiting_for
+                                );
                             }
                         } else {
                             step_successful = true; // Standard mode always progresses
@@ -7341,11 +7336,11 @@ Do not remove power/USB",
                         )?;
                         return Ok(result);
                     }
-                    
+
                     // Show brief message before retry
                     let retry_msg = format!("Retry {}/{}", retry_count, MAX_RETRIES);
                     eprintln!("[PIPELINE] {}", retry_msg);
-                    
+
                     // Brief pause before retry
                     std::thread::sleep(std::time::Duration::from_secs(2));
                 }
@@ -8354,10 +8349,7 @@ Do not remove power/USB",
                             "Proceed?",
                         ],
                     );
-                    let opts = vec![
-                        "Proceed (reconnect)".to_string(),
-                        "Cancel".to_string(),
-                    ];
+                    let opts = vec!["Proceed (reconnect)".to_string(), "Cancel".to_string()];
                     if self
                         .choose_from_list("Randomize MAC", &opts)?
                         .map(|i| i != 0)
@@ -11383,7 +11375,12 @@ Do not remove power/USB",
                 match (running, choice) {
                     (true, Some(0)) => {
                         // Network Info
-                        self.show_hotspot_network_info(&current_ssid, &current_password, &ap_iface, &upstream_iface)?;
+                        self.show_hotspot_network_info(
+                            &current_ssid,
+                            &current_password,
+                            &ap_iface,
+                            &upstream_iface,
+                        )?;
                     }
                     (true, Some(1)) => {
                         // Connected Devices
@@ -11403,15 +11400,10 @@ Do not remove power/USB",
                     }
                     (true, None) => {
                         // User is trying to exit while hotspot is running - confirm
-                        let confirm_options = vec![
-                            "Turn off & exit".to_string(),
-                            "Keep running".to_string(),
-                        ];
-                        let confirm = self.choose_from_list(
-                            "Hotspot Active",
-                            &confirm_options,
-                        )?;
-                        
+                        let confirm_options =
+                            vec!["Turn off & exit".to_string(), "Keep running".to_string()];
+                        let confirm = self.choose_from_list("Hotspot Active", &confirm_options)?;
+
                         match confirm {
                             Some(0) => {
                                 // Turn off hotspot and exit
@@ -11665,7 +11657,7 @@ Do not remove power/USB",
             lines.push("Upstream: None (offline)".to_string());
         } else {
             lines.push(format!("Upstream: {}", upstream_iface));
-            
+
             // Check if upstream has IP/internet
             if interface_has_ip(upstream_iface) {
                 lines.push("Status: Online".to_string());
@@ -11713,7 +11705,7 @@ Do not remove power/USB",
         let loot_hotspot_dir = self.root.join("loot").join("Hotspot");
         fs::create_dir_all(&loot_hotspot_dir).ok();
         let history_path = loot_hotspot_dir.join("device_history.txt");
-        
+
         // Read existing history to avoid duplicate logging
         let mut logged_devices = HashSet::new();
         if let Ok(history_content) = fs::read_to_string(&history_path) {
@@ -11736,7 +11728,7 @@ Do not remove power/USB",
                     let mac = parts[1].to_lowercase();
                     let ip = parts[2];
                     let hostname = if parts[3] == "*" { "Unknown" } else { parts[3] };
-                    
+
                     // Log to history file only if this MAC hasn't been logged before
                     if !logged_devices.contains(&mac) {
                         let now = Local::now().format("%Y-%m-%d %H:%M:%S");
@@ -11753,12 +11745,18 @@ Do not remove power/USB",
                         }
                         logged_devices.insert(mac.clone());
                     }
-                    
+
                     // Skip blacklisted devices
-                    if self.config.settings.hotspot_blacklist.iter().any(|d| d.mac.to_lowercase() == mac) {
+                    if self
+                        .config
+                        .settings
+                        .hotspot_blacklist
+                        .iter()
+                        .any(|d| d.mac.to_lowercase() == mac)
+                    {
                         continue;
                     }
-                    
+
                     // Only add to display list if currently active
                     if active_macs.contains(&mac) {
                         clients.push((mac.to_string(), ip.to_string(), hostname.to_string()));
@@ -11805,7 +11803,9 @@ Do not remove power/USB",
                             u8::from_str_radix(oui_parts[1], 16),
                             u8::from_str_radix(oui_parts[2], 16),
                         ) {
-                            if let Some(vendor_oui) = rustyjack_evasion::VendorOui::from_oui([b0, b1, b2]) {
+                            if let Some(vendor_oui) =
+                                rustyjack_evasion::VendorOui::from_oui([b0, b1, b2])
+                            {
                                 details.push(format!("Vendor: {}", vendor_oui.name));
                             }
                         }
@@ -11820,9 +11820,9 @@ Do not remove power/USB",
                     "Disconnect Device".to_string(),
                     "Back".to_string(),
                 ];
-                
+
                 let action_choice = self.choose_from_list("Device Actions", &options)?;
-                
+
                 match action_choice {
                     Some(0) => {
                         // Add to blacklist
@@ -11864,16 +11864,16 @@ Do not remove power/USB",
             .ok()
             .and_then(|s| s.trim().parse::<u64>().ok())
             .unwrap_or(0);
-        
+
         let mut last_update = Instant::now();
         let update_interval = Duration::from_secs(2);
-        
+
         loop {
             // Check for button press first (non-blocking)
             if let Ok(Some(_)) = self.buttons.try_read() {
                 break;
             }
-            
+
             // Update stats if enough time has passed
             if last_update.elapsed() >= update_interval {
                 // Read current values
@@ -11908,13 +11908,13 @@ Do not remove power/USB",
                 // Draw dialog without blocking
                 let status = self.stats.snapshot();
                 self.display.draw_dialog(&lines, &status)?;
-                
+
                 // Update for next iteration
                 rx_start = rx_end;
                 tx_start = tx_end;
                 last_update = Instant::now();
             }
-            
+
             // Small sleep to avoid busy waiting
             thread::sleep(Duration::from_millis(100));
         }
@@ -11924,7 +11924,7 @@ Do not remove power/USB",
 
     fn manage_hotspot_blacklist(&mut self) -> Result<()> {
         let blacklist = self.config.settings.hotspot_blacklist.clone();
-        
+
         if blacklist.is_empty() {
             return self.show_message("Device Blacklist", ["No devices blacklisted"]);
         }
@@ -11958,10 +11958,7 @@ Do not remove power/USB",
                 self.show_message("Blacklisted Device", details.iter().map(|s| s.as_str()))?;
 
                 // Offer to remove from blacklist
-                let options = vec![
-                    "Remove from Blacklist".to_string(),
-                    "Back".to_string(),
-                ];
+                let options = vec!["Remove from Blacklist".to_string(), "Back".to_string()];
 
                 let action = self.choose_from_list("Actions", &options)?;
 
@@ -11975,15 +11972,17 @@ Do not remove power/USB",
     }
 
     fn add_to_hotspot_blacklist(&mut self, mac: &str, hostname: &str, ip: &str) -> Result<()> {
-        if self.config.settings.hotspot_blacklist.iter().any(|d| d.mac == mac) {
+        if self
+            .config
+            .settings
+            .hotspot_blacklist
+            .iter()
+            .any(|d| d.mac == mac)
+        {
             return self.show_message("Blacklist", ["Device already", "in blacklist"]);
         }
 
-        let device = BlacklistedDevice::new(
-            mac.to_string(),
-            hostname.to_string(),
-            ip.to_string(),
-        );
+        let device = BlacklistedDevice::new(mac.to_string(), hostname.to_string(), ip.to_string());
 
         self.config.settings.hotspot_blacklist.push(device);
         let config_path = self.root.join("gui_conf.json");
@@ -12020,7 +12019,10 @@ Do not remove power/USB",
     }
 
     fn remove_from_hotspot_blacklist(&mut self, mac: &str) -> Result<()> {
-        self.config.settings.hotspot_blacklist.retain(|d| d.mac != mac);
+        self.config
+            .settings
+            .hotspot_blacklist
+            .retain(|d| d.mac != mac);
         let config_path = self.root.join("gui_conf.json");
         self.config.save(&config_path)?;
 

@@ -24,11 +24,15 @@ impl RouteManager {
     ///
     /// Returns error if netlink connection cannot be established.
     pub fn new() -> Result<Self> {
-        let (connection, handle, _) = new_connection()
-            .map_err(|e| NetlinkError::runtime("creating netlink connection for route management", e.to_string()))?;
-        
+        let (connection, handle, _) = new_connection().map_err(|e| {
+            NetlinkError::runtime(
+                "creating netlink connection for route management",
+                e.to_string(),
+            )
+        })?;
+
         tokio::spawn(connection);
-        
+
         Ok(Self { handle })
     }
 
@@ -63,10 +67,12 @@ impl RouteManager {
             });
         }
         let index = self.get_interface_index(interface).await?;
-        
+
         match gateway {
             IpAddr::V4(gw) => {
-                self.handle.route().add()
+                self.handle
+                    .route()
+                    .add()
                     .v4()
                     .gateway(gw)
                     .output_interface(index)
@@ -80,7 +86,9 @@ impl RouteManager {
                     })?;
             }
             IpAddr::V6(gw) => {
-                self.handle.route().add()
+                self.handle
+                    .route()
+                    .add()
                     .v6()
                     .gateway(gw)
                     .output_interface(index)
@@ -94,7 +102,7 @@ impl RouteManager {
                     })?;
             }
         }
-        
+
         log::info!("Added default route via {} on {}", gateway, interface);
         Ok(())
     }
@@ -109,14 +117,19 @@ impl RouteManager {
     /// * `Runtime` - Failed to enumerate routes
     pub async fn delete_default_route(&self) -> Result<()> {
         let mut routes = self.handle.route().get(rtnetlink::IpVersion::V4).execute();
-        
-        while let Some(route) = routes.try_next().await
-            .map_err(|e| NetlinkError::ListRoutesError { reason: e.to_string() })? 
+
+        while let Some(route) =
+            routes
+                .try_next()
+                .await
+                .map_err(|e| NetlinkError::ListRoutesError {
+                    reason: e.to_string(),
+                })?
         {
             let mut is_default = false;
             let mut gateway = None;
             let mut oif = None;
-            
+
             for nla in &route.attributes {
                 match nla {
                     RouteAttribute::Destination(dst) => {
@@ -141,11 +154,11 @@ impl RouteManager {
                     _ => {}
                 }
             }
-            
+
             if is_default {
                 let mut del = self.handle.route().del(route.clone());
                 del.message_mut().header = route.header;
-                
+
                 del.execute()
                     .await
                     .map_err(|e| NetlinkError::DeleteRouteError {
@@ -153,11 +166,15 @@ impl RouteManager {
                         interface: format!("{:?}", oif),
                         reason: e.to_string(),
                     })?;
-                
-                log::info!("Deleted default route via {:?} on interface {:?}", gateway, oif);
+
+                log::info!(
+                    "Deleted default route via {:?} on interface {:?}",
+                    gateway,
+                    oif
+                );
             }
         }
-        
+
         Ok(())
     }
 
@@ -184,15 +201,20 @@ impl RouteManager {
     pub async fn list_routes(&self) -> Result<Vec<RouteInfo>> {
         let mut routes_v4 = self.handle.route().get(rtnetlink::IpVersion::V4).execute();
         let mut route_list = Vec::new();
-        
-        while let Some(route) = routes_v4.try_next().await
-            .map_err(|e| NetlinkError::ListRoutesError { reason: e.to_string() })? 
+
+        while let Some(route) =
+            routes_v4
+                .try_next()
+                .await
+                .map_err(|e| NetlinkError::ListRoutesError {
+                    reason: e.to_string(),
+                })?
         {
             let mut destination = None;
             let mut gateway = None;
             let mut oif = None;
             let prefix_len = route.header.destination_prefix_length;
-            
+
             for nla in route.attributes {
                 match nla {
                     RouteAttribute::Destination(dst) => {
@@ -207,7 +229,7 @@ impl RouteManager {
                     _ => {}
                 }
             }
-            
+
             if destination.is_some() || gateway.is_some() {
                 route_list.push(RouteInfo {
                     destination,
@@ -217,7 +239,7 @@ impl RouteManager {
                 });
             }
         }
-        
+
         Ok(route_list)
     }
 
@@ -229,18 +251,28 @@ impl RouteManager {
                 reason: "Interface name cannot be empty".to_string(),
             });
         }
-        
-        let mut links = self.handle.link().get().match_name(name.to_string()).execute();
-        
-        if let Some(link) = links.try_next().await
-            .map_err(|e| NetlinkError::InterfaceIndexError {
-                interface: name.to_string(),
-                reason: e.to_string(),
-            })? 
+
+        let mut links = self
+            .handle
+            .link()
+            .get()
+            .match_name(name.to_string())
+            .execute();
+
+        if let Some(link) =
+            links
+                .try_next()
+                .await
+                .map_err(|e| NetlinkError::InterfaceIndexError {
+                    interface: name.to_string(),
+                    reason: e.to_string(),
+                })?
         {
             Ok(link.header.index)
         } else {
-            Err(NetlinkError::InterfaceNotFound { name: name.to_string() })
+            Err(NetlinkError::InterfaceNotFound {
+                name: name.to_string(),
+            })
         }
     }
 }
@@ -267,4 +299,3 @@ pub struct RouteInfo {
     /// Output interface index, if specified
     pub interface_index: Option<u32>,
 }
-

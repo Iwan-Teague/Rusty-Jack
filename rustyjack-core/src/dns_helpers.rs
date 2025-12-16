@@ -1,6 +1,6 @@
-use rustyjack_netlink::{DnsServer, DnsConfig, DnsRule};
-use std::net::Ipv4Addr;
+use rustyjack_netlink::{DnsConfig, DnsRule, DnsServer};
 use std::collections::HashMap;
+use std::net::Ipv4Addr;
 
 /// Start DNS server for hotspot/AP mode with wildcard spoofing to gateway
 pub fn start_hotspot_dns(interface: &str, gateway_ip: Ipv4Addr) -> Result<DnsServer, String> {
@@ -16,7 +16,8 @@ pub fn start_hotspot_dns(interface: &str, gateway_ip: Ipv4Addr) -> Result<DnsSer
     let mut server = DnsServer::new(config)
         .map_err(|e| format!("Failed to create DNS server on {}: {}", interface, e))?;
 
-    server.start()
+    server
+        .start()
         .map_err(|e| format!("Failed to start DNS server on {}: {}", interface, e))?;
 
     Ok(server)
@@ -37,11 +38,19 @@ pub fn start_captive_portal_dns(
         log_queries: true,
     };
 
-    let mut server = DnsServer::new(config)
-        .map_err(|e| format!("Failed to create DNS server on {} for captive portal: {}", interface, e))?;
+    let mut server = DnsServer::new(config).map_err(|e| {
+        format!(
+            "Failed to create DNS server on {} for captive portal: {}",
+            interface, e
+        )
+    })?;
 
-    server.start()
-        .map_err(|e| format!("Failed to start DNS server on {} for captive portal: {}", interface, e))?;
+    server.start().map_err(|e| {
+        format!(
+            "Failed to start DNS server on {} for captive portal: {}",
+            interface, e
+        )
+    })?;
 
     Ok(server)
 }
@@ -62,11 +71,19 @@ pub fn start_evil_twin_dns(
         log_queries: true,
     };
 
-    let mut server = DnsServer::new(config)
-        .map_err(|e| format!("Failed to create DNS server on {} for evil twin: {}", interface, e))?;
+    let mut server = DnsServer::new(config).map_err(|e| {
+        format!(
+            "Failed to create DNS server on {} for evil twin: {}",
+            interface, e
+        )
+    })?;
 
-    server.start()
-        .map_err(|e| format!("Failed to start DNS server on {} for evil twin: {}", interface, e))?;
+    server.start().map_err(|e| {
+        format!(
+            "Failed to start DNS server on {} for evil twin: {}",
+            interface, e
+        )
+    })?;
 
     Ok(server)
 }
@@ -86,11 +103,19 @@ pub fn start_passthrough_dns(
         log_queries: false,
     };
 
-    let mut server = DnsServer::new(config)
-        .map_err(|e| format!("Failed to create pass-through DNS server on {}: {}", interface, e))?;
+    let mut server = DnsServer::new(config).map_err(|e| {
+        format!(
+            "Failed to create pass-through DNS server on {}: {}",
+            interface, e
+        )
+    })?;
 
-    server.start()
-        .map_err(|e| format!("Failed to start pass-through DNS server on {}: {}", interface, e))?;
+    server.start().map_err(|e| {
+        format!(
+            "Failed to start pass-through DNS server on {}: {}",
+            interface, e
+        )
+    })?;
 
     Ok(server)
 }

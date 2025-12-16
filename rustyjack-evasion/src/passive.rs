@@ -230,7 +230,14 @@ impl PassiveManager {
 
         // Create monitor interface using netlink
         if let Ok(mut mgr) = rustyjack_netlink::WirelessManager::new() {
-            if mgr.create_interface(interface, &mon_name, rustyjack_netlink::InterfaceMode::Monitor).is_ok() {
+            if mgr
+                .create_interface(
+                    interface,
+                    &mon_name,
+                    rustyjack_netlink::InterfaceMode::Monitor,
+                )
+                .is_ok()
+            {
                 // Bring it up
                 if let Ok(link_mgr) = rustyjack_netlink::InterfaceManager::new() {
                     tokio::runtime::Handle::current().block_on(async {
@@ -260,7 +267,7 @@ impl PassiveManager {
             }
         } else {
             return Err(EvasionError::InterfaceError(
-                "Failed to create monitor interface with airmon-ng".to_string()
+                "Failed to create monitor interface with airmon-ng".to_string(),
             ));
         }
 

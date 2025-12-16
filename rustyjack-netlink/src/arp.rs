@@ -4,7 +4,7 @@ use thiserror::Error;
 
 // Re-export sub-modules
 pub use crate::arp_scanner::ArpScanner;
-pub use crate::arp_spoofer::{ArpSpoofer, ArpSpoofConfig};
+pub use crate::arp_spoofer::{ArpSpoofConfig, ArpSpoofer};
 
 #[derive(Error, Debug)]
 pub enum ArpError {
@@ -60,7 +60,9 @@ pub enum ArpError {
     #[error("Invalid subnet mask: {mask}")]
     InvalidSubnetMask { mask: String },
 
-    #[error("Subnet {subnet} is too large. Maximum {max_hosts} hosts, requested {requested_hosts}.")]
+    #[error(
+        "Subnet {subnet} is too large. Maximum {max_hosts} hosts, requested {requested_hosts}."
+    )]
     SubnetTooLarge {
         subnet: String,
         max_hosts: u32,
@@ -97,11 +99,7 @@ pub struct ArpPacket {
 
 impl ArpPacket {
     /// Create a new ARP request packet
-    pub fn new_request(
-        sender_mac: [u8; 6],
-        sender_ip: Ipv4Addr,
-        target_ip: Ipv4Addr,
-    ) -> Self {
+    pub fn new_request(sender_mac: [u8; 6], sender_ip: Ipv4Addr, target_ip: Ipv4Addr) -> Self {
         ArpPacket {
             hw_type: 1u16.to_be(),
             proto_type: 0x0800u16.to_be(),
@@ -176,11 +174,7 @@ impl ArpPacket {
             return None;
         }
 
-        unsafe {
-            Some(std::ptr::read_unaligned(
-                bytes.as_ptr() as *const ArpPacket
-            ))
-        }
+        unsafe { Some(std::ptr::read_unaligned(bytes.as_ptr() as *const ArpPacket)) }
     }
 }
 

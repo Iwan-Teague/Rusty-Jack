@@ -120,10 +120,7 @@ impl Default for DhcpConfig {
             range_start: Ipv4Addr::new(10, 20, 30, 10),
             range_end: Ipv4Addr::new(10, 20, 30, 200),
             router: Some(Ipv4Addr::new(10, 20, 30, 1)),
-            dns_servers: vec![
-                Ipv4Addr::new(8, 8, 8, 8),
-                Ipv4Addr::new(8, 8, 4, 4),
-            ],
+            dns_servers: vec![Ipv4Addr::new(8, 8, 8, 8), Ipv4Addr::new(8, 8, 4, 4)],
             lease_time_secs: 43200, // 12 hours
             log_packets: false,
         }
@@ -207,7 +204,7 @@ impl DhcpServer {
             use std::os::unix::io::AsRawFd;
             let fd = socket.as_raw_fd();
             let iface_bytes = self.config.interface.as_bytes();
-            
+
             unsafe {
                 let ret = libc::setsockopt(
                     fd,
@@ -216,7 +213,7 @@ impl DhcpServer {
                     iface_bytes.as_ptr() as *const libc::c_void,
                     iface_bytes.len() as libc::socklen_t,
                 );
-                
+
                 if ret < 0 {
                     return Err(DhcpError::BindToDeviceFailed {
                         interface: self.config.interface.clone(),
@@ -232,7 +229,7 @@ impl DhcpServer {
                     &broadcast as *const libc::c_int as *const libc::c_void,
                     std::mem::size_of::<libc::c_int>() as libc::socklen_t,
                 );
-                
+
                 if ret < 0 {
                     return Err(DhcpError::BroadcastFailed(std::io::Error::last_os_error()));
                 }
@@ -343,16 +340,23 @@ impl DhcpServer {
 
     fn handle_discover(&self, packet: &DhcpPacket) -> Result<()> {
         let client_mac: [u8; 6] = packet.chaddr[..6].try_into().unwrap();
-        
+
         let offered_ip = self.get_or_allocate_ip(&client_mac)?;
 
         let response = self.build_offer(packet, offered_ip);
         self.send_packet(&response)?;
 
         if self.config.log_packets {
-            eprintln!("[DHCP] Sent OFFER: {} -> {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-                offered_ip, client_mac[0], client_mac[1], client_mac[2],
-                client_mac[3], client_mac[4], client_mac[5]);
+            eprintln!(
+                "[DHCP] Sent OFFER: {} -> {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+                offered_ip,
+                client_mac[0],
+                client_mac[1],
+                client_mac[2],
+                client_mac[3],
+                client_mac[4],
+                client_mac[5]
+            );
         }
 
         Ok(())
@@ -406,9 +410,16 @@ impl DhcpServer {
         self.send_packet(&response)?;
 
         if self.config.log_packets {
-            eprintln!("[DHCP] Sent ACK: {} -> {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-                ip_to_ack, client_mac[0], client_mac[1], client_mac[2],
-                client_mac[3], client_mac[4], client_mac[5]);
+            eprintln!(
+                "[DHCP] Sent ACK: {} -> {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+                ip_to_ack,
+                client_mac[0],
+                client_mac[1],
+                client_mac[2],
+                client_mac[3],
+                client_mac[4],
+                client_mac[5]
+            );
         }
 
         Ok(())
@@ -419,9 +430,15 @@ impl DhcpServer {
         self.release_lease(&client_mac);
 
         if self.config.log_packets {
-            eprintln!("[DHCP] Released lease for {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-                client_mac[0], client_mac[1], client_mac[2],
-                client_mac[3], client_mac[4], client_mac[5]);
+            eprintln!(
+                "[DHCP] Released lease for {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+                client_mac[0],
+                client_mac[1],
+                client_mac[2],
+                client_mac[3],
+                client_mac[4],
+                client_mac[5]
+            );
         }
 
         Ok(())
@@ -432,9 +449,15 @@ impl DhcpServer {
         self.release_lease(&client_mac);
 
         if self.config.log_packets {
-            eprintln!("[DHCP] Client declined IP: {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-                client_mac[0], client_mac[1], client_mac[2],
-                client_mac[3], client_mac[4], client_mac[5]);
+            eprintln!(
+                "[DHCP] Client declined IP: {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+                client_mac[0],
+                client_mac[1],
+                client_mac[2],
+                client_mac[3],
+                client_mac[4],
+                client_mac[5]
+            );
         }
 
         Ok(())
@@ -477,7 +500,7 @@ impl DhcpServer {
         }
 
         let leases = self.leases.lock().unwrap();
-        
+
         if let Some(lease) = leases.values().find(|l| l.ip == ip && !l.is_expired()) {
             lease.mac == *requesting_mac
         } else {
@@ -573,7 +596,7 @@ impl DhcpServer {
             .ok_or_else(|| DhcpError::NotRunning(self.config.interface.clone()))?;
 
         let data = Self::serialize_packet(packet);
-        
+
         let dest_addr = if packet.flags & 0x8000 != 0 || packet.giaddr != Ipv4Addr::UNSPECIFIED {
             SocketAddr::new(Ipv4Addr::BROADCAST.into(), DHCP_CLIENT_PORT)
         } else if packet.ciaddr != Ipv4Addr::UNSPECIFIED {
@@ -673,38 +696,30 @@ impl DhcpServer {
 
             let option = match code {
                 OPTION_MESSAGE_TYPE if len == 1 => DhcpOption::MessageType(opt_data[0]),
-                OPTION_SERVER_ID if len == 4 => {
-                    DhcpOption::ServerIdentifier(Ipv4Addr::new(
-                        opt_data[0],
-                        opt_data[1],
-                        opt_data[2],
-                        opt_data[3],
-                    ))
-                }
-                OPTION_REQUESTED_IP if len == 4 => {
-                    DhcpOption::RequestedIpAddress(Ipv4Addr::new(
-                        opt_data[0],
-                        opt_data[1],
-                        opt_data[2],
-                        opt_data[3],
-                    ))
-                }
-                OPTION_LEASE_TIME if len == 4 => {
-                    DhcpOption::LeaseTime(u32::from_be_bytes([
-                        opt_data[0],
-                        opt_data[1],
-                        opt_data[2],
-                        opt_data[3],
-                    ]))
-                }
-                OPTION_SUBNET_MASK if len == 4 => {
-                    DhcpOption::SubnetMask(Ipv4Addr::new(
-                        opt_data[0],
-                        opt_data[1],
-                        opt_data[2],
-                        opt_data[3],
-                    ))
-                }
+                OPTION_SERVER_ID if len == 4 => DhcpOption::ServerIdentifier(Ipv4Addr::new(
+                    opt_data[0],
+                    opt_data[1],
+                    opt_data[2],
+                    opt_data[3],
+                )),
+                OPTION_REQUESTED_IP if len == 4 => DhcpOption::RequestedIpAddress(Ipv4Addr::new(
+                    opt_data[0],
+                    opt_data[1],
+                    opt_data[2],
+                    opt_data[3],
+                )),
+                OPTION_LEASE_TIME if len == 4 => DhcpOption::LeaseTime(u32::from_be_bytes([
+                    opt_data[0],
+                    opt_data[1],
+                    opt_data[2],
+                    opt_data[3],
+                ])),
+                OPTION_SUBNET_MASK if len == 4 => DhcpOption::SubnetMask(Ipv4Addr::new(
+                    opt_data[0],
+                    opt_data[1],
+                    opt_data[2],
+                    opt_data[3],
+                )),
                 OPTION_ROUTER => {
                     let mut routers = Vec::new();
                     for chunk in opt_data.chunks_exact(4) {
@@ -719,14 +734,12 @@ impl DhcpServer {
                     }
                     DhcpOption::DnsServer(dns)
                 }
-                OPTION_RENEWAL_TIME if len == 4 => {
-                    DhcpOption::RenewalTime(u32::from_be_bytes([
-                        opt_data[0],
-                        opt_data[1],
-                        opt_data[2],
-                        opt_data[3],
-                    ]))
-                }
+                OPTION_RENEWAL_TIME if len == 4 => DhcpOption::RenewalTime(u32::from_be_bytes([
+                    opt_data[0],
+                    opt_data[1],
+                    opt_data[2],
+                    opt_data[3],
+                ])),
                 OPTION_REBINDING_TIME if len == 4 => {
                     DhcpOption::RebindingTime(u32::from_be_bytes([
                         opt_data[0],
@@ -906,4 +919,3 @@ mod tests {
         assert!(DhcpServer::new(config).is_err());
     }
 }
-

@@ -181,25 +181,34 @@ impl WirelessManager {
     /// - Cannot create netlink socket (requires CAP_NET_ADMIN)
     /// - nl80211 generic netlink family not found (wireless drivers not loaded)
     pub fn new() -> Result<Self> {
-        let mut socket = NlSocketHandle::connect(NlFamily::Generic, None, &[])
-            .map_err(|e| NetlinkError::ConnectionFailed(format!("Failed to create nl80211 socket: {}", e)))?;
+        let mut socket = NlSocketHandle::connect(NlFamily::Generic, None, &[]).map_err(|e| {
+            NetlinkError::ConnectionFailed(format!("Failed to create nl80211 socket: {}", e))
+        })?;
 
-        let family_id = socket
-            .resolve_genl_family(NL80211_GENL_NAME)
-            .map_err(|e| NetlinkError::OperationFailed(format!("Failed to resolve nl80211 family (wireless drivers not loaded?): {}", e)))?;
+        let family_id = socket.resolve_genl_family(NL80211_GENL_NAME).map_err(|e| {
+            NetlinkError::OperationFailed(format!(
+                "Failed to resolve nl80211 family (wireless drivers not loaded?): {}",
+                e
+            ))
+        })?;
 
         Ok(Self { socket, family_id })
     }
 
     /// Get interface index from name
     fn get_ifindex(&self, interface: &str) -> Result<u32> {
-        let interfaces = std::fs::read_to_string("/sys/class/net/".to_string() + interface + "/ifindex")
-            .map_err(|e| NetlinkError::InterfaceNotFound { 
-                name: format!("Interface '{}' not found: {}", interface, e)
-            })?;
-        
-        interfaces.trim().parse::<u32>()
-            .map_err(|e| NetlinkError::OperationFailed(format!("Failed to parse ifindex for '{}': {}", interface, e)))
+        let interfaces =
+            std::fs::read_to_string("/sys/class/net/".to_string() + interface + "/ifindex")
+                .map_err(|e| NetlinkError::InterfaceNotFound {
+                    name: format!("Interface '{}' not found: {}", interface, e),
+                })?;
+
+        interfaces.trim().parse::<u32>().map_err(|e| {
+            NetlinkError::OperationFailed(format!(
+                "Failed to parse ifindex for '{}': {}",
+                interface, e
+            ))
+        })
     }
 
     /// Set interface mode (managed, monitor, ap, etc.)
@@ -221,12 +230,14 @@ impl WirelessManager {
 
         let mut attrs = GenlBuffer::new();
         attrs.push(
-            Nlattr::new(false, false, NL80211_ATTR_IFINDEX, ifindex)
-                .map_err(|e| NetlinkError::OperationFailed(format!("Failed to create ifindex attr: {}", e)))?
+            Nlattr::new(false, false, NL80211_ATTR_IFINDEX, ifindex).map_err(|e| {
+                NetlinkError::OperationFailed(format!("Failed to create ifindex attr: {}", e))
+            })?,
         );
         attrs.push(
-            Nlattr::new(false, false, NL80211_ATTR_IFTYPE, mode.to_nl80211())
-                .map_err(|e| NetlinkError::OperationFailed(format!("Failed to create iftype attr: {}", e)))?
+            Nlattr::new(false, false, NL80211_ATTR_IFTYPE, mode.to_nl80211()).map_err(|e| {
+                NetlinkError::OperationFailed(format!("Failed to create iftype attr: {}", e))
+            })?,
         );
 
         let genlhdr = Genlmsghdr::new(NL80211_CMD_SET_INTERFACE, 1, attrs);
@@ -239,12 +250,19 @@ impl WirelessManager {
             NlPayload::Payload(genlhdr),
         );
 
-        self.socket.send(nlhdr)
-            .map_err(|e| NetlinkError::OperationFailed(format!("Failed to send set_mode request: {}", e)))?;
+        self.socket.send(nlhdr).map_err(|e| {
+            NetlinkError::OperationFailed(format!("Failed to send set_mode request: {}", e))
+        })?;
 
-        let response: Nlmsghdr<u16, Genlmsghdr<u8, u16>> = self.socket.recv()
-            .map_err(|e| NetlinkError::OperationFailed(format!("Failed to receive set_mode response: {}", e)))?
-            .ok_or_else(|| NetlinkError::OperationFailed("No response received for set_mode".to_string()))?;
+        let response: Nlmsghdr<u16, Genlmsghdr<u8, u16>> = self
+            .socket
+            .recv()
+            .map_err(|e| {
+                NetlinkError::OperationFailed(format!("Failed to receive set_mode response: {}", e))
+            })?
+            .ok_or_else(|| {
+                NetlinkError::OperationFailed("No response received for set_mode".to_string())
+            })?;
 
         if response.nl_type == NlmsgErr {
             return Err(NetlinkError::OperationFailed(
@@ -271,9 +289,10 @@ impl WirelessManager {
     /// - Channel not supported by hardware
     /// - Invalid channel number
     pub fn set_channel(&mut self, interface: &str, channel: u8) -> Result<()> {
-        let frequency = Self::channel_to_frequency(channel)
-            .ok_or_else(|| NetlinkError::OperationFailed(format!("Invalid channel number: {}", channel)))?;
-        
+        let frequency = Self::channel_to_frequency(channel).ok_or_else(|| {
+            NetlinkError::OperationFailed(format!("Invalid channel number: {}", channel))
+        })?;
+
         self.set_frequency(interface, frequency, ChannelWidth::NoHT)
     }
 
@@ -291,16 +310,36 @@ impl WirelessManager {
     /// - Interface not found
     /// - Permission denied
     /// - Frequency not supported
-    pub fn set_frequency(&mut self, interface: &str, frequency: u32, width: ChannelWidth) -> Result<()> {
+    pub fn set_frequency(
+        &mut self,
+        interface: &str,
+        frequency: u32,
+        width: ChannelWidth,
+    ) -> Result<()> {
         let ifindex = self.get_ifindex(interface)?;
 
         let mut attrs = GenlBuffer::new();
-        attrs.push(Nlattr::new(false, false, NL80211_ATTR_IFINDEX, ifindex)
-            .map_err(|e| NetlinkError::OperationFailed(format!("Failed to create ifindex attr: {}", e)))?);
-        attrs.push(Nlattr::new(false, false, NL80211_ATTR_WIPHY_FREQ, frequency)
-            .map_err(|e| NetlinkError::OperationFailed(format!("Failed to create frequency attr: {}", e)))?);
-        attrs.push(Nlattr::new(false, false, NL80211_ATTR_WIPHY_CHANNEL_TYPE, width.to_nl80211())
-            .map_err(|e| NetlinkError::OperationFailed(format!("Failed to create channel_type attr: {}", e)))?);
+        attrs.push(
+            Nlattr::new(false, false, NL80211_ATTR_IFINDEX, ifindex).map_err(|e| {
+                NetlinkError::OperationFailed(format!("Failed to create ifindex attr: {}", e))
+            })?,
+        );
+        attrs.push(
+            Nlattr::new(false, false, NL80211_ATTR_WIPHY_FREQ, frequency).map_err(|e| {
+                NetlinkError::OperationFailed(format!("Failed to create frequency attr: {}", e))
+            })?,
+        );
+        attrs.push(
+            Nlattr::new(
+                false,
+                false,
+                NL80211_ATTR_WIPHY_CHANNEL_TYPE,
+                width.to_nl80211(),
+            )
+            .map_err(|e| {
+                NetlinkError::OperationFailed(format!("Failed to create channel_type attr: {}", e))
+            })?,
+        );
 
         let mut attrs_buf = GenlBuffer::new();
         for attr in attrs {
@@ -316,12 +355,22 @@ impl WirelessManager {
             NlPayload::Payload(genlhdr),
         );
 
-        self.socket.send(nlhdr)
-            .map_err(|e| NetlinkError::OperationFailed(format!("Failed to send set_frequency request: {}", e)))?;
+        self.socket.send(nlhdr).map_err(|e| {
+            NetlinkError::OperationFailed(format!("Failed to send set_frequency request: {}", e))
+        })?;
 
-        let response: Nlmsghdr<u16, Genlmsghdr<u8, u16>> = self.socket.recv()
-            .map_err(|e| NetlinkError::OperationFailed(format!("Failed to receive set_frequency response: {}", e)))?
-            .ok_or_else(|| NetlinkError::OperationFailed("No response received for set_frequency".to_string()))?;
+        let response: Nlmsghdr<u16, Genlmsghdr<u8, u16>> = self
+            .socket
+            .recv()
+            .map_err(|e| {
+                NetlinkError::OperationFailed(format!(
+                    "Failed to receive set_frequency response: {}",
+                    e
+                ))
+            })?
+            .ok_or_else(|| {
+                NetlinkError::OperationFailed("No response received for set_frequency".to_string())
+            })?;
 
         if response.nl_type == NlmsgErr {
             return Err(NetlinkError::OperationFailed(
@@ -356,16 +405,33 @@ impl WirelessManager {
         };
 
         let mut attrs = vec![
-            Nlattr::new(false, false, NL80211_ATTR_IFINDEX, ifindex)
-                .map_err(|e| NetlinkError::OperationFailed(format!("Failed to create ifindex attr: {}", e)))?,
-            Nlattr::new(false, false, NL80211_ATTR_WIPHY_TX_POWER_SETTING, setting_type)
-                .map_err(|e| NetlinkError::OperationFailed(format!("Failed to create tx_power_setting attr: {}", e)))?,
+            Nlattr::new(false, false, NL80211_ATTR_IFINDEX, ifindex).map_err(|e| {
+                NetlinkError::OperationFailed(format!("Failed to create ifindex attr: {}", e))
+            })?,
+            Nlattr::new(
+                false,
+                false,
+                NL80211_ATTR_WIPHY_TX_POWER_SETTING,
+                setting_type,
+            )
+            .map_err(|e| {
+                NetlinkError::OperationFailed(format!(
+                    "Failed to create tx_power_setting attr: {}",
+                    e
+                ))
+            })?,
         ];
 
         if let Some(level) = power_level {
             attrs.push(
-                Nlattr::new(false, false, NL80211_ATTR_WIPHY_TX_POWER_LEVEL, level)
-                    .map_err(|e| NetlinkError::OperationFailed(format!("Failed to create tx_power_level attr: {}", e)))?
+                Nlattr::new(false, false, NL80211_ATTR_WIPHY_TX_POWER_LEVEL, level).map_err(
+                    |e| {
+                        NetlinkError::OperationFailed(format!(
+                            "Failed to create tx_power_level attr: {}",
+                            e
+                        ))
+                    },
+                )?,
             );
         }
 
@@ -383,17 +449,28 @@ impl WirelessManager {
             NlPayload::Payload(genlhdr),
         );
 
-        self.socket.send(nlhdr)
-            .map_err(|e| NetlinkError::OperationFailed(format!("Failed to send set_tx_power request: {}", e)))?;
+        self.socket.send(nlhdr).map_err(|e| {
+            NetlinkError::OperationFailed(format!("Failed to send set_tx_power request: {}", e))
+        })?;
 
-        let response: Nlmsghdr<u16, Genlmsghdr<u8, u16>> = self.socket.recv()
-            .map_err(|e| NetlinkError::OperationFailed(format!("Failed to receive set_tx_power response: {}", e)))?
-            .ok_or_else(|| NetlinkError::OperationFailed("No response received for set_tx_power".to_string()))?;
+        let response: Nlmsghdr<u16, Genlmsghdr<u8, u16>> = self
+            .socket
+            .recv()
+            .map_err(|e| {
+                NetlinkError::OperationFailed(format!(
+                    "Failed to receive set_tx_power response: {}",
+                    e
+                ))
+            })?
+            .ok_or_else(|| {
+                NetlinkError::OperationFailed("No response received for set_tx_power".to_string())
+            })?;
 
         if response.nl_type == NlmsgErr {
-            return Err(NetlinkError::OperationFailed(
-                format!("Failed to set TX power on interface '{}'. Power level may exceed hardware limits.", interface)
-            ));
+            return Err(NetlinkError::OperationFailed(format!(
+                "Failed to set TX power on interface '{}'. Power level may exceed hardware limits.",
+                interface
+            )));
         }
 
         Ok(())
@@ -414,16 +491,30 @@ impl WirelessManager {
     /// - Permission denied
     /// - Interface name already exists
     /// - Mode not supported
-    pub fn create_interface(&mut self, phy_interface: &str, new_name: &str, mode: InterfaceMode) -> Result<()> {
+    pub fn create_interface(
+        &mut self,
+        phy_interface: &str,
+        new_name: &str,
+        mode: InterfaceMode,
+    ) -> Result<()> {
         let ifindex = self.get_ifindex(phy_interface)?;
 
         let mut attrs = GenlBuffer::new();
-        attrs.push(Nlattr::new(false, false, NL80211_ATTR_IFINDEX, ifindex)
-            .map_err(|e| NetlinkError::OperationFailed(format!("Failed to create ifindex attr: {}", e)))?);
-        attrs.push(Nlattr::new(false, false, NL80211_ATTR_IFNAME, new_name.as_bytes())
-            .map_err(|e| NetlinkError::OperationFailed(format!("Failed to create ifname attr: {}", e)))?);
-        attrs.push(Nlattr::new(false, false, NL80211_ATTR_IFTYPE, mode.to_nl80211())
-            .map_err(|e| NetlinkError::OperationFailed(format!("Failed to create iftype attr: {}", e)))?);
+        attrs.push(
+            Nlattr::new(false, false, NL80211_ATTR_IFINDEX, ifindex).map_err(|e| {
+                NetlinkError::OperationFailed(format!("Failed to create ifindex attr: {}", e))
+            })?,
+        );
+        attrs.push(
+            Nlattr::new(false, false, NL80211_ATTR_IFNAME, new_name.as_bytes()).map_err(|e| {
+                NetlinkError::OperationFailed(format!("Failed to create ifname attr: {}", e))
+            })?,
+        );
+        attrs.push(
+            Nlattr::new(false, false, NL80211_ATTR_IFTYPE, mode.to_nl80211()).map_err(|e| {
+                NetlinkError::OperationFailed(format!("Failed to create iftype attr: {}", e))
+            })?,
+        );
 
         let genlhdr = Genlmsghdr::new(NL80211_CMD_NEW_INTERFACE, 1, attrs);
         let nlhdr = Nlmsghdr::new(
@@ -435,12 +526,24 @@ impl WirelessManager {
             NlPayload::Payload(genlhdr),
         );
 
-        self.socket.send(nlhdr)
-            .map_err(|e| NetlinkError::OperationFailed(format!("Failed to send create_interface request: {}", e)))?;
+        self.socket.send(nlhdr).map_err(|e| {
+            NetlinkError::OperationFailed(format!("Failed to send create_interface request: {}", e))
+        })?;
 
-        let response: Nlmsghdr<u16, Genlmsghdr<u8, u16>> = self.socket.recv()
-            .map_err(|e| NetlinkError::OperationFailed(format!("Failed to receive create_interface response: {}", e)))?
-            .ok_or_else(|| NetlinkError::OperationFailed("No response received for create_interface".to_string()))?;
+        let response: Nlmsghdr<u16, Genlmsghdr<u8, u16>> = self
+            .socket
+            .recv()
+            .map_err(|e| {
+                NetlinkError::OperationFailed(format!(
+                    "Failed to receive create_interface response: {}",
+                    e
+                ))
+            })?
+            .ok_or_else(|| {
+                NetlinkError::OperationFailed(
+                    "No response received for create_interface".to_string(),
+                )
+            })?;
 
         if response.nl_type == NlmsgErr {
             return Err(NetlinkError::OperationFailed(
@@ -468,8 +571,11 @@ impl WirelessManager {
         let ifindex = self.get_ifindex(interface)?;
 
         let mut attrs = GenlBuffer::new();
-        attrs.push(Nlattr::new(false, false, NL80211_ATTR_IFINDEX, ifindex)
-            .map_err(|e| NetlinkError::OperationFailed(format!("Failed to create ifindex attr: {}", e)))?);
+        attrs.push(
+            Nlattr::new(false, false, NL80211_ATTR_IFINDEX, ifindex).map_err(|e| {
+                NetlinkError::OperationFailed(format!("Failed to create ifindex attr: {}", e))
+            })?,
+        );
 
         let genlhdr = Genlmsghdr::new(NL80211_CMD_DEL_INTERFACE, 1, attrs);
         let nlhdr = Nlmsghdr::new(
@@ -481,12 +587,24 @@ impl WirelessManager {
             NlPayload::Payload(genlhdr),
         );
 
-        self.socket.send(nlhdr)
-            .map_err(|e| NetlinkError::OperationFailed(format!("Failed to send delete_interface request: {}", e)))?;
+        self.socket.send(nlhdr).map_err(|e| {
+            NetlinkError::OperationFailed(format!("Failed to send delete_interface request: {}", e))
+        })?;
 
-        let response: Nlmsghdr<u16, Genlmsghdr<u8, u16>> = self.socket.recv()
-            .map_err(|e| NetlinkError::OperationFailed(format!("Failed to receive delete_interface response: {}", e)))?
-            .ok_or_else(|| NetlinkError::OperationFailed("No response received for delete_interface".to_string()))?;
+        let response: Nlmsghdr<u16, Genlmsghdr<u8, u16>> = self
+            .socket
+            .recv()
+            .map_err(|e| {
+                NetlinkError::OperationFailed(format!(
+                    "Failed to receive delete_interface response: {}",
+                    e
+                ))
+            })?
+            .ok_or_else(|| {
+                NetlinkError::OperationFailed(
+                    "No response received for delete_interface".to_string(),
+                )
+            })?;
 
         if response.nl_type == NlmsgErr {
             return Err(NetlinkError::OperationFailed(
@@ -510,8 +628,11 @@ impl WirelessManager {
         let ifindex = self.get_ifindex(interface)?;
 
         let mut attrs = GenlBuffer::new();
-        attrs.push(Nlattr::new(false, false, NL80211_ATTR_IFINDEX, ifindex)
-            .map_err(|e| NetlinkError::OperationFailed(format!("Failed to create ifindex attr: {}", e)))?);
+        attrs.push(
+            Nlattr::new(false, false, NL80211_ATTR_IFINDEX, ifindex).map_err(|e| {
+                NetlinkError::OperationFailed(format!("Failed to create ifindex attr: {}", e))
+            })?,
+        );
 
         let genlhdr = Genlmsghdr::new(NL80211_CMD_GET_INTERFACE, 1, attrs);
         let nlhdr = Nlmsghdr::new(
@@ -523,12 +644,27 @@ impl WirelessManager {
             NlPayload::Payload(genlhdr),
         );
 
-        self.socket.send(nlhdr)
-            .map_err(|e| NetlinkError::OperationFailed(format!("Failed to send get_interface_info request: {}", e)))?;
+        self.socket.send(nlhdr).map_err(|e| {
+            NetlinkError::OperationFailed(format!(
+                "Failed to send get_interface_info request: {}",
+                e
+            ))
+        })?;
 
-        let response: Nlmsghdr<u16, Genlmsghdr<u8, u16>> = self.socket.recv()
-            .map_err(|e| NetlinkError::OperationFailed(format!("Failed to receive get_interface_info response: {}", e)))?
-            .ok_or_else(|| NetlinkError::OperationFailed("No response received for get_interface_info".to_string()))?;
+        let response: Nlmsghdr<u16, Genlmsghdr<u8, u16>> = self
+            .socket
+            .recv()
+            .map_err(|e| {
+                NetlinkError::OperationFailed(format!(
+                    "Failed to receive get_interface_info response: {}",
+                    e
+                ))
+            })?
+            .ok_or_else(|| {
+                NetlinkError::OperationFailed(
+                    "No response received for get_interface_info".to_string(),
+                )
+            })?;
 
         let mut info = WirelessInfo {
             interface: interface.to_string(),
@@ -548,20 +684,26 @@ impl WirelessManager {
                         // Nlattr has a payload field of type Buffer (Vec<u8>)
                         let payload = attr.nla_payload.as_ref();
                         if payload.len() >= 4 {
-                            info.wiphy = u32::from_ne_bytes([payload[0], payload[1], payload[2], payload[3]]);
+                            info.wiphy = u32::from_ne_bytes([
+                                payload[0], payload[1], payload[2], payload[3],
+                            ]);
                         }
                     }
                     NL80211_ATTR_IFTYPE => {
                         let payload = attr.nla_payload.as_ref();
                         if payload.len() >= 4 {
-                            let iftype = u32::from_ne_bytes([payload[0], payload[1], payload[2], payload[3]]);
+                            let iftype = u32::from_ne_bytes([
+                                payload[0], payload[1], payload[2], payload[3],
+                            ]);
                             info.mode = InterfaceMode::from_nl80211(iftype);
                         }
                     }
                     NL80211_ATTR_WIPHY_FREQ => {
                         let payload = attr.nla_payload.as_ref();
                         if payload.len() >= 4 {
-                            let freq = u32::from_ne_bytes([payload[0], payload[1], payload[2], payload[3]]);
+                            let freq = u32::from_ne_bytes([
+                                payload[0], payload[1], payload[2], payload[3],
+                            ]);
                             info.frequency = Some(freq);
                             info.channel = Self::frequency_to_channel(freq);
                         }
@@ -587,8 +729,11 @@ impl WirelessManager {
         let info = self.get_interface_info(interface)?;
 
         let mut attrs = GenlBuffer::new();
-        attrs.push(Nlattr::new(false, false, NL80211_ATTR_WIPHY, info.wiphy)
-            .map_err(|e| NetlinkError::OperationFailed(format!("Failed to create wiphy attr: {}", e)))?);
+        attrs.push(
+            Nlattr::new(false, false, NL80211_ATTR_WIPHY, info.wiphy).map_err(|e| {
+                NetlinkError::OperationFailed(format!("Failed to create wiphy attr: {}", e))
+            })?,
+        );
 
         let genlhdr = Genlmsghdr::new(NL80211_CMD_GET_WIPHY, 1, attrs);
         let nlhdr = Nlmsghdr::new(
@@ -600,12 +745,27 @@ impl WirelessManager {
             NlPayload::Payload(genlhdr),
         );
 
-        self.socket.send(nlhdr)
-            .map_err(|e| NetlinkError::OperationFailed(format!("Failed to send get_phy_capabilities request: {}", e)))?;
+        self.socket.send(nlhdr).map_err(|e| {
+            NetlinkError::OperationFailed(format!(
+                "Failed to send get_phy_capabilities request: {}",
+                e
+            ))
+        })?;
 
-        let response: Nlmsghdr<u16, Genlmsghdr<u8, u16>> = self.socket.recv()
-            .map_err(|e| NetlinkError::OperationFailed(format!("Failed to receive get_phy_capabilities response: {}", e)))?
-            .ok_or_else(|| NetlinkError::OperationFailed("No response received for get_phy_capabilities".to_string()))?;
+        let response: Nlmsghdr<u16, Genlmsghdr<u8, u16>> = self
+            .socket
+            .recv()
+            .map_err(|e| {
+                NetlinkError::OperationFailed(format!(
+                    "Failed to receive get_phy_capabilities response: {}",
+                    e
+                ))
+            })?
+            .ok_or_else(|| {
+                NetlinkError::OperationFailed(
+                    "No response received for get_phy_capabilities".to_string(),
+                )
+            })?;
 
         let mut caps = PhyCapabilities {
             wiphy: info.wiphy,
@@ -758,9 +918,3 @@ impl WirelessManager {
         }
     }
 }
-
-
-
-
-
-

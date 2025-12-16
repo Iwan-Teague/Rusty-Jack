@@ -1,12 +1,12 @@
+use libc::{sockaddr_ll, socket, AF_PACKET, SOCK_RAW};
 use std::net::Ipv4Addr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
-use libc::{AF_PACKET, SOCK_RAW, sockaddr_ll, socket};
 
-use crate::arp::{format_mac_address};
 use super::{ArpError, ArpPacket};
+use crate::arp::format_mac_address;
 use crate::error::{NetlinkError, Result};
 use crate::interface::InterfaceManager;
 
@@ -66,7 +66,9 @@ impl ArpSpoofer {
         Self::send_arp_packet(sock_fd, &packet, if_index, target_mac, interface, target_ip)?;
 
         // Close socket
-        unsafe { libc::close(sock_fd); }
+        unsafe {
+            libc::close(sock_fd);
+        }
 
         Ok(())
     }
@@ -86,7 +88,10 @@ impl ArpSpoofer {
             .get_mac(config.target_ip, &config.interface)?
             .ok_or_else(|| ArpError::SpoofError {
                 interface: config.interface.clone(),
-                reason: format!("Could not find MAC address for target IP {}", config.target_ip),
+                reason: format!(
+                    "Could not find MAC address for target IP {}",
+                    config.target_ip
+                ),
             })?;
 
         self.running.store(true, Ordering::Relaxed);
@@ -160,19 +165,21 @@ impl ArpSpoofer {
         // Get MAC addresses
         let scanner = super::ArpScanner::new();
 
-        let target_mac = scanner
-            .get_mac(target_ip, interface)?
-            .ok_or_else(|| ArpError::SpoofError {
-                interface: interface.to_string(),
-                reason: format!("Could not find MAC address for target IP {}", target_ip),
-            })?;
+        let target_mac =
+            scanner
+                .get_mac(target_ip, interface)?
+                .ok_or_else(|| ArpError::SpoofError {
+                    interface: interface.to_string(),
+                    reason: format!("Could not find MAC address for target IP {}", target_ip),
+                })?;
 
-        let gateway_mac = scanner
-            .get_mac(gateway_ip, interface)?
-            .ok_or_else(|| ArpError::SpoofError {
-                interface: interface.to_string(),
-                reason: format!("Could not find MAC address for gateway IP {}", gateway_ip),
-            })?;
+        let gateway_mac =
+            scanner
+                .get_mac(gateway_ip, interface)?
+                .ok_or_else(|| ArpError::SpoofError {
+                    interface: interface.to_string(),
+                    reason: format!("Could not find MAC address for gateway IP {}", gateway_ip),
+                })?;
 
         self.running.store(true, Ordering::Relaxed);
         let running = Arc::clone(&self.running);
@@ -188,22 +195,12 @@ impl ArpSpoofer {
 
             while running.load(Ordering::Relaxed) {
                 // Tell target that we are the gateway
-                let _ = Self::send_spoof(
-                    target_ip,
-                    target_mac,
-                    gateway_ip,
-                    attacker_mac,
-                    &interface,
-                );
+                let _ =
+                    Self::send_spoof(target_ip, target_mac, gateway_ip, attacker_mac, &interface);
 
                 // Tell gateway that we are the target
-                let _ = Self::send_spoof(
-                    gateway_ip,
-                    gateway_mac,
-                    target_ip,
-                    attacker_mac,
-                    &interface,
-                );
+                let _ =
+                    Self::send_spoof(gateway_ip, gateway_mac, target_ip, attacker_mac, &interface);
 
                 thread::sleep(Duration::from_millis(1000));
             }
@@ -217,9 +214,8 @@ impl ArpSpoofer {
     // Private helper methods
 
     fn create_raw_socket(interface: &str) -> Result<i32> {
-        let sock_fd = unsafe {
-            socket(AF_PACKET, SOCK_RAW, (libc::ETH_P_ARP as u16).to_be() as i32)
-        };
+        let sock_fd =
+            unsafe { socket(AF_PACKET, SOCK_RAW, (libc::ETH_P_ARP as u16).to_be() as i32) };
 
         if sock_fd < 0 {
             let err = std::io::Error::last_os_error();
@@ -284,9 +280,7 @@ impl ArpSpoofer {
         let mgr = InterfaceManager::new()?;
 
         tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async {
-                mgr.get_index(interface).await
-            })
+            tokio::runtime::Handle::current().block_on(async { mgr.get_index(interface).await })
         })
     }
 }
@@ -302,4 +296,3 @@ impl Drop for ArpSpoofer {
         self.stop();
     }
 }
-

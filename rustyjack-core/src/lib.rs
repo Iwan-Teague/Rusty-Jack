@@ -9,14 +9,14 @@ compile_error!(
 
 pub mod anti_forensics;
 
+pub mod arp_helpers;
 pub mod cli;
 pub mod dhcp_helpers;
 pub mod dns_helpers;
+pub mod netlink_helpers;
 pub mod operations;
 pub mod system;
 pub mod wireless_native;
-pub mod netlink_helpers;
-pub mod arp_helpers;
 
 pub mod evasion;
 pub mod physical_access;
@@ -29,11 +29,11 @@ pub use cli::{
     WifiKarmaArgs, WifiPmkidArgs, WifiProbeSniffArgs, WifiScanArgs,
 };
 pub use operations::{dispatch_command, HandlerResult};
+pub use rustyjack_evasion::{logs_disabled, logs_enabled};
 pub use system::{
     apply_interface_isolation, enforce_single_interface, is_wireless_interface, resolve_root,
     rfkill_index_for_interface, InterfaceSummary,
 };
-pub use rustyjack_evasion::{logs_disabled, logs_enabled};
 pub use wireless_native::{
     check_capabilities, execute_deauth_attack, execute_evil_twin, execute_karma,
     execute_pmkid_capture, execute_probe_sniff, native_available, DeauthConfig, DeauthResult,

@@ -5,13 +5,13 @@
 
 use anyhow::{Context, Result};
 use chrono::Local;
+use rustyjack_evasion::logs_disabled;
 use std::{
     fs,
     io::{BufRead, BufReader, Write},
     path::{Path, PathBuf},
     process::Command,
 };
-use rustyjack_evasion::logs_disabled;
 
 /// Count the number of lines in a file
 pub fn count_lines(path: &Path) -> std::io::Result<usize> {
@@ -182,19 +182,17 @@ pub fn renew_dhcp_and_reconnect(interface: &str) -> bool {
     use tokio::runtime::Handle;
 
     let dhcp_success = match Handle::try_current() {
-        Ok(handle) => {
-            tokio::task::block_in_place(|| {
-                handle.block_on(async {
-                    if let Err(e) = rustyjack_netlink::dhcp_renew(interface, None).await {
-                        log::warn!("DHCP renew failed for {}: {}", interface, e);
-                        false
-                    } else {
-                        log::info!("DHCP lease renewed for {}", interface);
-                        true
-                    }
-                })
+        Ok(handle) => tokio::task::block_in_place(|| {
+            handle.block_on(async {
+                if let Err(e) = rustyjack_netlink::dhcp_renew(interface, None).await {
+                    log::warn!("DHCP renew failed for {}: {}", interface, e);
+                    false
+                } else {
+                    log::info!("DHCP lease renewed for {}", interface);
+                    true
+                }
             })
-        }
+        }),
         Err(_) => {
             let rt = tokio::runtime::Runtime::new().unwrap();
             rt.block_on(async {
@@ -217,7 +215,10 @@ pub fn renew_dhcp_and_reconnect(interface: &str) -> bool {
                 true
             }
             Err(e) => {
-                log::debug!("WPA reconnect failed (may not be using wpa_supplicant): {}", e);
+                log::debug!(
+                    "WPA reconnect failed (may not be using wpa_supplicant): {}",
+                    e
+                );
                 false
             }
         },
@@ -247,9 +248,7 @@ pub fn renew_dhcp_and_reconnect(interface: &str) -> bool {
 }
 
 #[cfg(target_os = "linux")]
-pub fn generate_vendor_aware_mac(
-    interface: &str,
-) -> Result<(rustyjack_evasion::MacAddress, bool)> {
+pub fn generate_vendor_aware_mac(interface: &str) -> Result<(rustyjack_evasion::MacAddress, bool)> {
     use rustyjack_evasion::{MacAddress, VendorOui};
 
     let current = std::fs::read_to_string(format!("/sys/class/net/{}/address", interface))

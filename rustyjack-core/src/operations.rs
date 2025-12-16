@@ -24,20 +24,19 @@ use serde_json::{json, Value};
 use walkdir::WalkDir;
 
 use crate::cli::{
-    BridgeCommand, BridgeStartArgs, BridgeStopArgs, Commands,
-    DiscordCommand, DiscordSendArgs, DnsSpoofCommand, DnsSpoofStartArgs, EthernetCommand,
-    EthernetDiscoverArgs, EthernetInventoryArgs, EthernetPortScanArgs, EthernetSiteCredArgs,
-    HardwareCommand, HotspotCommand, HotspotStartArgs, LootCommand, LootKind, LootListArgs,
-    LootReadArgs, MitmCommand, MitmStartArgs, NotifyCommand, ProcessCommand, ProcessKillArgs,
-    ProcessStatusArgs, ResponderArgs, ResponderCommand, ReverseCommand, ReverseLaunchArgs,
-    ScanCommand, ScanRunArgs, StatusCommand, SystemCommand, SystemFdeMigrateArgs,
-    SystemFdePrepareArgs, SystemUpdateArgs, WifiBestArgs, WifiCommand, WifiCrackArgs,
-    WifiDeauthArgs, WifiDisconnectArgs, WifiEvilTwinArgs, WifiKarmaArgs, WifiPmkidArgs,
-    WifiProbeSniffArgs, WifiProfileCommand, WifiProfileConnectArgs, WifiProfileDeleteArgs,
-    WifiProfileSaveArgs, WifiReconArpScanArgs, WifiReconBandwidthArgs, WifiReconCommand,
-    WifiReconDnsCaptureArgs, WifiReconGatewayArgs, WifiReconMdnsScanArgs, WifiReconServiceScanArgs,
-    WifiRouteCommand, WifiRouteEnsureArgs, WifiRouteMetricArgs, WifiScanArgs, WifiStatusArgs,
-    WifiSwitchArgs,
+    BridgeCommand, BridgeStartArgs, BridgeStopArgs, Commands, DiscordCommand, DiscordSendArgs,
+    DnsSpoofCommand, DnsSpoofStartArgs, EthernetCommand, EthernetDiscoverArgs,
+    EthernetInventoryArgs, EthernetPortScanArgs, EthernetSiteCredArgs, HardwareCommand,
+    HotspotCommand, HotspotStartArgs, LootCommand, LootKind, LootListArgs, LootReadArgs,
+    MitmCommand, MitmStartArgs, NotifyCommand, ProcessCommand, ProcessKillArgs, ProcessStatusArgs,
+    ResponderArgs, ResponderCommand, ReverseCommand, ReverseLaunchArgs, ScanCommand, ScanRunArgs,
+    StatusCommand, SystemCommand, SystemFdeMigrateArgs, SystemFdePrepareArgs, SystemUpdateArgs,
+    WifiBestArgs, WifiCommand, WifiCrackArgs, WifiDeauthArgs, WifiDisconnectArgs, WifiEvilTwinArgs,
+    WifiKarmaArgs, WifiPmkidArgs, WifiProbeSniffArgs, WifiProfileCommand, WifiProfileConnectArgs,
+    WifiProfileDeleteArgs, WifiProfileSaveArgs, WifiReconArpScanArgs, WifiReconBandwidthArgs,
+    WifiReconCommand, WifiReconDnsCaptureArgs, WifiReconGatewayArgs, WifiReconMdnsScanArgs,
+    WifiReconServiceScanArgs, WifiRouteCommand, WifiRouteEnsureArgs, WifiRouteMetricArgs,
+    WifiScanArgs, WifiStatusArgs, WifiSwitchArgs,
 };
 use crate::system::{
     append_payload_log, backup_repository, backup_routing_state, build_loot_path,
@@ -205,9 +204,9 @@ fn handle_eth_discover(root: &Path, args: EthernetDiscoverArgs) -> Result<Handle
 
     let timeout = Duration::from_millis(args.timeout_ms.max(50));
     let mut hosts_detail = Vec::new();
-    if let Ok(arp_result) = tokio::runtime::Handle::current().block_on(async {
-        discover_hosts_arp(&interface.name, net, Some(50), timeout).await
-    }) {
+    if let Ok(arp_result) = tokio::runtime::Handle::current()
+        .block_on(async { discover_hosts_arp(&interface.name, net, Some(50), timeout).await })
+    {
         hosts_detail.extend(arp_result.details);
     }
     if let Ok(icmp_result) = discover_hosts(net, timeout) {
@@ -403,9 +402,9 @@ fn handle_eth_inventory(root: &Path, args: EthernetInventoryArgs) -> Result<Hand
 
     // Combine ARP and ICMP to find hosts
     let mut details = Vec::new();
-    if let Ok(arp) = tokio::runtime::Handle::current().block_on(async {
-        discover_hosts_arp(&interface.name, net, Some(50), timeout).await
-    }) {
+    if let Ok(arp) = tokio::runtime::Handle::current()
+        .block_on(async { discover_hosts_arp(&interface.name, net, Some(50), timeout).await })
+    {
         details.extend(arp.details);
     }
     if let Ok(icmp) = discover_hosts(net, timeout) {
@@ -520,14 +519,14 @@ fn handle_hotspot_start(args: HotspotStartArgs) -> Result<HandlerResult> {
 
     // Start hotspot FIRST (it handles interface configuration and rfkill)
     let state = start_hotspot(cfg).context("starting hotspot")?;
-    
+
     // Now apply interface isolation to block other interfaces
     // This runs AFTER hotspot is up to avoid interfering with startup
     let mut allowed_interfaces = vec![args.ap_interface.clone()];
     if !args.upstream_interface.is_empty() {
         allowed_interfaces.push(args.upstream_interface.clone());
     }
-    
+
     // Best-effort isolation - don't fail hotspot if isolation fails
     if let Err(e) = apply_interface_isolation(&allowed_interfaces) {
         log::warn!("Interface isolation failed: {}", e);
@@ -952,9 +951,9 @@ fn handle_eth_site_cred_capture(root: &Path, args: EthernetSiteCredArgs) -> Resu
 
     // Discovery + inventory
     let mut details = Vec::new();
-    if let Ok(arp) = tokio::runtime::Handle::current().block_on(async {
-        discover_hosts_arp(&interface_info.name, net, Some(50), timeout).await
-    }) {
+    if let Ok(arp) = tokio::runtime::Handle::current()
+        .block_on(async { discover_hosts_arp(&interface_info.name, net, Some(50), timeout).await })
+    {
         details.extend(arp.details);
     }
     if let Ok(icmp) = discover_hosts(net, timeout) {
@@ -2047,7 +2046,6 @@ fn handle_bridge_stop(root: &Path, args: BridgeStopArgs) -> Result<HandlerResult
     });
     Ok(("Transparent bridge disabled".to_string(), data))
 }
-
 
 fn handle_wifi_scan(root: &Path, args: WifiScanArgs) -> Result<HandlerResult> {
     log::info!("Starting WiFi scan");

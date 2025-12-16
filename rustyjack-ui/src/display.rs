@@ -1211,35 +1211,35 @@ impl Display {
         #[cfg(target_os = "linux")]
         {
             use std::fs;
-            
+
             if let Ok(dir_entries) = fs::read_dir("/sys/class/net") {
                 for entry in dir_entries.flatten() {
                     let name = entry.file_name().to_string_lossy().to_string();
-                    
+
                     if name == "lo" {
                         continue;
                     }
-                    
+
                     let kind = if entry.path().join("wireless").exists() {
                         "wifi"
                     } else {
                         "eth"
                     };
-                    
+
                     let oper_state = fs::read_to_string(entry.path().join("operstate"))
                         .unwrap_or_else(|_| "?".into())
                         .trim()
                         .to_string();
-                    
+
                     let state_symbol = match oper_state.as_str() {
                         "up" => "UP",
                         "down" => "DN",
                         _ => "??",
                     };
-                    
+
                     let ip = self.get_interface_ip(&name);
                     let ip_display = ip.as_deref().unwrap_or("-");
-                    
+
                     entries.push(format!("{} [{}] {}", name, state_symbol, kind));
                     entries.push(format!("  IP: {}", ip_display));
                 }
@@ -1284,19 +1284,19 @@ impl Display {
         .map_err(|_| anyhow::anyhow!("Draw error"))?;
         Ok(())
     }
-    
+
     fn get_interface_ip(&self, interface: &str) -> Option<String> {
         use std::process::Command;
-        
+
         let output = Command::new("ip")
             .args(["-4", "addr", "show", "dev", interface])
             .output()
             .ok()?;
-        
+
         if !output.status.success() {
             return None;
         }
-        
+
         let stdout = String::from_utf8_lossy(&output.stdout);
         for line in stdout.lines() {
             let line = line.trim();

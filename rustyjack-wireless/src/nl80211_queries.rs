@@ -113,17 +113,17 @@ pub struct InterfaceInfo {
 /// Get scan results by parsing iw dev scan output
 pub fn get_scan_results(interface: &str) -> Result<Vec<ScanResult>> {
     use std::process::Command;
-    
+
     let output = Command::new("iw")
         .args(["dev", interface, "scan"])
         .output()
         .map_err(|e| WirelessError::System(format!("Failed to run iw scan: {}", e)))?;
-    
+
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(WirelessError::System(format!("iw scan failed: {}", stderr)));
     }
-    
+
     let stdout = String::from_utf8_lossy(&output.stdout);
     parse_scan_output(&stdout)
 }
@@ -131,16 +131,16 @@ pub fn get_scan_results(interface: &str) -> Result<Vec<ScanResult>> {
 fn parse_scan_output(output: &str) -> Result<Vec<ScanResult>> {
     let mut results = Vec::new();
     let mut current: Option<ScanResult> = None;
-    
+
     for line in output.lines() {
         let line = line.trim();
-        
+
         if line.starts_with("BSS ") {
             // Save previous entry
             if let Some(entry) = current.take() {
                 results.push(entry);
             }
-            
+
             // Parse BSSID from "BSS aa:bb:cc:dd:ee:ff"
             if let Some(bssid_part) = line.strip_prefix("BSS ") {
                 let bssid = bssid_part
@@ -148,7 +148,7 @@ fn parse_scan_output(output: &str) -> Result<Vec<ScanResult>> {
                     .next()
                     .unwrap_or("")
                     .to_string();
-                
+
                 current = Some(ScanResult {
                     bssid,
                     ssid: String::new(),
@@ -219,26 +219,26 @@ fn parse_scan_output(output: &str) -> Result<Vec<ScanResult>> {
             }
         }
     }
-    
+
     // Save last entry
     if let Some(entry) = current {
         results.push(entry);
     }
-    
+
     Ok(results)
 }
 
 /// Get link status for a connected interface
 pub fn get_link_status(interface: &str) -> Result<LinkStatus> {
     use std::process::Command;
-    
+
     let output = Command::new("iw")
         .args(["dev", interface, "link"])
         .output()
         .map_err(|e| WirelessError::System(format!("Failed to run iw link: {}", e)))?;
-    
+
     let stdout = String::from_utf8_lossy(&output.stdout);
-    
+
     // If not connected, output starts with "Not connected"
     if stdout.starts_with("Not connected") {
         return Ok(LinkStatus {
@@ -252,7 +252,7 @@ pub fn get_link_status(interface: &str) -> Result<LinkStatus> {
             rx_bitrate_mbps: None,
         });
     }
-    
+
     let mut status = LinkStatus {
         connected: true,
         ssid: None,
@@ -263,13 +263,14 @@ pub fn get_link_status(interface: &str) -> Result<LinkStatus> {
         tx_bitrate_mbps: None,
         rx_bitrate_mbps: None,
     };
-    
+
     for line in stdout.lines() {
         let line = line.trim();
-        
+
         if line.starts_with("Connected to ") {
             // "Connected to aa:bb:cc:dd:ee:ff"
-            status.bssid = line.strip_prefix("Connected to ")
+            status.bssid = line
+                .strip_prefix("Connected to ")
                 .and_then(|s| s.split_whitespace().next())
                 .map(|s| s.to_string());
         } else if line.starts_with("SSID: ") {
@@ -307,19 +308,19 @@ pub fn get_link_status(interface: &str) -> Result<LinkStatus> {
             }
         }
     }
-    
+
     Ok(status)
 }
 
 /// Get station info for AP mode
 pub fn get_station_info(interface: &str) -> Result<Vec<StationInfo>> {
     use std::process::Command;
-    
+
     let output = Command::new("iw")
         .args(["dev", interface, "station", "dump"])
         .output()
         .map_err(|e| WirelessError::System(format!("Failed to run iw station dump: {}", e)))?;
-    
+
     let stdout = String::from_utf8_lossy(&output.stdout);
     parse_station_dump(&stdout)
 }
@@ -327,24 +328,20 @@ pub fn get_station_info(interface: &str) -> Result<Vec<StationInfo>> {
 fn parse_station_dump(output: &str) -> Result<Vec<StationInfo>> {
     let mut stations = Vec::new();
     let mut current: Option<StationInfo> = None;
-    
+
     for line in output.lines() {
         let line = line.trim();
-        
+
         if line.starts_with("Station ") {
             // Save previous entry
             if let Some(entry) = current.take() {
                 stations.push(entry);
             }
-            
+
             // Parse MAC from "Station aa:bb:cc:dd:ee:ff"
             if let Some(mac_part) = line.strip_prefix("Station ") {
-                let mac = mac_part
-                    .split_whitespace()
-                    .next()
-                    .unwrap_or("")
-                    .to_string();
-                
+                let mac = mac_part.split_whitespace().next().unwrap_or("").to_string();
+
                 current = Some(StationInfo {
                     mac,
                     inactive_time_ms: 0,
@@ -435,29 +432,32 @@ fn parse_station_dump(output: &str) -> Result<Vec<StationInfo>> {
             }
         }
     }
-    
+
     // Save last entry
     if let Some(station) = current {
         stations.push(station);
     }
-    
+
     Ok(stations)
 }
 
 /// Get interface information
 pub fn get_interface_info(interface: &str) -> Result<InterfaceInfo> {
     use std::process::Command;
-    
+
     let output = Command::new("iw")
         .args(["dev", interface, "info"])
         .output()
         .map_err(|e| WirelessError::System(format!("Failed to run iw dev info: {}", e)))?;
-    
+
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(WirelessError::System(format!("iw dev info failed: {}", stderr)));
+        return Err(WirelessError::System(format!(
+            "iw dev info failed: {}",
+            stderr
+        )));
     }
-    
+
     let stdout = String::from_utf8_lossy(&output.stdout);
     parse_interface_info(interface, &stdout)
 }
@@ -476,10 +476,10 @@ fn parse_interface_info(interface: &str, output: &str) -> Result<InterfaceInfo> 
         channel_width: None,
         txpower_dbm: None,
     };
-    
+
     for line in output.lines() {
         let line = line.trim();
-        
+
         if line.starts_with("ifindex ") {
             if let Some(val) = line.split_whitespace().nth(1) {
                 if let Ok(idx) = val.parse::<u32>() {
@@ -548,6 +548,6 @@ fn parse_interface_info(interface: &str, output: &str) -> Result<InterfaceInfo> 
             }
         }
     }
-    
+
     Ok(info)
 }

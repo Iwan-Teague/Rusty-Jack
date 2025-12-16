@@ -101,11 +101,13 @@ impl ProcessManager {
     /// ```
     pub fn find_by_pattern(&self, pattern: &str) -> Result<Vec<ProcessInfo>> {
         if pattern.is_empty() {
-            return Err(ProcessError::ParseError("Pattern cannot be empty".to_string()));
+            return Err(ProcessError::ParseError(
+                "Pattern cannot be empty".to_string(),
+            ));
         }
-        
+
         let mut matches = Vec::new();
-        
+
         let proc_dir = Path::new("/proc");
         if !proc_dir.exists() {
             return Err(ProcessError::ProcRead("/proc does not exist".to_string()));
@@ -158,9 +160,9 @@ impl ProcessManager {
         if name.is_empty() {
             return Err(ProcessError::ParseError("Name cannot be empty".to_string()));
         }
-        
+
         let mut matches = Vec::new();
-        
+
         let proc_dir = Path::new("/proc");
         if !proc_dir.exists() {
             return Err(ProcessError::ProcRead("/proc does not exist".to_string()));
@@ -343,17 +345,13 @@ impl ProcessManager {
             })
             .unwrap_or_else(|_| name.clone());
 
-        Ok(ProcessInfo {
-            pid,
-            name,
-            cmdline,
-        })
+        Ok(ProcessInfo { pid, name, cmdline })
     }
 
     /// Get list of all process PIDs
     pub fn list_pids(&self) -> Result<Vec<i32>> {
         let mut pids = Vec::new();
-        
+
         let proc_dir = Path::new("/proc");
         if !proc_dir.exists() {
             return Err(ProcessError::ProcRead("/proc does not exist".to_string()));
@@ -429,11 +427,7 @@ pub fn pgrep(pattern: &str) -> Result<Vec<i32>> {
 /// * `name` - Exact process name (from `/proc/[pid]/comm`)
 pub fn pgrep_exact(name: &str) -> Result<Vec<i32>> {
     let mgr = ProcessManager::new();
-    Ok(mgr
-        .find_by_name(name)?
-        .into_iter()
-        .map(|p| p.pid)
-        .collect())
+    Ok(mgr.find_by_name(name)?.into_iter().map(|p| p.pid).collect())
 }
 
 /// Kill all processes matching a pattern (`pkill` equivalent with SIGTERM).

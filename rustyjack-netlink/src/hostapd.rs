@@ -39,13 +39,12 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use std::process::Command;
 
 use tokio::sync::{Mutex, RwLock};
 use tokio::task::JoinHandle;
 
 use crate::error::{NetlinkError, Result};
-use crate::wireless::{WirelessManager, InterfaceMode};
+use crate::wireless::{InterfaceMode, WirelessManager};
 
 /// Access Point security mode
 #[derive(Debug, Clone)]
@@ -53,9 +52,7 @@ pub enum ApSecurity {
     /// Open network (no encryption)
     Open,
     /// WPA2-PSK with passphrase
-    Wpa2Psk {
-        passphrase: String,
-    },
+    Wpa2Psk { passphrase: String },
 }
 
 impl ApSecurity {
@@ -66,7 +63,7 @@ impl ApSecurity {
             ApSecurity::Wpa2Psk { passphrase } => {
                 if passphrase.len() < 8 || passphrase.len() > 63 {
                     return Err(NetlinkError::InvalidInput(
-                        "WPA2 passphrase must be 8-63 characters".to_string()
+                        "WPA2 passphrase must be 8-63 characters".to_string(),
                     ));
                 }
                 Ok(())
@@ -129,34 +126,39 @@ impl ApConfig {
     pub fn validate(&self) -> Result<()> {
         if self.ssid.is_empty() || self.ssid.len() > 32 {
             return Err(NetlinkError::InvalidInput(
-                "SSID must be 1-32 characters".to_string()
+                "SSID must be 1-32 characters".to_string(),
             ));
         }
-        
+
         // Validate channel ranges
         match self.hw_mode {
             HardwareMode::G | HardwareMode::N if self.channel <= 14 => {
                 if self.channel == 0 || self.channel > 14 {
                     return Err(NetlinkError::InvalidInput(
-                        "2.4 GHz channel must be 1-14".to_string()
+                        "2.4 GHz channel must be 1-14".to_string(),
                     ));
                 }
             }
             HardwareMode::A | HardwareMode::N if self.channel > 14 => {
                 // 5 GHz channels (simplified validation)
-                if ![36, 40, 44, 48, 52, 56, 60, 64, 100, 104, 108, 112, 116, 120, 124, 128, 132, 136, 140, 144, 149, 153, 157, 161, 165].contains(&self.channel) {
+                if ![
+                    36, 40, 44, 48, 52, 56, 60, 64, 100, 104, 108, 112, 116, 120, 124, 128, 132,
+                    136, 140, 144, 149, 153, 157, 161, 165,
+                ]
+                .contains(&self.channel)
+                {
                     return Err(NetlinkError::InvalidInput(
-                        "Invalid 5 GHz channel".to_string()
+                        "Invalid 5 GHz channel".to_string(),
                     ));
                 }
             }
             _ => {
                 return Err(NetlinkError::InvalidInput(
-                    "Invalid channel/mode combination".to_string()
+                    "Invalid channel/mode combination".to_string(),
                 ));
             }
         }
-        
+
         self.security.validate()?;
         Ok(())
     }
@@ -237,9 +239,9 @@ impl AccessPoint {
     /// - `OperationNotSupported`: Interface doesn't support AP mode
     pub fn new(config: ApConfig) -> Result<Self> {
         config.validate()?;
-        
+
         let wireless_mgr = WirelessManager::new()?;
-        
+
         Ok(Self {
             config,
             clients: Arc::new(RwLock::new(HashMap::new())),
@@ -251,7 +253,7 @@ impl AccessPoint {
             start_time: None,
         })
     }
-    
+
     /// Start the Access Point
     ///
     /// This will:
@@ -266,82 +268,77 @@ impl AccessPoint {
     /// - `DeviceNotFound`: Interface doesn't exist
     /// - `PermissionDenied`: Need CAP_NET_ADMIN
     pub async fn start(&mut self) -> Result<()> {
-        log::info!("Starting Access Point: SSID={}, channel={}", self.config.ssid, self.config.channel);
-        
+        log::info!(
+            "Starting Access Point: SSID={}, channel={}",
+            self.config.ssid,
+            self.config.channel
+        );
+
         // Check if interface supports AP mode
-        let phy_caps = self.wireless_mgr.get_phy_capabilities(&self.config.interface)?;
-        if !phy_caps.supported_modes.is_empty()
-            && !phy_caps.supported_modes.contains(&InterfaceMode::AccessPoint)
-        {
-            return Err(NetlinkError::OperationNotSupported(
-                format!("Interface {} does not support AP mode. Supported modes: {:?}", 
-                    self.config.interface, phy_caps.supported_modes)
-            ));
+        let phy_caps = self
+            .wireless_mgr
+            .get_phy_capabilities(&self.config.interface)?;
+        let ap_supported = phy_caps.supports_ap
+            || phy_caps
+                .supported_modes
+                .iter()
+                .any(|m| *m == InterfaceMode::AccessPoint);
+
+        if !ap_supported {
+            return Err(NetlinkError::OperationNotSupported(format!(
+                "Interface {} does not support AP mode. Supported modes: {:?}",
+                self.config.interface, phy_caps.supported_modes
+            )));
         }
-        
-        // Note: Interface mode setting would be done via iw command externally if needed
-        // as set_interface_mode is not available in WirelessManager
-        
-        // Set channel (fallback to iw if nl80211 returns EBUSY)
-        if let Err(e) = self.wireless_mgr.set_channel(&self.config.interface, self.config.channel) {
-            log::warn!(
-                "nl80211 set_channel failed for {} (ch {}): {}. Falling back to iw.",
-                self.config.interface,
-                self.config.channel,
-                e
-            );
 
-            let status = Command::new("iw")
-                .args([
-                    "dev",
-                    &self.config.interface,
-                    "set",
-                    "channel",
-                    &self.config.channel.to_string(),
-                ])
-                .status()
-                .map_err(|err| {
-                    NetlinkError::System(format!(
-                        "Failed to set channel {} on {} (netlink error: {e}); iw fallback failed to run: {err}",
-                        self.config.channel, self.config.interface
-                    ))
-                })?;
-
-            if !status.success() {
-                return Err(NetlinkError::System(format!(
-                    "Failed to set channel {} on {} (netlink error: {e}); iw exit status {}",
-                    self.config.channel,
-                    self.config.interface,
-                    status
-                )));
-            }
-
-            log::info!(
-                "Channel set via iw fallback on {} (ch {})",
-                self.config.interface,
-                self.config.channel
+        // Force interface into AP mode via nl80211 (no external iw/hostapd dependencies)
+        let iface_info = self
+            .wireless_mgr
+            .get_interface_info(&self.config.interface)?;
+        if iface_info.mode != Some(InterfaceMode::AccessPoint) {
+            self.wireless_mgr
+                .set_mode(&self.config.interface, InterfaceMode::AccessPoint)
+                .map_err(|e| NetlinkError::OperationFailed(format!(
+                    "Failed to set {} to AP mode via nl80211: {}. Ensure the interface is down and unmanaged before starting the AP.",
+                    self.config.interface, e
+                )))?;
+        } else {
+            log::debug!(
+                "Interface {} already in AP mode; skipping mode change",
+                self.config.interface
             );
         }
-        
+
+        // Set channel using nl80211
+        self.wireless_mgr
+            .set_channel(&self.config.interface, self.config.channel)
+            .map_err(|e| NetlinkError::OperationFailed(format!(
+                "Failed to set channel {} on {} via nl80211: {}. Verify the interface is in AP mode and not blocked by rfkill.",
+                self.config.channel, self.config.interface, e
+            )))?;
+
         *self.running.lock().await = true;
         self.start_time = Some(Instant::now());
-        
+
         // Start beacon transmission task
         self.beacon_task = Some(self.spawn_beacon_task());
-        
+
         // Start management frame handler
         self.mgmt_task = Some(self.spawn_mgmt_task());
-        
-        log::info!("Access Point started successfully on {}", self.config.interface);
+
+        log::info!(
+            "Access Point started successfully on {}",
+            self.config.interface
+        );
         Ok(())
     }
-    
+
     /// Stop the Access Point
     pub async fn stop(&mut self) -> Result<()> {
         log::info!("Stopping Access Point");
-        
+
         *self.running.lock().await = false;
-        
+
         // Cancel tasks
         if let Some(task) = self.beacon_task.take() {
             task.abort();
@@ -349,18 +346,18 @@ impl AccessPoint {
         if let Some(task) = self.mgmt_task.take() {
             task.abort();
         }
-        
+
         // Disconnect all clients
         self.disconnect_all_clients().await;
-        
+
         // Reset interface to managed mode
         // Note: Interface mode setting would be done via iw command externally if needed
         // as set_interface_mode is not available in WirelessManager
-        
+
         log::info!("Access Point stopped");
         Ok(())
     }
-    
+
     /// Get current statistics
     pub async fn get_stats(&self) -> ApStats {
         let mut stats = self.stats.lock().await.clone();
@@ -370,22 +367,29 @@ impl AccessPoint {
         stats.clients_connected = self.clients.read().await.len() as u32;
         stats
     }
-    
+
     /// Get list of connected clients
     pub async fn get_clients(&self) -> Vec<ApClient> {
         self.clients.read().await.values().cloned().collect()
     }
-    
+
     /// Disconnect a specific client
     pub async fn disconnect_client(&self, mac: &[u8; 6]) -> Result<()> {
         if let Some(_client) = self.clients.write().await.remove(mac) {
             self.send_deauth(mac, DeauthReason::StaLeaving).await?;
-            log::info!("Disconnected client {:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}", 
-                mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+            log::info!(
+                "Disconnected client {:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
+                mac[0],
+                mac[1],
+                mac[2],
+                mac[3],
+                mac[4],
+                mac[5]
+            );
         }
         Ok(())
     }
-    
+
     /// Disconnect all clients
     async fn disconnect_all_clients(&self) {
         let clients: Vec<[u8; 6]> = self.clients.read().await.keys().copied().collect();
@@ -393,33 +397,33 @@ impl AccessPoint {
             let _ = self.disconnect_client(&mac).await;
         }
     }
-    
+
     /// Spawn beacon transmission task
     fn spawn_beacon_task(&self) -> JoinHandle<()> {
         let config = self.config.clone();
         let running = Arc::clone(&self.running);
         let stats = Arc::clone(&self.stats);
         let interface = self.config.interface.clone();
-        
+
         tokio::spawn(async move {
             let interval = Duration::from_millis(config.beacon_interval as u64);
-            
+
             while *running.lock().await {
                 // In a real implementation, we would send beacon frames via raw socket
                 // For now, we rely on the kernel's AP mode beacon transmission
                 // which is enabled when we set the interface to AP mode
-                
+
                 let mut stats_guard = stats.lock().await;
                 stats_guard.beacons_sent += 1;
                 drop(stats_guard);
-                
+
                 tokio::time::sleep(interval).await;
             }
-            
+
             log::debug!("Beacon task stopped for {}", interface);
         })
     }
-    
+
     /// Spawn management frame handler task
     fn spawn_mgmt_task(&self) -> JoinHandle<()> {
         let running = Arc::clone(&self.running);
@@ -429,7 +433,7 @@ impl AccessPoint {
         #[allow(unused_variables)]
         let config = self.config.clone();
         let interface = self.config.interface.clone();
-        
+
         tokio::spawn(async move {
             // In a real implementation, we would:
             // 1. Open a raw socket on the interface
@@ -440,29 +444,37 @@ impl AccessPoint {
             //
             // For now, we rely on the kernel's built-in AP functionality
             // which handles most of this when the interface is in AP mode
-            
+
             log::info!("Management frame handler running for {}", interface);
-            
+
             while *running.lock().await {
                 // Periodically check for inactive clients
                 tokio::time::sleep(Duration::from_secs(30)).await;
-                
+
                 let now = Instant::now();
                 let mut clients_guard = clients.write().await;
                 clients_guard.retain(|mac, client| {
-                    let inactive = now.duration_since(client.associated_at) < Duration::from_secs(300);
+                    let inactive =
+                        now.duration_since(client.associated_at) < Duration::from_secs(300);
                     if !inactive {
-                        log::info!("Client {:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X} timed out",
-                            mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+                        log::info!(
+                            "Client {:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X} timed out",
+                            mac[0],
+                            mac[1],
+                            mac[2],
+                            mac[3],
+                            mac[4],
+                            mac[5]
+                        );
                     }
                     inactive
                 });
             }
-            
+
             log::debug!("Management task stopped for {}", interface);
         })
     }
-    
+
     /// Send deauthentication frame to client
     async fn send_deauth(&self, _mac: &[u8; 6], _reason: DeauthReason) -> Result<()> {
         // In a real implementation, we would construct and send a deauth frame
@@ -471,7 +483,7 @@ impl AccessPoint {
         stats.deauth_sent += 1;
         Ok(())
     }
-    
+
     /// Check if AP is running
     pub async fn is_running(&self) -> bool {
         *self.running.lock().await
@@ -505,72 +517,64 @@ enum DeauthReason {
 
 /// Helper to generate WPA2 Pairwise Master Key from passphrase and SSID
 pub fn generate_pmk(passphrase: &str, ssid: &str) -> Result<[u8; 32]> {
-    use sha2::Sha256;
     use pbkdf2::pbkdf2_hmac;
-    
+    use sha2::Sha256;
+
     if passphrase.len() < 8 || passphrase.len() > 63 {
         return Err(NetlinkError::InvalidInput(
-            "Passphrase must be 8-63 characters".to_string()
+            "Passphrase must be 8-63 characters".to_string(),
         ));
     }
-    
+
     let mut pmk = [0u8; 32];
-    pbkdf2_hmac::<Sha256>(
-        passphrase.as_bytes(),
-        ssid.as_bytes(),
-        4096,
-        &mut pmk
-    );
-    
+    pbkdf2_hmac::<Sha256>(passphrase.as_bytes(), ssid.as_bytes(), 4096, &mut pmk);
+
     Ok(pmk)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_ap_config_validation() {
         let mut config = ApConfig::default();
         assert!(config.validate().is_ok());
-        
+
         config.ssid = "".to_string();
         assert!(config.validate().is_err());
-        
+
         config.ssid = "a".repeat(33);
         assert!(config.validate().is_err());
-        
+
         config.ssid = "ValidSSID".to_string();
         config.channel = 15;
         assert!(config.validate().is_err());
     }
-    
+
     #[test]
     fn test_wpa2_security_validation() {
         let sec = ApSecurity::Open;
         assert!(sec.validate().is_ok());
-        
+
         let sec = ApSecurity::Wpa2Psk {
             passphrase: "short".to_string(),
         };
         assert!(sec.validate().is_err());
-        
+
         let sec = ApSecurity::Wpa2Psk {
             passphrase: "ValidPassword123".to_string(),
         };
         assert!(sec.validate().is_ok());
     }
-    
+
     #[test]
     fn test_pmk_generation() {
         let pmk = generate_pmk("password123", "TestNetwork");
         assert!(pmk.is_ok());
         assert_eq!(pmk.unwrap().len(), 32);
-        
+
         let invalid = generate_pmk("short", "TestNetwork");
         assert!(invalid.is_err());
     }
 }
-
-
-

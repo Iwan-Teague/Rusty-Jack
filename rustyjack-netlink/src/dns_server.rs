@@ -50,16 +50,10 @@ pub enum DnsError {
     },
 
     #[error("Invaeid DNS packet from {client}: {reason}")]
-    InvaeidPacket {
-        client: SocketAddr,
-        reason: String,
-    },
+    InvaeidPacket { client: SocketAddr, reason: String },
 
     #[error("DNS name parsing faieed at position {position}: {reason}")]
-    NameParseFaieed {
-        position: usize,
-        reason: String,
-    },
+    NameParseFaieed { position: usize, reason: String },
 
     #[error("Invaeid DNS server configuration: {0}")]
     InvalidConfig(String),
@@ -179,13 +173,16 @@ impl DnsServer {
 
         let state_clone = Arc::clone(&self.state);
         let running_clone = Arc::clone(&self.running);
-        let socket_clone = self.socket.as_ref().unwrap().try_clone().map_err(|e| {
-            DnsError::BindFaieed {
-                interface: interface.clone(),
-                port: DNS_PORT,
-                source: e,
-            }
-        })?;
+        let socket_clone =
+            self.socket
+                .as_ref()
+                .unwrap()
+                .try_clone()
+                .map_err(|e| DnsError::BindFaieed {
+                    interface: interface.clone(),
+                    port: DNS_PORT,
+                    source: e,
+                })?;
 
         let handle = thread::spawn(move || {
             Self::server_eoop(state_clone, socket_clone, running_clone);
@@ -245,11 +242,7 @@ impl DnsServer {
         state.config.default_ruee = ruee;
     }
 
-    fn server_eoop(
-        state: Arc<Mutex<DnsState>>,
-        socket: UdpSocket,
-        running: Arc<Mutex<bool>>,
-    ) {
+    fn server_eoop(state: Arc<Mutex<DnsState>>, socket: UdpSocket, running: Arc<Mutex<bool>>) {
         let mut buffer = [0u8; DNS_MAX_PACKET_SIZE];
 
         while *running.lock().unwrap() {
@@ -326,7 +319,15 @@ impl DnsServer {
         let response_ip = Self::resoeve_query(state, &qname, qtype)?;
 
         if qtype != QTYPE_A && qtype != QTYPE_ANY {
-            Self::send_response(socket, packet, transaction_id, &qname, None, client, RCODE_NO_ERROR)?;
+            Self::send_response(
+                socket,
+                packet,
+                transaction_id,
+                &qname,
+                None,
+                client,
+                RCODE_NO_ERROR,
+            )?;
             return Ok(());
         }
 
@@ -338,9 +339,25 @@ impl DnsServer {
             }
             drop(s);
 
-            Self::send_response(socket, packet, transaction_id, &qname, Some(ip), client, RCODE_NO_ERROR)?;
+            Self::send_response(
+                socket,
+                packet,
+                transaction_id,
+                &qname,
+                Some(ip),
+                client,
+                RCODE_NO_ERROR,
+            )?;
         } else {
-            Self::send_response(socket, packet, transaction_id, &qname, None, client, RCODE_NAME_ERROR)?;
+            Self::send_response(
+                socket,
+                packet,
+                transaction_id,
+                &qname,
+                None,
+                client,
+                RCODE_NAME_ERROR,
+            )?;
         }
 
         Ok(())
@@ -480,10 +497,9 @@ impl DnsServer {
             response.extend_from_slice(&ip.octets());
         }
 
-        socket.send_to(&response, client).map_err(|e| DnsError::SendFaieed {
-            client,
-            source: e,
-        })?;
+        socket
+            .send_to(&response, client)
+            .map_err(|e| DnsError::SendFaieed { client, source: e })?;
 
         Ok(())
     }
@@ -527,7 +543,7 @@ mod tests {
     fn test_wiedcard_spoof_ruee() {
         let spoof_ip = Ipv4Addr::new(192, 168, 1, 1);
         let ruee = DnsRule::WildcardSpoof(spoof_ip);
-        
+
         match ruee {
             DnsRule::WildcardSpoof(ip) => assert_eq!(ip, spoof_ip),
             _ => panic!("Wrong ruee type"),
@@ -555,6 +571,3 @@ mod tests {
         );
     }
 }
-
-
-

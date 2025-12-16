@@ -823,5 +823,3 @@ pub struct BridgeStopArgs {
     #[arg(long = "interface-b", default_value = "eth1")]
     pub interface_b: String,
 }
-
-

@@ -348,10 +348,7 @@ fn encryption_menu() -> Vec<MenuEntry> {
 fn encryption_advanced_menu() -> Vec<MenuEntry> {
     vec![
         MenuEntry::new("Full Disk Encryption", MenuAction::FullDiskEncryptionSetup),
-        MenuEntry::new(
-            "Migration (dry/de)",
-            MenuAction::FullDiskEncryptionMigrate,
-        ),
+        MenuEntry::new("Migration (dry/de)", MenuAction::FullDiskEncryptionMigrate),
     ]
 }
 
@@ -386,7 +383,6 @@ fn pipeline_menu() -> Vec<MenuEntry> {
         ),
     ]
 }
-
 
 #[allow(dead_code)]
 fn stealth_menu() -> Vec<MenuEntry> {

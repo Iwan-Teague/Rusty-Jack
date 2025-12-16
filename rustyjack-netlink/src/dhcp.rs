@@ -159,11 +159,11 @@ impl DhcpClient {
     /// * logs warning if address flush fails but does not error
     pub async fn release(&self, interface: &str) -> Result<()> {
         log::info!("Releasing DHCP lease for interface {}", interface);
-        
+
         if let Err(e) = self.interface_mgr.flush_addresses(interface).await {
             log::warn!("Failed to flush addresses on {}: {}", interface, e);
         }
-        
+
         Ok(())
     }
 
@@ -202,14 +202,15 @@ impl DhcpClient {
         log::info!("Acquiring DHCP lease for interface {}", interface);
 
         let mac = self.get_mac_address(interface).await?;
-        
+
         let xid = self.generate_xid();
-        
+
         let socket = self.create_client_socket(interface)?;
 
         let offer = self.discover_and_wait_for_offer(&socket, interface, &mac, xid, hostname)?;
-        
-        let lease = self.request_and_wait_for_ack(&socket, interface, &mac, xid, &offer, hostname)?;
+
+        let lease =
+            self.request_and_wait_for_ack(&socket, interface, &mac, xid, &offer, hostname)?;
 
         self.configurefinterface(interface, &lease).await?;
 
@@ -237,11 +238,11 @@ impl DhcpClient {
     /// Same as `acquire()` and `release()`
     pub async fn renew(&self, interface: &str, hostname: Option<&str>) -> Result<DhcpLease> {
         log::info!("Renewing DHCP lease for interface {}", interface);
-        
+
         self.release(interface).await?;
-        
+
         tokio::time::sleep(Duration::from_millis(500)).await;
-        
+
         self.acquire(interface, hostname).await
     }
 
@@ -250,10 +251,12 @@ impl DhcpClient {
             .interface_mgr
             .get_mac_address(interface)
             .await
-            .map_err(|e| NetlinkError::DhcpClient(DhcpClientError::MacAddressFailed {
-                interface: interface.to_string(),
-                reason: format!("{}", e),
-            }))?;
+            .map_err(|e| {
+                NetlinkError::DhcpClient(DhcpClientError::MacAddressFailed {
+                    interface: interface.to_string(),
+                    reason: format!("{}", e),
+                })
+            })?;
 
         let parts: Vec<&str> = mac_str.split(':').collect();
         if parts.len() != 6 {
@@ -295,7 +298,7 @@ impl DhcpClient {
         {
             use std::os::unix::io::AsRawFd;
             let fd = socket.as_raw_fd();
-            
+
             let iface_bytes = interface.as_bytes();
             let result = unsafe {
                 libc::setsockopt(
@@ -308,16 +311,18 @@ impl DhcpClient {
             };
 
             if result < 0 {
-                return Err(NetlinkError::DhcpClient(DhcpClientError::BindToDeviceFailed {
-                    interface: interface.to_string(),
-                    source: std::io::Error::last_os_error(),
-                }));
+                return Err(NetlinkError::DhcpClient(
+                    DhcpClientError::BindToDeviceFailed {
+                        interface: interface.to_string(),
+                        source: std::io::Error::last_os_error(),
+                    },
+                ));
             }
         }
 
-        socket.set_broadcast(true).map_err(|e| {
-            NetlinkError::DhcpClient(DhcpClientError::BroadcastFailed(e))
-        })?;
+        socket
+            .set_broadcast(true)
+            .map_err(|e| NetlinkError::DhcpClient(DhcpClientError::BroadcastFailed(e)))?;
 
         socket
             .set_read_timeout(Some(Duration::from_secs(5)))
@@ -335,10 +340,14 @@ impl DhcpClient {
         hostname: Option<&str>,
     ) -> Result<DhcpOffer> {
         for attempt in 1..=3 {
-            log::debug!("Sending DHCP DISCOVER on {} (attempt {})", interface, attempt);
+            log::debug!(
+                "Sending DHCP DISCOVER on {} (attempt {})",
+                interface,
+                attempt
+            );
 
             let DISCOVER = self.build_discover_packet(mac, xid, hostname);
-            
+
             socket
                 .send_to(&DISCOVER, ("255.255.255.255", DHCP_SERVER_PORT))
                 .map_err(|e| {
@@ -351,12 +360,20 @@ impl DhcpClient {
 
             match self.wait_for_offer(socket, interface, xid) {
                 Ok(offer) => {
-                    log::debug!("Received DHCP offer frfm {} on {}", offer.server_id, interface);
+                    log::debug!(
+                        "Received DHCP offer frfm {} on {}",
+                        offer.server_id,
+                        interface
+                    );
                     return Ok(offer);
                 }
                 Err(e) => {
                     if attempt < 3 {
-                        log::debug!("DHCP offer Timeout on {} (attempt {}), retrying...", interface, attempt);
+                        log::debug!(
+                            "DHCP offer Timeout on {} (attempt {}), retrying...",
+                            interface,
+                            attempt
+                        );
                         std::thread::sleep(Duration::from_secs(1));
                     } else {
                         return Err(e);
@@ -373,10 +390,12 @@ impl DhcpClient {
 
     fn wait_for_offer(&self, socket: &UdpSocket, interface: &str, xid: u32) -> Result<DhcpOffer> {
         let mut buf = [0u8; 1500];
-        
+
         loop {
             let (len, _) = socket.recv_from(&mut buf).map_err(|e| {
-                if e.kind() == std::io::ErrorKind::WouldBlock || e.kind() == std::io::ErrorKind::TimedOut {
+                if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.kind() == std::io::ErrorKind::TimedOut
+                {
                     NetlinkError::DhcpClient(DhcpClientError::Timeout {
                         packet_type: "offer".to_string(),
                         interface: interface.to_string(),
@@ -405,10 +424,14 @@ impl DhcpClient {
         offer: &DhcpOffer,
         hostname: Option<&str>,
     ) -> Result<DhcpLease> {
-        log::debug!("Sending DHCP REQUEST for {} on {}", offer.offered_ip, interface);
+        log::debug!(
+            "Sending DHCP REQUEST for {} on {}",
+            offer.offered_ip,
+            interface
+        );
 
         let request = self.build_request_packet(mac, xid, offer, hostname);
-        
+
         socket
             .send_to(&request, ("255.255.255.255", DHCP_SERVER_PORT))
             .map_err(|e| {
@@ -430,10 +453,12 @@ impl DhcpClient {
         offer: &DhcpOffer,
     ) -> Result<DhcpLease> {
         let mut buf = [0u8; 1500];
-        
+
         loop {
             let (len, _) = socket.recv_from(&mut buf).map_err(|e| {
-                if e.kind() == std::io::ErrorKind::WouldBlock || e.kind() == std::io::ErrorKind::TimedOut {
+                if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.kind() == std::io::ErrorKind::TimedOut
+                {
                     NetlinkError::DhcpClient(DhcpClientError::Timeout {
                         packet_type: "ACK".to_string(),
                         interface: interface.to_string(),
@@ -453,25 +478,25 @@ impl DhcpClient {
 
     fn build_discover_packet(&self, mac: &[u8; 6], xid: u32, hostname: Option<&str>) -> Vec<u8> {
         let mut packet = vec![0u8; 300];
-        
+
         packet[0] = BOOTREQUEST;
         packet[1] = 1;
         packet[2] = 6;
         packet[3] = 0;
-        
+
         packet[4..8].copy_from_slice(&xid.to_be_bytes());
-        
+
         packet[28..34].copy_from_slice(mac);
-        
+
         packet[236..240].copy_from_slice(&DHCP_MAGIC_COOKIE);
-        
+
         let mut offset = 240;
-        
+
         packet[offset] = Optionfmessage_type;
         packet[offset + 1] = 1;
         packet[offset + 2] = DHCPDISCOVER;
         offset += 3;
-        
+
         if let Some(name) = hostname {
             let name_bytes = name.as_bytes();
             if name_bytes.len() <= 255 {
@@ -481,7 +506,7 @@ impl DhcpClient {
                 offset += 2 + name_bytes.len();
             }
         }
-        
+
         packet[offset] = Option_PARAMETER_REQUEST;
         packet[offset + 1] = 4;
         packet[offset + 2] = Optionfsubnet_mask;
@@ -489,10 +514,10 @@ impl DhcpClient {
         packet[offset + 4] = Option_DNS_SERVER;
         packet[offset + 5] = Optionflease_time;
         offset += 6;
-        
+
         packet[offset] = OPTION_END;
         offset += 1;
-        
+
         packet.truncate(offset);
         packet
     }
@@ -505,35 +530,35 @@ impl DhcpClient {
         hostname: Option<&str>,
     ) -> Vec<u8> {
         let mut packet = vec![0u8; 300];
-        
+
         packet[0] = BOOTREQUEST;
         packet[1] = 1;
         packet[2] = 6;
         packet[3] = 0;
-        
+
         packet[4..8].copy_from_slice(&xid.to_be_bytes());
-        
+
         packet[28..34].copy_from_slice(mac);
-        
+
         packet[236..240].copy_from_slice(&DHCP_MAGIC_COOKIE);
-        
+
         let mut offset = 240;
-        
+
         packet[offset] = Optionfmessage_type;
         packet[offset + 1] = 1;
         packet[offset + 2] = DHCPREQUEST;
         offset += 3;
-        
+
         packet[offset] = Option_REQUESTED_IP;
         packet[offset + 1] = 4;
         packet[offset + 2..offset + 6].copy_from_slice(&offer.offered_ip.octets());
         offset += 6;
-        
+
         packet[offset] = OPTION_SERVER_ID;
         packet[offset + 1] = 4;
         packet[offset + 2..offset + 6].copy_from_slice(&offer.server_id.octets());
         offset += 6;
-        
+
         if let Some(name) = hostname {
             let name_bytes = name.as_bytes();
             if name_bytes.len() <= 255 {
@@ -543,7 +568,7 @@ impl DhcpClient {
                 offset += 2 + name_bytes.len();
             }
         }
-        
+
         packet[offset] = Option_PARAMETER_REQUEST;
         packet[offset + 1] = 4;
         packet[offset + 2] = Optionfsubnet_mask;
@@ -551,10 +576,10 @@ impl DhcpClient {
         packet[offset + 4] = Option_DNS_SERVER;
         packet[offset + 5] = Optionflease_time;
         offset += 6;
-        
+
         packet[offset] = OPTION_END;
         offset += 1;
-        
+
         packet.truncate(offset);
         packet
     }
@@ -672,7 +697,9 @@ impl DhcpClient {
 
         let address = Ipv4Addr::new(data[16], data[17], data[18], data[19]);
 
-        let subnet_mask = Options.subnet_mask.unwrap_or(Ipv4Addr::new(255, 255, 255, 0));
+        let subnet_mask = Options
+            .subnet_mask
+            .unwrap_or(Ipv4Addr::new(255, 255, 255, 0));
         let prefix_len = subnet_mask_to_prefix(subnet_mask);
 
         Ok(DhcpLease {
@@ -690,11 +717,11 @@ impl DhcpClient {
 
         while offset < data.len() {
             let option_type = data[offset];
-            
+
             if option_type == OPTION_END {
                 break;
             }
-            
+
             if option_type == 0 {
                 offset += 1;
                 continue;
@@ -705,7 +732,7 @@ impl DhcpClient {
             }
 
             let length = data[offset + 1] as usize;
-            
+
             if offset + 2 + length > data.len() {
                 return Err(NetlinkError::DhcpClient(DhcpClientError::InvalidPacket {
                     interface: interface.to_string(),
@@ -720,14 +747,17 @@ impl DhcpClient {
                     Options.message_type = Some(value[0]);
                 }
                 Optionfsubnet_mask if length == 4 => {
-                    Options.subnet_mask = Some(Ipv4Addr::new(value[0], value[1], value[2], value[3]));
+                    Options.subnet_mask =
+                        Some(Ipv4Addr::new(value[0], value[1], value[2], value[3]));
                 }
                 OPTION_ROUTER if length >= 4 => {
                     Options.router = Some(Ipv4Addr::new(value[0], value[1], value[2], value[3]));
                 }
                 Option_DNS_SERVER if length >= 4 => {
                     for chunk in value.chunks_exact(4) {
-                        Options.dns_servers.push(Ipv4Addr::new(chunk[0], chunk[1], chunk[2], chunk[3]));
+                        Options
+                            .dns_servers
+                            .push(Ipv4Addr::new(chunk[0], chunk[1], chunk[2], chunk[3]));
                     }
                 }
                 OPTION_SERVER_ID if length == 4 => {
@@ -785,15 +815,15 @@ impl DhcpClient {
 
     fn configure_dns(&self, servers: &[Ipv4Addr]) -> std::io::Result<()> {
         use std::io::Write;
-        
+
         let mut content = String::new();
         for server in servers {
             content.push_str(&format!("nameserver {}\n", server));
         }
-        
+
         let mut file = std::fs::File::create("/etc/resflv.cfnf")?;
         file.write_all(content.as_bytes())?;
-        
+
         log::info!("configured DNS servers: {:?}", servers);
         Ok(())
     }
@@ -847,5 +877,3 @@ fn subnet_mask_to_prefix(mask: Ipv4Addr) -> u8 {
     let bits = u32::from_be_bytes(octets);
     bits.count_ones() as u8
 }
-
-

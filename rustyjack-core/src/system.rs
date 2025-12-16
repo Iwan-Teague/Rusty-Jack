@@ -43,9 +43,8 @@ use serde_json::{json, Map, Value};
 use zeroize::Zeroize;
 
 use crate::netlink_helpers::{
-    netlink_set_interface_up, netlink_set_interface_down,
-    rfkill_block, rfkill_unblock, rfkill_find_index,
-    process_kill_pattern, process_running
+    netlink_set_interface_down, netlink_set_interface_up, process_kill_pattern, process_running,
+    rfkill_block, rfkill_find_index, rfkill_unblock,
 };
 
 #[derive(Debug, Clone, Serialize)]
@@ -467,7 +466,7 @@ pub fn kill_process(name: &str) -> Result<KillResult> {
             Err(e) => bail!("Failed to kill process {}: {}", name, e),
         }
     }
-    
+
     #[cfg(not(target_os = "linux"))]
     {
         let status = Command::new("pkill")
@@ -500,7 +499,7 @@ pub fn process_running_exact(name: &str) -> Result<bool> {
             .exists_name(name)
             .with_context(|| format!("checking for process {name}"))
     }
-    
+
     #[cfg(not(target_os = "linux"))]
     {
         let status = Command::new("pgrep")
@@ -512,8 +511,7 @@ pub fn process_running_exact(name: &str) -> Result<bool> {
 }
 
 pub fn process_running_pattern(pattern: &str) -> Result<bool> {
-    process_running(pattern)
-        .with_context(|| format!("checking for pattern {pattern}"))
+    process_running(pattern).with_context(|| format!("checking for pattern {pattern}"))
 }
 
 pub fn compose_status_text(
@@ -1041,10 +1039,10 @@ pub fn apply_interface_isolation(allowed: &[String]) -> Result<()> {
                     let _ = rfkill_unblock(idx);
                 }
             }
-            
+
             // Bring interface up (don't fail if wireless can't be brought up)
             let up_result = netlink_set_interface_up(&iface);
-                
+
             if let Err(e) = up_result {
                 // For wireless, this is expected if not associated with AP - not an error
                 if !is_wireless {
@@ -1054,7 +1052,7 @@ pub fn apply_interface_isolation(allowed: &[String]) -> Result<()> {
         } else {
             // Bring interface down
             let _ = netlink_set_interface_down(&iface);
-                
+
             // For wireless: block with rfkill after bringing down
             if is_wireless {
                 if let Ok(Some(idx)) = rfkill_find_index(&iface) {
@@ -1063,12 +1061,12 @@ pub fn apply_interface_isolation(allowed: &[String]) -> Result<()> {
             }
         }
     }
-    
+
     // Only fail if we had errors on non-wireless interfaces
     if !errors.is_empty() {
         bail!("Interface isolation errors: {}", errors.join("; "));
     }
-    
+
     Ok(())
 }
 
@@ -1081,12 +1079,12 @@ pub fn enforce_single_interface(interface: &str) -> Result<()> {
 
 pub fn set_default_route(interface: &str, gateway: Ipv4Addr) -> Result<()> {
     use std::net::IpAddr;
-    
+
     #[cfg(target_os = "linux")]
     {
         let iface = interface.to_string();
         let gw = IpAddr::V4(gateway);
-        
+
         tokio::runtime::Handle::try_current()
             .map(|handle| {
                 handle.block_on(async {
@@ -1105,7 +1103,7 @@ pub fn set_default_route(interface: &str, gateway: Ipv4Addr) -> Result<()> {
                 })
             })
     }
-    
+
     #[cfg(not(target_os = "linux"))]
     bail!("Route management only supported on Linux")
 }
@@ -2096,9 +2094,7 @@ pub fn connect_wifi_network(interface: &str, ssid: &str, password: Option<&str>)
     std::thread::sleep(std::time::Duration::from_millis(500));
 
     // Release DHCP lease
-    if let Err(e) = rt.block_on(async {
-        rustyjack_netlink::dhcp_release(interface).await
-    }) {
+    if let Err(e) = rt.block_on(async { rustyjack_netlink::dhcp_release(interface).await }) {
         log::warn!("Failed to release DHCP lease for {}: {}", interface, e);
     }
     std::thread::sleep(std::time::Duration::from_millis(100));
@@ -2113,18 +2109,15 @@ pub fn connect_wifi_network(interface: &str, ssid: &str, password: Option<&str>)
     log::info!("Connecting via NetworkManager...");
     if let Err(e) = rt.block_on(async {
         rustyjack_netlink::networkmanager::connect_wifi(
-            interface,
-            ssid,
-            password,
-            20, // 20 second timeout
+            interface, ssid, password, 20, // 20 second timeout
         )
         .await
     }) {
         log::error!("NetworkManager connection failed for {ssid} on {interface}: {e}");
-        
+
         // Attempt cleanup before failing
         let _ = cleanup_wifi_interface(interface);
-        
+
         bail!("Failed to connect to {ssid} on {interface}: {e}");
     }
 
@@ -2134,9 +2127,8 @@ pub fn connect_wifi_network(interface: &str, ssid: &str, password: Option<&str>)
     let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
     let mut dhcp_success = false;
     for attempt in 1..=3 {
-        let dhcp_result = rt.block_on(async {
-            rustyjack_netlink::dhcp_acquire(interface, None).await
-        });
+        let dhcp_result =
+            rt.block_on(async { rustyjack_netlink::dhcp_acquire(interface, None).await });
 
         match dhcp_result {
             Ok(lease) => {
@@ -2183,18 +2175,16 @@ pub fn disconnect_wifi_interface(interface: Option<String>) -> Result<String> {
     log::info!("Disconnecting WiFi interface: {iface}");
 
     let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
-    if let Err(e) = rt.block_on(async {
-        rustyjack_netlink::networkmanager::disconnect_device(&iface).await
-    }) {
+    if let Err(e) =
+        rt.block_on(async { rustyjack_netlink::networkmanager::disconnect_device(&iface).await })
+    {
         log::error!("NetworkManager disconnect failed for {iface}: {e}");
         bail!("Failed to disconnect {iface}: {e}");
     }
 
     log::info!("Releasing DHCP lease for {iface}");
     let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
-    if let Err(e) = rt.block_on(async {
-        rustyjack_netlink::dhcp_release(&iface).await
-    }) {
+    if let Err(e) = rt.block_on(async { rustyjack_netlink::dhcp_release(&iface).await }) {
         log::warn!("Failed to release DHCP lease for {}: {}", iface, e);
     }
 
@@ -2232,10 +2222,12 @@ pub fn cleanup_wifi_interface(interface: &str) -> Result<()> {
 
     // Release DHCP if any
     let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
-    if let Err(e) = rt.block_on(async {
-        rustyjack_netlink::dhcp_release(interface).await
-    }) {
-        log::warn!("Failed to release DHCP lease during cleanup for {}: {}", interface, e);
+    if let Err(e) = rt.block_on(async { rustyjack_netlink::dhcp_release(interface).await }) {
+        log::warn!(
+            "Failed to release DHCP lease during cleanup for {}: {}",
+            interface,
+            e
+        );
     }
 
     // Ensure interface is up

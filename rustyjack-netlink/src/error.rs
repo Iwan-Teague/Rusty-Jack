@@ -102,7 +102,9 @@ pub enum NetlinkError {
         reason: String,
     },
 
-    #[error("Failed to open /dev/rfkill: {reason}. Ensure device exists and you have permissions.")]
+    #[error(
+        "Failed to open /dev/rfkill: {reason}. Ensure device exists and you have permissions."
+    )]
     RfkillDeviceError { reason: String },
 
     // Process errors
@@ -124,7 +126,9 @@ pub enum NetlinkError {
     #[error("ARP operation failed on '{interface}': {reason}")]
     ArpError { interface: String, reason: String },
 
-    #[error("Failed to create raw socket for ARP on '{interface}': {reason}. Root privileges required.")]
+    #[error(
+        "Failed to create raw socket for ARP on '{interface}': {reason}. Root privileges required."
+    )]
     ArpSocketError { interface: String, reason: String },
 
     // DHCP errors

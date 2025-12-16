@@ -1,9 +1,9 @@
+use libc::{sockaddr_ll, socket, AF_PACKET, SOCK_RAW};
 use std::net::Ipv4Addr;
 use std::time::{Duration, Instant};
-use libc::{AF_PACKET, SOCK_RAW, sockaddr_ll, socket};
 
-use crate::arp::{subnet_to_ips, parse_mac_address};
 use super::{ArpError, ArpPacket, ArpScanConfig, ArpScanResult};
+use crate::arp::{parse_mac_address, subnet_to_ips};
 use crate::error::{NetlinkError, Result};
 use crate::interface::InterfaceManager;
 
@@ -26,11 +26,7 @@ impl ArpScanner {
     }
 
     /// Scan a single IP address
-    pub fn scan_ip(
-        &self,
-        target_ip: Ipv4Addr,
-        interface: &str,
-    ) -> Result<Option<ArpScanResult>> {
+    pub fn scan_ip(&self, target_ip: Ipv4Addr, interface: &str) -> Result<Option<ArpScanResult>> {
         let start_time = Instant::now();
 
         // Get interface index and MAC address
@@ -61,8 +57,10 @@ impl ArpScanner {
             match self.receive_arp_reply(sock_fd, target_ip, interface) {
                 Ok(Some(reply_mac)) => {
                     let response_time = start_time.elapsed().as_millis() as u64;
-                    unsafe { libc::close(sock_fd); }
-                    
+                    unsafe {
+                        libc::close(sock_fd);
+                    }
+
                     return Ok(Some(ArpScanResult {
                         ip: target_ip,
                         mac: reply_mac,
@@ -72,23 +70,23 @@ impl ArpScanner {
                 }
                 Ok(None) => continue, // Timeout, try again
                 Err(e) => {
-                    unsafe { libc::close(sock_fd); }
+                    unsafe {
+                        libc::close(sock_fd);
+                    }
                     return Err(e);
                 }
             }
         }
 
         // No response after retries
-        unsafe { libc::close(sock_fd); }
+        unsafe {
+            libc::close(sock_fd);
+        }
         Ok(None)
     }
 
     /// Scan multiple IP addresses
-    pub fn scan_ips(
-        &self,
-        targets: &[Ipv4Addr],
-        interface: &str,
-    ) -> Result<Vec<ArpScanResult>> {
+    pub fn scan_ips(&self, targets: &[Ipv4Addr], interface: &str) -> Result<Vec<ArpScanResult>> {
         let mut results = Vec::new();
 
         for target in targets {
@@ -101,15 +99,16 @@ impl ArpScanner {
     }
 
     /// Scan entire subnet
-    pub fn scan_subnet(
-        &self,
-        subnet: &str,
-        interface: &str,
-    ) -> Result<Vec<ArpScanResult>> {
+    pub fn scan_subnet(&self, subnet: &str, interface: &str) -> Result<Vec<ArpScanResult>> {
         let ips = subnet_to_ips(subnet)?;
-        
-        log::info!("Scanning {} hosts in subnet {} on {}", ips.len(), subnet, interface);
-        
+
+        log::info!(
+            "Scanning {} hosts in subnet {} on {}",
+            ips.len(),
+            subnet,
+            interface
+        );
+
         self.scan_ips(&ips, interface)
     }
 
@@ -124,20 +123,15 @@ impl ArpScanner {
     }
 
     /// Get MAC address for an IP (ARP lookup)
-    pub fn get_mac(
-        &self,
-        target_ip: Ipv4Addr,
-        interface: &str,
-    ) -> Result<Option<[u8; 6]>> {
+    pub fn get_mac(&self, target_ip: Ipv4Addr, interface: &str) -> Result<Option<[u8; 6]>> {
         Ok(self.scan_ip(target_ip, interface)?.map(|r| r.mac))
     }
 
     // Private helper methods
 
     fn create_raw_socket(&self, interface: &str) -> Result<i32> {
-        let sock_fd = unsafe {
-            socket(AF_PACKET, SOCK_RAW, (libc::ETH_P_ARP as u16).to_be() as i32)
-        };
+        let sock_fd =
+            unsafe { socket(AF_PACKET, SOCK_RAW, (libc::ETH_P_ARP as u16).to_be() as i32) };
 
         if sock_fd < 0 {
             let err = std::io::Error::last_os_error();
@@ -214,7 +208,7 @@ impl ArpScanner {
     ) -> Result<()> {
         // Ethernet frame: dest MAC (broadcast) + source MAC + EtherType (ARP) + ARP packet
         let local_mac = self.get_interface_mac(interface)?;
-        
+
         let mut frame = Vec::new();
         frame.extend_from_slice(&[0xFF; 6]); // Broadcast MAC
         frame.extend_from_slice(&local_mac); // Source MAC
@@ -272,8 +266,9 @@ impl ArpScanner {
 
             if result < 0 {
                 let err = std::io::Error::last_os_error();
-                if err.kind() == std::io::ErrorKind::WouldBlock 
-                    || err.kind() == std::io::ErrorKind::TimedOut {
+                if err.kind() == std::io::ErrorKind::WouldBlock
+                    || err.kind() == std::io::ErrorKind::TimedOut
+                {
                     return Ok(None); // Timeout
                 }
                 return Err(NetlinkError::Arp(ArpError::ReceiveReply {
@@ -299,43 +294,40 @@ impl ArpScanner {
 
     fn get_interface_index(&self, interface: &str) -> Result<u32> {
         let mgr = InterfaceManager::new()?;
-        
+
         tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async {
-                mgr.get_index(interface).await
-            })
+            tokio::runtime::Handle::current().block_on(async { mgr.get_index(interface).await })
         })
     }
 
     fn get_interface_mac(&self, interface: &str) -> Result<[u8; 6]> {
         use std::fs;
-        
+
         let path = format!("/sys/class/net/{}/address", interface);
-        let mac_str = fs::read_to_string(&path)
-            .map_err(|e| NetlinkError::Arp(ArpError::MacAddressError {
+        let mac_str = fs::read_to_string(&path).map_err(|e| {
+            NetlinkError::Arp(ArpError::MacAddressError {
                 interface: interface.to_string(),
                 reason: format!("Failed to read {}: {}", path, e),
-            }))?;
-        
+            })
+        })?;
+
         parse_mac_address(mac_str.trim()).map_err(|e| NetlinkError::Arp(e))
     }
 
     fn get_interface_ip(&self, interface: &str) -> Result<Ipv4Addr> {
         let mgr = InterfaceManager::new()?;
-        
+
         let addrs = tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async {
-                mgr.get_addresses(interface).await
-            })
+            tokio::runtime::Handle::current().block_on(async { mgr.get_addresses(interface).await })
         })?;
-        
+
         // Find first IPv4 address
         for addr_info in addrs {
             if let std::net::IpAddr::V4(ipv4) = addr_info.address {
                 return Ok(ipv4);
             }
         }
-        
+
         Err(NetlinkError::Arp(ArpError::MacAddressError {
             interface: interface.to_string(),
             reason: "No IPv4 address configured on interface".to_string(),

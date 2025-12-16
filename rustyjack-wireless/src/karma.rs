@@ -8,6 +8,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
+use std::net::IpAddr;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::{
@@ -16,7 +17,6 @@ use std::sync::{
 };
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use std::net::IpAddr;
 
 use chrono::Local;
 
@@ -24,8 +24,11 @@ use crate::capture::{CaptureFilter, PacketCapture};
 use crate::error::{Result, WirelessError};
 use crate::frames::{FrameSubtype, FrameType};
 use crate::interface::WirelessInterface;
+use crate::netlink_helpers::{
+    netlink_add_address, netlink_flush_addresses, netlink_set_interface_down,
+    netlink_set_interface_up,
+};
 use crate::probe::ProbeSniffer;
-use crate::netlink_helpers::{netlink_set_interface_down, netlink_set_interface_up, netlink_flush_addresses, netlink_add_address};
 use crate::process_helpers::pkill_exact_force;
 
 /// Karma attack configuration
@@ -185,7 +188,9 @@ impl KarmaAttack {
 
     /// Get or create a BSSID for an SSID
     fn get_bssid_for_ssid(&self, ssid: &str) -> String {
-        let mut map = self.ssid_to_bssid.lock()
+        let mut map = self
+            .ssid_to_bssid
+            .lock()
             .expect("BSSID map mutex poisoned - internal error");
         map.entry(ssid.to_string())
             .or_insert_with(Self::generate_bssid)
@@ -666,11 +671,12 @@ where
     // Setup AP interface
     let _ = netlink_set_interface_down(ap_interface);
     let _ = netlink_flush_addresses(ap_interface);
-    
-    let addr: IpAddr = "192.168.4.1".parse()
+
+    let addr: IpAddr = "192.168.4.1"
+        .parse()
         .map_err(|e| WirelessError::System(format!("Failed to parse IP: {}", e)))?;
     netlink_add_address(ap_interface, addr, 24)?;
-    
+
     let _ = netlink_set_interface_up(ap_interface);
 
     // Create hostapd config

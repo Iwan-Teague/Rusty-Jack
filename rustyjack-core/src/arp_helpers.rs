@@ -2,10 +2,14 @@ use anyhow::Result;
 use std::net::Ipv4Addr;
 
 #[cfg(target_os = "linux")]
-pub fn arp_scan_subnet(subnet: &str, interface: &str) -> Result<Vec<rustyjack_netlink::ArpScanResult>> {
+pub fn arp_scan_subnet(
+    subnet: &str,
+    interface: &str,
+) -> Result<Vec<rustyjack_netlink::ArpScanResult>> {
     use rustyjack_netlink::ArpScanner;
     let scanner = ArpScanner::new();
-    scanner.scan_subnet(subnet, interface)
+    scanner
+        .scan_subnet(subnet, interface)
         .map_err(|e| anyhow::anyhow!("ARP scan failed on {}: {}", interface, e))
 }
 
@@ -13,7 +17,8 @@ pub fn arp_scan_subnet(subnet: &str, interface: &str) -> Result<Vec<rustyjack_ne
 pub fn arp_get_mac(ip: Ipv4Addr, interface: &str) -> Result<Option<[u8; 6]>> {
     use rustyjack_netlink::ArpScanner;
     let scanner = ArpScanner::new();
-    scanner.get_mac(ip, interface)
+    scanner
+        .get_mac(ip, interface)
         .map_err(|e| anyhow::anyhow!("Failed to get MAC for {} on {}: {}", ip, interface, e))
 }
 
@@ -21,7 +26,8 @@ pub fn arp_get_mac(ip: Ipv4Addr, interface: &str) -> Result<Option<[u8; 6]>> {
 pub fn arp_is_alive(ip: Ipv4Addr, interface: &str) -> Result<bool> {
     use rustyjack_netlink::ArpScanner;
     let scanner = ArpScanner::new();
-    scanner.is_alive(ip, interface)
+    scanner
+        .is_alive(ip, interface)
         .map_err(|e| anyhow::anyhow!("Failed to check if {} is alive on {}: {}", ip, interface, e))
 }
 

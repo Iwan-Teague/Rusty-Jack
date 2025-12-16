@@ -1,16 +1,10 @@
-use std::{
-    fs,
-    path::Path,
-    process::Command,
-    thread,
-    time::Duration,
-};
+use std::{fs, path::Path, process::Command, thread, time::Duration};
 
-use anyhow::{Result, Context, anyhow};
-use log::{info, warn, debug};
-use rand::Rng;
-use serde::{Serialize, Deserialize};
 use crate::netlink_helpers::{netlink_set_interface_down, netlink_set_interface_up};
+use anyhow::{anyhow, Context, Result};
+use log::{debug, info, warn};
+use rand::Rng;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EvasionConfig {
@@ -38,7 +32,7 @@ impl Default for EvasionConfig {
 /// Generate a random MAC address with a valid vendor prefix
 pub fn generate_random_mac(preserve_vendor: bool, current_mac: Option<&str>) -> Result<String> {
     let mut rng = rand::thread_rng();
-    
+
     if preserve_vendor {
         // Keep first 3 octets (OUI), randomize last 3
         if let Some(mac) = current_mac {
@@ -46,7 +40,9 @@ pub fn generate_random_mac(preserve_vendor: bool, current_mac: Option<&str>) -> 
             if parts.len() == 6 {
                 return Ok(format!(
                     "{}:{}:{}:{:02x}:{:02x}:{:02x}",
-                    parts[0], parts[1], parts[2],
+                    parts[0],
+                    parts[1],
+                    parts[2],
                     rng.gen::<u8>(),
                     rng.gen::<u8>(),
                     rng.gen::<u8>()
@@ -54,11 +50,11 @@ pub fn generate_random_mac(preserve_vendor: bool, current_mac: Option<&str>) -> 
             }
         }
     }
-    
+
     // Generate completely random MAC
     // Set locally administered bit (bit 1 of first octet)
     let first = rng.gen::<u8>() | 0x02;
-    
+
     Ok(format!(
         "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
         first,
@@ -73,19 +69,17 @@ pub fn generate_random_mac(preserve_vendor: bool, current_mac: Option<&str>) -> 
 /// Set MAC address for an interface
 pub fn set_mac_address(interface: &str, mac: &str) -> Result<()> {
     // Bring interface down
-    netlink_set_interface_down(interface)
-        .context("bringing interface down")?;
-    
+    netlink_set_interface_down(interface).context("bringing interface down")?;
+
     // Set new MAC (still requires ip command - netlink MAC setting pending)
     Command::new("ip")
         .args(["link", "set", interface, "address", mac])
         .status()
         .context("setting MAC address")?;
-    
+
     // Bring interface back up
-    netlink_set_interface_up(interface)
-        .context("bringing interface up")?;
-    
+    netlink_set_interface_up(interface).context("bringing interface up")?;
+
     info!("MAC address changed to {} on {}", mac, interface);
     Ok(())
 }
@@ -96,9 +90,9 @@ pub fn get_mac_address(interface: &str) -> Result<String> {
         .args(["link", "show", interface])
         .output()
         .context("reading MAC address")?;
-    
+
     let stdout = String::from_utf8_lossy(&output.stdout);
-    
+
     // Parse MAC from output like: "link/ether aa:bb:cc:dd:ee:ff brd ff:ff:ff:ff:ff:ff"
     for line in stdout.lines() {
         if line.contains("link/ether") {
@@ -108,7 +102,7 @@ pub fn get_mac_address(interface: &str) -> Result<String> {
             }
         }
     }
-    
+
     Err(anyhow!("Could not parse MAC address from ip output"))
 }
 
@@ -143,7 +137,7 @@ pub fn spoof_os_fingerprint(os_type: &str) -> Result<()> {
             return Err(anyhow!("Unknown OS type: {}", os_type));
         }
     }
-    
+
     Ok(())
 }
 
@@ -153,11 +147,11 @@ fn set_sysctl(param: &str, value: &str) -> Result<()> {
         .args(["-w", &format!("{}={}", param, value)])
         .status()
         .context("setting sysctl parameter")?;
-    
+
     if !status.success() {
         warn!("Failed to set sysctl {} = {}", param, value);
     }
-    
+
     Ok(())
 }
 
@@ -170,7 +164,7 @@ pub fn randomize_ttl() -> Result<()> {
         1 => 128,
         _ => 255,
     };
-    
+
     set_sysctl("net.ipv4.ip_default_ttl", &ttl.to_string())?;
     debug!("TTL randomized to {}", ttl);
     Ok(())
@@ -179,10 +173,10 @@ pub fn randomize_ttl() -> Result<()> {
 /// Configure packet fragmentation using TCP MSS clamping
 pub fn enable_packet_fragmentation(enable: bool) -> Result<()> {
     use rustyjack_netlink::IptablesManager;
-    
+
     let ipt = IptablesManager::new()
         .context("Failed to initialize iptables manager for packet fragmentation")?;
-    
+
     if enable {
         ipt.add_tcp_mss(500)
             .context("Failed to enable packet fragmentation via TCP MSS")?;
@@ -191,7 +185,7 @@ pub fn enable_packet_fragmentation(enable: bool) -> Result<()> {
         ipt.delete_tcp_mss(500).ok();
         info!("Packet fragmentation disabled");
     }
-    
+
     Ok(())
 }
 
@@ -205,59 +199,58 @@ pub fn random_delay(min_ms: u64, max_ms: u64) {
 /// Start MAC rotation daemon
 pub fn start_mac_rotation(interface: String, interval_secs: u64) -> Result<()> {
     let iface_clone = interface.clone();
-    
-    thread::spawn(move || {
-        loop {
-            thread::sleep(Duration::from_secs(interval_secs));
-            
-            match get_mac_address(&iface_clone) {
-                Ok(current_mac) => {
-                    match generate_random_mac(true, Some(&current_mac)) {
-                        Ok(new_mac) => {
-                            if let Err(e) = set_mac_address(&iface_clone, &new_mac) {
-                                warn!("Failed to rotate MAC: {}", e);
-                            } else {
-                                info!("MAC rotated on {}: {}", iface_clone, new_mac);
-                            }
-                        }
-                        Err(e) => warn!("Failed to generate MAC: {}", e),
+
+    thread::spawn(move || loop {
+        thread::sleep(Duration::from_secs(interval_secs));
+
+        match get_mac_address(&iface_clone) {
+            Ok(current_mac) => match generate_random_mac(true, Some(&current_mac)) {
+                Ok(new_mac) => {
+                    if let Err(e) = set_mac_address(&iface_clone, &new_mac) {
+                        warn!("Failed to rotate MAC: {}", e);
+                    } else {
+                        info!("MAC rotated on {}: {}", iface_clone, new_mac);
                     }
                 }
-                Err(e) => warn!("Failed to get current MAC: {}", e),
-            }
+                Err(e) => warn!("Failed to generate MAC: {}", e),
+            },
+            Err(e) => warn!("Failed to get current MAC: {}", e),
         }
     });
-    
-    info!("MAC rotation started on {} (interval: {}s)", interface, interval_secs);
+
+    info!(
+        "MAC rotation started on {} (interval: {}s)",
+        interface, interval_secs
+    );
     Ok(())
 }
 
 /// Apply full evasion profile
 pub fn apply_evasion_profile(interface: &str, config: &EvasionConfig) -> Result<()> {
     info!("Applying evasion profile to {}", interface);
-    
+
     if config.mac_randomization {
         let current = get_mac_address(interface)?;
         let new_mac = generate_random_mac(true, Some(&current))?;
         set_mac_address(interface, &new_mac)?;
-        
+
         if config.mac_rotation_interval_secs > 0 {
             start_mac_rotation(interface.to_string(), config.mac_rotation_interval_secs)?;
         }
     }
-    
+
     if config.ttl_randomization {
         randomize_ttl()?;
     }
-    
+
     if config.packet_fragmentation {
         enable_packet_fragmentation(true)?;
     }
-    
+
     if let Some(ref os) = config.fingerprint_spoofing {
         spoof_os_fingerprint(os)?;
     }
-    
+
     info!("Evasion profile applied successfully");
     Ok(())
 }
@@ -265,17 +258,17 @@ pub fn apply_evasion_profile(interface: &str, config: &EvasionConfig) -> Result<
 /// Restore original network settings
 pub fn restore_original_settings(interface: &str, original_mac: Option<&str>) -> Result<()> {
     info!("Restoring original settings for {}", interface);
-    
+
     if let Some(mac) = original_mac {
         set_mac_address(interface, mac)?;
     }
-    
+
     // Restore default TTL
     set_sysctl("net.ipv4.ip_default_ttl", "64")?;
-    
+
     // Disable fragmentation
     enable_packet_fragmentation(false)?;
-    
+
     info!("Original settings restored");
     Ok(())
 }
@@ -284,21 +277,21 @@ pub fn restore_original_settings(interface: &str, original_mac: Option<&str>) ->
 pub fn save_original_macs(root: &Path) -> Result<()> {
     let interfaces = crate::system::list_interface_summaries()?;
     let mut macs = std::collections::HashMap::new();
-    
+
     for iface in interfaces {
         if let Ok(mac) = get_mac_address(&iface.name) {
             macs.insert(iface.name, mac);
         }
     }
-    
+
     let path = root.join("wifi").join("original_macs.json");
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    
+
     let json = serde_json::to_string_pretty(&macs)?;
     fs::write(&path, json)?;
-    
+
     info!("Original MAC addresses saved");
     Ok(())
 }
@@ -306,13 +299,13 @@ pub fn save_original_macs(root: &Path) -> Result<()> {
 /// Load saved MAC addresses
 pub fn load_original_macs(root: &Path) -> Result<std::collections::HashMap<String, String>> {
     let path = root.join("wifi").join("original_macs.json");
-    
+
     if !path.exists() {
         return Ok(std::collections::HashMap::new());
     }
-    
+
     let json = fs::read_to_string(&path)?;
     let macs = serde_json::from_str(&json)?;
-    
+
     Ok(macs)
 }

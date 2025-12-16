@@ -1,4 +1,4 @@
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use std::collections::HashMap;
 use zbus::Connection;
 
@@ -82,7 +82,7 @@ impl NetworkManagerClient {
         let connection = Connection::system()
             .await
             .context("Failed to connect to system D-Bus - is D-Bus running?")?;
-        
+
         Ok(Self { connection })
     }
 
@@ -93,7 +93,9 @@ impl NetworkManagerClient {
             "org.freedesktop.NetworkManager",
             "/org/freedesktop/NetworkManager",
             "org.freedesktop.NetworkManager",
-        ).await {
+        )
+        .await
+        {
             Ok(p) => p,
             Err(_) => return false,
         };
@@ -185,10 +187,12 @@ impl NetworkManagerClient {
         .await
         .context("Failed to create device proxy")?;
 
-        let state_val: u32 = proxy
-            .get_property("State")
-            .await
-            .with_context(|| format!("Failed to get state for interface '{}' - NetworkManager may not be responding", interface))?;
+        let state_val: u32 = proxy.get_property("State").await.with_context(|| {
+            format!(
+                "Failed to get state for interface '{}' - NetworkManager may not be responding",
+                interface
+            )
+        })?;
 
         Ok(NmDeviceState::from_u32(state_val))
     }
@@ -219,7 +223,10 @@ impl NetworkManagerClient {
     pub async fn reconnect_device(&self, interface: &str) -> Result<()> {
         // First disconnect
         if let Err(e) = self.disconnect_device(interface).await {
-            log::warn!("Disconnect before reconnect failed (may already be disconnected): {}", e);
+            log::warn!(
+                "Disconnect before reconnect failed (may already be disconnected): {}",
+                e
+            );
         }
 
         tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
@@ -247,7 +254,10 @@ impl NetworkManagerClient {
             .context("Failed to parse access points from NetworkManager response")?;
 
         if ap_paths.is_empty() {
-            bail!("No access points available for reconnection on interface '{}'", interface);
+            bail!(
+                "No access points available for reconnection on interface '{}'",
+                interface
+            );
         }
 
         // Use the first available AP
@@ -276,7 +286,10 @@ impl NetworkManagerClient {
             .await
             .with_context(|| format!("Failed to activate connection on interface '{}' - no saved connection profile or authentication required", interface))?;
 
-        log::info!("Interface '{}' reconnection initiated via NetworkManager", interface);
+        log::info!(
+            "Interface '{}' reconnection initiated via NetworkManager",
+            interface
+        );
         Ok(())
     }
 
@@ -328,8 +341,12 @@ impl NetworkManagerClient {
             }
         }
 
-        let ap_path = target_ap_path
-            .with_context(|| format!("Access point with SSID '{}' not found - network may be out of range or hidden", ssid))?;
+        let ap_path = target_ap_path.with_context(|| {
+            format!(
+                "Access point with SSID '{}' not found - network may be out of range or hidden",
+                ssid
+            )
+        })?;
 
         // Build connection settings
         let mut connection_settings: HashMap<String, HashMap<String, zbus::zvariant::Value>> =
@@ -342,20 +359,32 @@ impl NetworkManagerClient {
             zbus::zvariant::Value::new("802-11-wireless"),
         );
         conn_map.insert("id".to_string(), zbus::zvariant::Value::new(ssid));
-        conn_map.insert("uuid".to_string(), zbus::zvariant::Value::new(uuid::Uuid::new_v4().to_string()));
+        conn_map.insert(
+            "uuid".to_string(),
+            zbus::zvariant::Value::new(uuid::Uuid::new_v4().to_string()),
+        );
         connection_settings.insert("connection".to_string(), conn_map);
 
         // Wireless settings
         let mut wireless_map = HashMap::new();
-        wireless_map.insert("ssid".to_string(), zbus::zvariant::Value::new(ssid.as_bytes()));
-        wireless_map.insert("mode".to_string(), zbus::zvariant::Value::new("infrastructure"));
+        wireless_map.insert(
+            "ssid".to_string(),
+            zbus::zvariant::Value::new(ssid.as_bytes()),
+        );
+        wireless_map.insert(
+            "mode".to_string(),
+            zbus::zvariant::Value::new("infrastructure"),
+        );
         connection_settings.insert("802-11-wireless".to_string(), wireless_map);
 
         // Security settings if password provided
         if let Some(pass) = password {
             if !pass.is_empty() {
                 let mut security_map = HashMap::new();
-                security_map.insert("key-mgmt".to_string(), zbus::zvariant::Value::new("wpa-psk"));
+                security_map.insert(
+                    "key-mgmt".to_string(),
+                    zbus::zvariant::Value::new("wpa-psk"),
+                );
                 security_map.insert("psk".to_string(), zbus::zvariant::Value::new(pass));
                 connection_settings.insert("802-11-wireless-security".to_string(), security_map);
             }
@@ -382,7 +411,13 @@ impl NetworkManagerClient {
         .context("Failed to create NetworkManager proxy")?;
 
         // Add and activate connection
-        let result: Result<(zbus::zvariant::OwnedObjectPath, zbus::zvariant::OwnedObjectPath), zbus::Error> = nm_proxy
+        let result: Result<
+            (
+                zbus::zvariant::OwnedObjectPath,
+                zbus::zvariant::OwnedObjectPath,
+            ),
+            zbus::Error,
+        > = nm_proxy
             .call_method(
                 "AddAndActivateConnection",
                 &(connection_settings, device_path.as_ref(), ap_path.as_ref()),
@@ -474,8 +509,11 @@ impl NetworkManagerClient {
 
         // Request scan
         let mut scan_options: HashMap<String, zbus::zvariant::Value> = HashMap::new();
-        scan_options.insert("ssids".to_string(), zbus::zvariant::Value::new(Vec::<Vec<u8>>::new()));
-        
+        scan_options.insert(
+            "ssids".to_string(),
+            zbus::zvariant::Value::new(Vec::<Vec<u8>>::new()),
+        );
+
         let _: Result<(), _> = wireless_proxy
             .call_method("RequestScan", &(scan_options,))
             .await
@@ -505,7 +543,7 @@ impl NetworkManagerClient {
 
             let ssid_bytes: Vec<u8> = ap_proxy.get_property("Ssid").await.unwrap_or_default();
             let ssid = String::from_utf8_lossy(&ssid_bytes).to_string();
-            
+
             if ssid.is_empty() {
                 continue; // Skip hidden/empty SSIDs
             }
@@ -514,10 +552,10 @@ impl NetworkManagerClient {
             let strength: u8 = ap_proxy.get_property("Strength").await.unwrap_or(0);
             let frequency: u32 = ap_proxy.get_property("Frequency").await.unwrap_or(0);
             let max_bitrate: u32 = ap_proxy.get_property("MaxBitrate").await.unwrap_or(0);
-            
+
             let wpa_flags: u32 = ap_proxy.get_property("WpaFlags").await.unwrap_or(0);
             let rsn_flags: u32 = ap_proxy.get_property("RsnFlags").await.unwrap_or(0);
-            
+
             let mut security = Vec::new();
             if wpa_flags != 0 {
                 security.push("WPA".to_string());
@@ -585,7 +623,9 @@ pub async fn connect_wifi(
     let client = NetworkManagerClient::new()
         .await
         .context("Failed to create NetworkManager client")?;
-    client.connect_wifi(interface, ssid, password, timeout_secs).await
+    client
+        .connect_wifi(interface, ssid, password, timeout_secs)
+        .await
 }
 
 /// List WiFi networks (convenience function)

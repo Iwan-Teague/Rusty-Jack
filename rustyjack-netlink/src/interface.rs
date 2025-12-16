@@ -25,11 +25,15 @@ impl InterfaceManager {
     ///
     /// Returns error if netlink connection cannot be established.
     pub fn new() -> Result<Self> {
-        let (connection, handle, _) = new_connection()
-            .map_err(|e| NetlinkError::runtime("creating netlink connection for interface management", e.to_string()))?;
-        
+        let (connection, handle, _) = new_connection().map_err(|e| {
+            NetlinkError::runtime(
+                "creating netlink connection for interface management",
+                e.to_string(),
+            )
+        })?;
+
         tokio::spawn(connection);
-        
+
         Ok(Self { handle })
     }
 
@@ -63,17 +67,27 @@ impl InterfaceManager {
                 reason: "Interface name cannot be empty".to_string(),
             });
         }
-        let mut links = self.handle.link().get().match_name(name.to_string()).execute();
-        
-        if let Some(link) = links.try_next().await
-            .map_err(|e| NetlinkError::InterfaceIndexError {
-                interface: name.to_string(),
-                reason: e.to_string(),
-            })? 
+        let mut links = self
+            .handle
+            .link()
+            .get()
+            .match_name(name.to_string())
+            .execute();
+
+        if let Some(link) =
+            links
+                .try_next()
+                .await
+                .map_err(|e| NetlinkError::InterfaceIndexError {
+                    interface: name.to_string(),
+                    reason: e.to_string(),
+                })?
         {
             Ok(link.header.index)
         } else {
-            Err(NetlinkError::InterfaceNotFound { name: name.to_string() })
+            Err(NetlinkError::InterfaceNotFound {
+                name: name.to_string(),
+            })
         }
     }
 
@@ -106,7 +120,7 @@ impl InterfaceManager {
             });
         }
         let index = self.get_interface_index(name).await?;
-        
+
         self.handle
             .link()
             .set(index)
@@ -118,7 +132,7 @@ impl InterfaceManager {
                 desired_state: "UP".to_string(),
                 reason: e.to_string(),
             })?;
-        
+
         log::info!("Interface {} set to UP", name);
         Ok(())
     }
@@ -142,7 +156,7 @@ impl InterfaceManager {
             });
         }
         let index = self.get_interface_index(name).await?;
-        
+
         self.handle
             .link()
             .set(index)
@@ -154,7 +168,7 @@ impl InterfaceManager {
                 desired_state: "DOWN".to_string(),
                 reason: e.to_string(),
             })?;
-        
+
         log::info!("Interface {} set to DOWN", name);
         Ok(())
     }
@@ -190,7 +204,7 @@ impl InterfaceManager {
                 reason: "Interface name cannot be empty".to_string(),
             });
         }
-        
+
         match addr {
             IpAddr::V4(_) if prefix_len > 32 => {
                 return Err(NetlinkError::AddAddressError {
@@ -211,7 +225,7 @@ impl InterfaceManager {
             _ => {}
         }
         let index = self.get_interface_index(interface).await?;
-        
+
         self.handle
             .address()
             .add(index, addr, prefix_len)
@@ -223,7 +237,7 @@ impl InterfaceManager {
                 interface: interface.to_string(),
                 reason: e.to_string(),
             })?;
-        
+
         log::info!("Added address {}/{} to {}", addr, prefix_len, interface);
         Ok(())
     }
@@ -240,7 +254,12 @@ impl InterfaceManager {
     ///
     /// * `InterfaceNotFound` - Interface does not exist
     /// * `DeleteAddressError` - Address not found or invalid prefix length
-    pub async fn delete_address(&self, interface: &str, addr: IpAddr, prefix_len: u8) -> Result<()> {
+    pub async fn delete_address(
+        &self,
+        interface: &str,
+        addr: IpAddr,
+        prefix_len: u8,
+    ) -> Result<()> {
         if interface.is_empty() {
             return Err(NetlinkError::InvalidArgument {
                 parameter: "interface name".to_string(),
@@ -248,7 +267,7 @@ impl InterfaceManager {
                 reason: "Interface name cannot be empty".to_string(),
             });
         }
-        
+
         match addr {
             IpAddr::V4(_) if prefix_len > 32 => {
                 return Err(NetlinkError::DeleteAddressError {
@@ -267,20 +286,24 @@ impl InterfaceManager {
             _ => {}
         }
         let index = self.get_interface_index(interface).await?;
-        
+
         // Get all addresses to find the one to delete
-        let mut addrs = self.handle
+        let mut addrs = self
+            .handle
             .address()
             .get()
             .set_link_index_filter(index)
             .execute();
-        
-        while let Some(addr_msg) = addrs.try_next().await
-            .map_err(|e| NetlinkError::DeleteAddressError {
-                address: addr.to_string(),
-                interface: interface.to_string(),
-                reason: e.to_string(),
-            })? 
+
+        while let Some(addr_msg) =
+            addrs
+                .try_next()
+                .await
+                .map_err(|e| NetlinkError::DeleteAddressError {
+                    address: addr.to_string(),
+                    interface: interface.to_string(),
+                    reason: e.to_string(),
+                })?
         {
             // Check if this is the address we want to delete
             let mut matches = false;
@@ -293,7 +316,7 @@ impl InterfaceManager {
                     }
                 }
             }
-            
+
             if matches {
                 self.handle
                     .address()
@@ -309,7 +332,7 @@ impl InterfaceManager {
                 return Ok(());
             }
         }
-        
+
         Err(NetlinkError::DeleteAddressError {
             address: addr.to_string(),
             interface: interface.to_string(),
@@ -338,26 +361,26 @@ impl InterfaceManager {
             });
         }
         let index = self.get_interface_index(interface).await?;
-        
-        let mut addrs = self.handle
+
+        let mut addrs = self
+            .handle
             .address()
             .get()
             .set_link_index_filter(index)
             .execute();
-        
-        while let Some(addr) = addrs.try_next().await
-            .map_err(|e| NetlinkError::ListAddressesError {
-                interface: interface.to_string(),
-                reason: e.to_string(),
-            })? 
+
+        while let Some(addr) =
+            addrs
+                .try_next()
+                .await
+                .map_err(|e| NetlinkError::ListAddressesError {
+                    interface: interface.to_string(),
+                    reason: e.to_string(),
+                })?
         {
-            let _ = self.handle
-                .address()
-                .del(addr)
-                .execute()
-                .await;
+            let _ = self.handle.address().del(addr).execute().await;
         }
-        
+
         log::info!("Flushed all addresses from {}", interface);
         Ok(())
     }
@@ -377,7 +400,7 @@ impl InterfaceManager {
     /// # use rustyjack_netlink::*;
     /// # async fn example() -> Result<()> {
     /// for iface in list_interfaces().await? {
-    ///     println!("{}: {} ({})", iface.name, 
+    ///     println!("{}: {} ({})", iface.name,
     ///         if iface.is_up { "UP" } else { "DOWN" },
     ///         iface.mac.unwrap_or_else(|| "no MAC".to_string()));
     /// }
@@ -387,9 +410,11 @@ impl InterfaceManager {
     pub async fn list_interfaces(&self) -> Result<Vec<InterfaceInfo>> {
         let mut links = self.handle.link().get().execute();
         let mut interfaces = Vec::new();
-        
-        while let Some(link) = links.try_next().await
-            .map_err(|e| NetlinkError::runtime("listing network interfaces", e.to_string()))? 
+
+        while let Some(link) = links
+            .try_next()
+            .await
+            .map_err(|e| NetlinkError::runtime("listing network interfaces", e.to_string()))?
         {
             let mut name = String::new();
             let mut mac = None;
@@ -397,7 +422,7 @@ impl InterfaceManager {
             let flags = &link.header.flags;
             let is_up = flags.contains(&LinkFlag::Up);
             let is_running = flags.contains(&LinkFlag::Running);
-            
+
             for nla in link.attributes {
                 match nla {
                     LinkAttribute::IfName(n) => name = n,
@@ -412,9 +437,9 @@ impl InterfaceManager {
                     _ => {}
                 }
             }
-            
+
             let addresses = self.get_interface_addresses(index).await?;
-            
+
             interfaces.push(InterfaceInfo {
                 name,
                 index,
@@ -424,22 +449,26 @@ impl InterfaceManager {
                 is_running,
             });
         }
-        
+
         Ok(interfaces)
     }
 
     async fn get_interface_addresses(&self, index: u32) -> Result<Vec<AddressInfo>> {
-        let mut addrs = self.handle
+        let mut addrs = self
+            .handle
             .address()
             .get()
             .set_link_index_filter(index)
             .execute();
-        
+
         let mut addresses = Vec::new();
-        
-        while let Some(addr) = addrs.try_next().await
-            .map_err(|e| NetlinkError::runtime(format!("listing addresses for interface index {}", index), e.to_string()))? 
-        {
+
+        while let Some(addr) = addrs.try_next().await.map_err(|e| {
+            NetlinkError::runtime(
+                format!("listing addresses for interface index {}", index),
+                e.to_string(),
+            )
+        })? {
             for nla in addr.attributes {
                 if let AddressAttribute::Address(ip) = nla {
                     addresses.push(AddressInfo {
@@ -449,7 +478,7 @@ impl InterfaceManager {
                 }
             }
         }
-        
+
         Ok(addresses)
     }
 
@@ -476,16 +505,26 @@ impl InterfaceManager {
     /// ```
     pub async fn get_mac_address(&self, interface: &str) -> Result<String> {
         if interface.is_empty() {
-            return Err(NetlinkError::InterfaceNotFound { name: "Interface name cannot be empty".to_string() });
+            return Err(NetlinkError::InterfaceNotFound {
+                name: "Interface name cannot be empty".to_string(),
+            });
         }
 
-        let mut links = self.handle.link().get().match_name(interface.to_string()).execute();
-        
-        if let Some(link) = links.try_next().await
-            .map_err(|e| NetlinkError::InterfaceIndexError {
-                interface: interface.to_string(),
-                reason: format!("Failed to query interface: {}", e),
-            })? 
+        let mut links = self
+            .handle
+            .link()
+            .get()
+            .match_name(interface.to_string())
+            .execute();
+
+        if let Some(link) =
+            links
+                .try_next()
+                .await
+                .map_err(|e| NetlinkError::InterfaceIndexError {
+                    interface: interface.to_string(),
+                    reason: format!("Failed to query interface: {}", e),
+                })?
         {
             for nla in link.attributes {
                 if let LinkAttribute::Address(addr) = nla {
@@ -498,8 +537,10 @@ impl InterfaceManager {
                 }
             }
         }
-        
-        Err(NetlinkError::InterfaceNotFound { name: format!("Interface {} not found or has no MAC address", interface) })
+
+        Err(NetlinkError::InterfaceNotFound {
+            name: format!("Interface {} not found or has no MAC address", interface),
+        })
     }
 
     /// Get the kernel interface index by name (alias for get_interface_index).
@@ -518,15 +559,23 @@ impl InterfaceManager {
     /// Vector of AddressInfo structs containing IP addresses and prefix lengths
     pub async fn get_addresses(&self, interface: &str) -> Result<Vec<AddressInfo>> {
         let index = self.get_interface_index(interface).await?;
-        
+
         let mut addresses = Vec::new();
-        let mut addr_stream = self.handle.address().get().set_link_index_filter(index).execute();
-        
-        while let Some(addr_msg) = addr_stream.try_next().await
-            .map_err(|e| NetlinkError::ListAddressesError {
-                interface: interface.to_string(),
-                reason: e.to_string(),
-            })? 
+        let mut addr_stream = self
+            .handle
+            .address()
+            .get()
+            .set_link_index_filter(index)
+            .execute();
+
+        while let Some(addr_msg) =
+            addr_stream
+                .try_next()
+                .await
+                .map_err(|e| NetlinkError::ListAddressesError {
+                    interface: interface.to_string(),
+                    reason: e.to_string(),
+                })?
         {
             for nla in addr_msg.attributes {
                 if let AddressAttribute::Address(ip_addr) = nla {
@@ -537,7 +586,7 @@ impl InterfaceManager {
                 }
             }
         }
-        
+
         Ok(addresses)
     }
 
@@ -555,9 +604,10 @@ impl InterfaceManager {
     pub async fn set_mac_address(&self, interface: &str, mac: &str) -> Result<()> {
         // Interface must be down to change MAC
         self.set_interface_down(interface).await?;
-        
+
         // Parse MAC address
-        let mac_bytes: Vec<u8> = mac.split(':')
+        let mac_bytes: Vec<u8> = mac
+            .split(':')
             .map(|s| u8::from_str_radix(s, 16))
             .collect::<std::result::Result<Vec<_>, _>>()
             .map_err(|e| NetlinkError::InvalidArgument {
@@ -565,7 +615,7 @@ impl InterfaceManager {
                 value: mac.to_string(),
                 reason: format!("Invalid MAC address format: {}", e),
             })?;
-        
+
         if mac_bytes.len() != 6 {
             return Err(NetlinkError::InvalidArgument {
                 parameter: "mac".to_string(),
@@ -575,7 +625,7 @@ impl InterfaceManager {
         }
 
         let index = self.get_interface_index(interface).await?;
-        
+
         self.handle
             .link()
             .set(index)
@@ -587,19 +637,19 @@ impl InterfaceManager {
                 mac: mac.to_string(),
                 reason: e.to_string(),
             })?;
-        
+
         Ok(())
     }
 
     /// Get IPv4 addresses only
     pub async fn get_ipv4_addresses(&self, interface: &str) -> Result<Vec<AddressInfo>> {
         let all_addrs = self.get_addresses(interface).await?;
-        Ok(all_addrs.into_iter()
+        Ok(all_addrs
+            .into_iter()
             .filter(|a| matches!(a.address, std::net::IpAddr::V4(_)))
             .collect())
     }
 }
-
 
 /// Network interface information.
 ///
@@ -628,4 +678,3 @@ pub struct AddressInfo {
     /// Network prefix length (e.g., 24 for /24, 64 for /64)
     pub prefix_len: u8,
 }
-

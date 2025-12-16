@@ -456,14 +456,16 @@ fn read_iface_mac(interface: &str) -> Result<[u8; 6]> {
 async fn read_iface_ipv4(interface: &str) -> Result<Ipv4Addr> {
     let mgr = rustyjack_netlink::InterfaceManager::new()
         .with_context(|| format!("initializing netlink for {}", interface))?;
-    
-    let addrs = mgr.get_ipv4_addresses(interface).await
+
+    let addrs = mgr
+        .get_ipv4_addresses(interface)
+        .await
         .with_context(|| format!("reading IPv4 addresses for {}", interface))?;
-    
+
     if let Some(addr) = addrs.first() {
         match addr.address {
             std::net::IpAddr::V4(v4) => Ok(v4),
-            _ => Err(anyhow!("No IPv4 address found on {}", interface))
+            _ => Err(anyhow!("No IPv4 address found on {}", interface)),
         }
     } else {
         Err(anyhow!("No IPv4 address found on {}", interface))

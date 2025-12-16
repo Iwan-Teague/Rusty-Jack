@@ -42,9 +42,11 @@
 //! ```
 
 #[cfg(target_os = "linux")]
-pub mod interface;
+pub mod arp;
 #[cfg(target_os = "linux")]
-pub mod route;
+mod arp_scanner;
+#[cfg(target_os = "linux")]
+mod arp_spoofer;
 #[cfg(target_os = "linux")]
 pub mod dhcp;
 #[cfg(target_os = "linux")]
@@ -52,60 +54,65 @@ pub mod dhcp_server;
 #[cfg(target_os = "linux")]
 pub mod dns_server;
 #[cfg(target_os = "linux")]
-pub mod rfkill;
-#[cfg(target_os = "linux")]
-pub mod process;
-#[cfg(target_os = "linux")]
-pub mod arp;
-#[cfg(target_os = "linux")]
-mod arp_scanner;
-#[cfg(target_os = "linux")]
-mod arp_spoofer;
-#[cfg(target_os = "linux")]
-pub mod wireless;
-#[cfg(target_os = "linux")]
 pub mod hostapd;
 #[cfg(target_os = "linux")]
-pub mod wpa;
+pub mod interface;
 #[cfg(target_os = "linux")]
 pub mod iptables;
 #[cfg(target_os = "linux")]
 pub mod networkmanager;
+#[cfg(target_os = "linux")]
+pub mod process;
+#[cfg(target_os = "linux")]
+pub mod rfkill;
+#[cfg(target_os = "linux")]
+pub mod route;
+#[cfg(target_os = "linux")]
+pub mod wireless;
+#[cfg(target_os = "linux")]
+pub mod wpa;
 
 pub mod error;
 
 pub use error::{NetlinkError, Result};
 
 #[cfg(target_os = "linux")]
-pub use interface::{InterfaceManager, InterfaceInfo, AddressInfo};
-#[cfg(target_os = "linux")]
-pub use route::{RouteManager, RouteInfo};
-#[cfg(target_os = "linux")]
-pub use dhcp::{DhcpClient, DhcpLease};
-#[cfg(target_os = "linux")]
-pub use dhcp_server::{DhcpServer, DhcpConfig, DhcpError, DhcpLease as DhcpServerLease};
-#[cfg(target_os = "linux")]
-pub use dns_server::{DnsServer, DnsConfig, DnsRule, DnsError};
-#[cfg(target_os = "linux")]
-pub use rfkill::{RfkillManager, RfkillDevice, RfkillType, RfkillError};
-#[cfg(target_os = "linux")]
-pub use process::{ProcessManager, ProcessInfo, ProcessError};
-#[cfg(target_os = "linux")]
-pub use arp::{ArpError, ArpPacket, ArpScanResult, ArpScanConfig};
+pub use arp::{ArpError, ArpPacket, ArpScanConfig, ArpScanResult};
 #[cfg(target_os = "linux")]
 pub use arp_scanner::ArpScanner;
 #[cfg(target_os = "linux")]
-pub use arp_spoofer::{ArpSpoofer, ArpSpoofConfig};
+pub use arp_spoofer::{ArpSpoofConfig, ArpSpoofer};
 #[cfg(target_os = "linux")]
-pub use wireless::{WirelessManager, WirelessInfo, PhyCapabilities, InterfaceMode, ChannelWidth, TxPowerSetting};
+pub use dhcp::{DhcpClient, DhcpLease};
 #[cfg(target_os = "linux")]
-pub use hostapd::{AccessPoint, ApConfig, ApSecurity, ApClient, ApStats, HardwareMode, WpaState, generate_pmk};
+pub use dhcp_server::{DhcpConfig, DhcpError, DhcpLease as DhcpServerLease, DhcpServer};
 #[cfg(target_os = "linux")]
-pub use wpa::{WpaManager, WpaStatus, WpaState as WpaSupplicantState, WpaNetworkConfig, is_wpa_running, start_wpa_supplicant, stop_wpa_supplicant};
+pub use dns_server::{DnsConfig, DnsError, DnsRule, DnsServer};
 #[cfg(target_os = "linux")]
-pub use iptables::{IptablesManager, IptablesError, Table, Chain, Target, Protocol, Rule};
+pub use hostapd::{
+    generate_pmk, AccessPoint, ApClient, ApConfig, ApSecurity, ApStats, HardwareMode, WpaState,
+};
 #[cfg(target_os = "linux")]
-pub use networkmanager::{NetworkManagerClient, NmDeviceState, AccessPoint as NmAccessPoint};
+pub use interface::{AddressInfo, InterfaceInfo, InterfaceManager};
+#[cfg(target_os = "linux")]
+pub use iptables::{Chain, IptablesError, IptablesManager, Protocol, Rule, Table, Target};
+#[cfg(target_os = "linux")]
+pub use networkmanager::{AccessPoint as NmAccessPoint, NetworkManagerClient, NmDeviceState};
+#[cfg(target_os = "linux")]
+pub use process::{ProcessError, ProcessInfo, ProcessManager};
+#[cfg(target_os = "linux")]
+pub use rfkill::{RfkillDevice, RfkillError, RfkillManager, RfkillType};
+#[cfg(target_os = "linux")]
+pub use route::{RouteInfo, RouteManager};
+#[cfg(target_os = "linux")]
+pub use wireless::{
+    ChannelWidth, InterfaceMode, PhyCapabilities, TxPowerSetting, WirelessInfo, WirelessManager,
+};
+#[cfg(target_os = "linux")]
+pub use wpa::{
+    is_wpa_running, start_wpa_supplicant, stop_wpa_supplicant, WpaManager, WpaNetworkConfig,
+    WpaState as WpaSupplicantState, WpaStatus,
+};
 
 #[cfg(target_os = "linux")]
 use std::net::IpAddr;

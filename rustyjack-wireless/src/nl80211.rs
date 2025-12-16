@@ -8,6 +8,7 @@ use std::process::Command;
 
 use crate::error::{Result, WirelessError};
 use crate::process_helpers::pkill_pattern_force;
+use rustyjack_netlink::{InterfaceMode, WirelessManager};
 
 /// nl80211 command types
 #[repr(u8)]
@@ -231,7 +232,6 @@ pub fn get_interface_state(name: &str) -> Result<InterfaceState> {
 
 /// Set interface up or down using ioctl
 pub fn set_interface_state(name: &str, up: bool) -> Result<()> {
-
     let state = if up { "up" } else { "down" };
     let status = Command::new("ip")
         .args(["link", "set", name, state])
@@ -289,32 +289,68 @@ pub fn set_interface_type_iw(name: &str, mode: Nl80211IfType) -> Result<()> {
     Ok(())
 }
 
+/// Set interface type using the Rustyjack netlink backend (preferred over `iw`)
+pub fn set_interface_type_netlink(name: &str, mode: Nl80211IfType) -> Result<()> {
+    let netlink_mode = match mode {
+        Nl80211IfType::Monitor => InterfaceMode::Monitor,
+        Nl80211IfType::Managed => InterfaceMode::Station,
+        Nl80211IfType::Adhoc => InterfaceMode::Adhoc,
+        Nl80211IfType::Ap => InterfaceMode::AccessPoint,
+        Nl80211IfType::MeshPoint => InterfaceMode::MeshPoint,
+        Nl80211IfType::P2pClient => InterfaceMode::P2PClient,
+        Nl80211IfType::P2pGo => InterfaceMode::P2PGo,
+        _ => {
+            return Err(WirelessError::Unsupported(format!(
+                "Interface type {:?} not supported via nl80211",
+                mode
+            )))
+        }
+    };
+
+    let mut mgr = WirelessManager::new()
+        .map_err(|e| WirelessError::System(format!("Failed to open nl80211 socket: {}", e)))?;
+
+    mgr.set_mode(name, netlink_mode).map_err(|e| {
+        WirelessError::System(format!("Failed to set {} to {:?} mode: {}", name, mode, e))
+    })
+}
+
 /// Set channel using netlink
 pub fn set_channel_iw(name: &str, channel: u8) -> Result<()> {
     let mut mgr = rustyjack_netlink::WirelessManager::new()
         .map_err(|e| WirelessError::Channel(format!("Failed to create wireless manager: {}", e)))?;
-    
-    mgr.set_channel(name, channel)
-        .map_err(|e| WirelessError::Channel(format!("Failed to set channel {} on {}: {}", channel, name, e)))
+
+    mgr.set_channel(name, channel).map_err(|e| {
+        WirelessError::Channel(format!(
+            "Failed to set channel {} on {}: {}",
+            channel, name, e
+        ))
+    })
 }
 
 /// Set frequency using netlink
 pub fn set_frequency_iw(name: &str, freq_mhz: u32) -> Result<()> {
     let mut mgr = rustyjack_netlink::WirelessManager::new()
         .map_err(|e| WirelessError::Channel(format!("Failed to create wireless manager: {}", e)))?;
-    
+
     mgr.set_frequency(name, freq_mhz, rustyjack_netlink::ChannelWidth::NoHT)
-        .map_err(|e| WirelessError::Channel(format!("Failed to set frequency {} MHz on {}: {}", freq_mhz, name, e)))
+        .map_err(|e| {
+            WirelessError::Channel(format!(
+                "Failed to set frequency {} MHz on {}: {}",
+                freq_mhz, name, e
+            ))
+        })
 }
 
 /// Get current channel
 pub fn get_channel(name: &str) -> Result<Option<u8>> {
     let mut mgr = rustyjack_netlink::WirelessManager::new()
         .map_err(|e| WirelessError::Channel(format!("Failed to create wireless manager: {}", e)))?;
-    
-    let info = mgr.get_interface_info(name)
-        .map_err(|e| WirelessError::Channel(format!("Failed to get interface info for {}: {}", name, e)))?;
-    
+
+    let info = mgr.get_interface_info(name).map_err(|e| {
+        WirelessError::Channel(format!("Failed to get interface info for {}: {}", name, e))
+    })?;
+
     Ok(info.channel)
 }
 

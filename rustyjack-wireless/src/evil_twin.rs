@@ -17,23 +17,26 @@
 
 use std::fs;
 use std::io::Write;
+use std::net::IpAddr;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
-use std::net::IpAddr;
 
 use chrono::Local;
 
 use crate::deauth::{DeauthAttacker, DeauthConfig};
 use crate::error::{Result, WirelessError};
-use crate::netlink_helpers::{netlink_set_interface_down, netlink_set_interface_up, netlink_flush_addresses, netlink_add_address};
-use crate::process_helpers::pkill_exact_force;
 use crate::frames::MacAddress;
 use crate::handshake::HandshakeCapture;
 use crate::interface::WirelessInterface;
+use crate::netlink_helpers::{
+    netlink_add_address, netlink_flush_addresses, netlink_set_interface_down,
+    netlink_set_interface_up,
+};
+use crate::process_helpers::pkill_exact_force;
 
 /// Evil Twin configuration
 #[derive(Debug, Clone)]
@@ -270,8 +273,9 @@ impl EvilTwin {
 
         // Set IP address for AP
         netlink_flush_addresses(iface)?;
-        
-        let addr: IpAddr = "192.168.4.1".parse()
+
+        let addr: IpAddr = "192.168.4.1"
+            .parse()
             .map_err(|e| WirelessError::System(format!("Failed to parse IP: {}", e)))?;
         netlink_add_address(iface, addr, 24)?;
 
@@ -400,10 +404,11 @@ impl EvilTwin {
 
         // Setup iptables for captive portal using Rust implementation
         log::info!("Configuring captive portal iptables via Rust");
-        
-        let ipt = rustyjack_netlink::IptablesManager::new()
-            .map_err(|e| WirelessError::System(format!("Failed to create iptables manager: {}", e)))?;
-        
+
+        let ipt = rustyjack_netlink::IptablesManager::new().map_err(|e| {
+            WirelessError::System(format!("Failed to create iptables manager: {}", e))
+        })?;
+
         ipt.setup_captive_portal(iface, "192.168.4.1", 80)
             .map_err(|e| WirelessError::System(format!("Failed to setup captive portal: {}", e)))?;
 

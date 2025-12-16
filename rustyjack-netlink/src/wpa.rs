@@ -136,7 +136,9 @@ impl WpaManager {
 
         // Check if it's a wireless interface
         let wireless_path = format!("{}/wireless", sys_path);
-        if !Path::new(&wireless_path).exists() && !Path::new(&format!("{}/phy80211", sys_path)).exists() {
+        if !Path::new(&wireless_path).exists()
+            && !Path::new(&format!("{}/phy80211", sys_path)).exists()
+        {
             return Err(NetlinkError::Wpa(format!(
                 "Interface '{}' is not a wireless interface",
                 interface
@@ -184,7 +186,10 @@ impl WpaManager {
 
         let mut response = String::new();
         stream.read_to_string(&mut response).map_err(|e| {
-            NetlinkError::Wpa(format!("Failed to read response from wpa_supplicant: {}", e))
+            NetlinkError::Wpa(format!(
+                "Failed to read response from wpa_supplicant: {}",
+                e
+            ))
         })?;
 
         // Check for error responses
@@ -345,7 +350,10 @@ impl WpaManager {
     /// # Errors
     /// Returns error if unable to set the parameter
     pub fn set_network(&self, network_id: u32, variable: &str, value: &str) -> Result<()> {
-        self.send_command(&format!("SET_NETWORK {} {} {}", network_id, variable, value))?;
+        self.send_command(&format!(
+            "SET_NETWORK {} {} {}",
+            network_id, variable, value
+        ))?;
         Ok(())
     }
 
@@ -615,18 +623,14 @@ pub fn start_wpa_supplicant(interface: &str, config_path: Option<&str>) -> Resul
             &default_conf,
             "ctrl_interface=/var/run/wpa_supplicant\nupdate_config=1\n",
         )
-        .map_err(|e| {
-            NetlinkError::Wpa(format!("Failed to create wpa_supplicant config: {}", e))
-        })?;
+        .map_err(|e| NetlinkError::Wpa(format!("Failed to create wpa_supplicant config: {}", e)))?;
         default_conf
     };
 
     let output = Command::new("wpa_supplicant")
         .args(["-B", "-i", interface, "-c", &conf_path])
         .output()
-        .map_err(|e| {
-            NetlinkError::Wpa(format!("Failed to start wpa_supplicant: {}", e))
-        })?;
+        .map_err(|e| NetlinkError::Wpa(format!("Failed to start wpa_supplicant: {}", e)))?;
 
     if !output.status.success() {
         return Err(NetlinkError::Wpa(format!(

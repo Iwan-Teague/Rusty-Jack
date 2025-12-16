@@ -33,6 +33,10 @@ pub fn rfkill_list() -> Result<Vec<rustyjack_netlink::RfkillDevice>> {
 pub fn rfkill_find_index(interface: &str) -> Result<Option<u32>> {
     use rustyjack_netlink::RfkillManager;
     let mgr = RfkillManager::new();
-    mgr.find_index_by_interface(interface)
-        .map_err(|e| WirelessError::System(format!("Failed to find rfkill index for {}: {}", interface, e)))
+    mgr.find_index_by_interface(interface).map_err(|e| {
+        WirelessError::System(format!(
+            "Failed to find rfkill index for {}: {}",
+            interface, e
+        ))
+    })
 }

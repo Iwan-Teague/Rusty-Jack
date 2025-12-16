@@ -270,7 +270,7 @@ impl RfkillManager {
     /// # fn example() -> Result<(), RfkillError> {
     /// let rfkill = RfkillManager::new();
     /// for dev in rfkill.list()? {
-    ///     println!("Device {}: {} ({})", dev.idx, 
+    ///     println!("Device {}: {} ({})", dev.idx,
     ///         dev.name.as_deref().unwrap_or("unknown"),
     ///         dev.state_string());
     /// }
@@ -290,7 +290,7 @@ impl RfkillManager {
             match file.read(&mut buffer) {
                 Ok(n) if n >= RfkillEvent::SIZE => {
                     let event = RfkillEvent::from_bytes(&buffer)?;
-                    
+
                     if let Some(op) = event.get_op() {
                         if op == RfkillOp::Add {
                             if let Some(type_) = event.get_type() {
@@ -405,9 +405,7 @@ impl RfkillManager {
 
     /// Set state for a specific device by index
     fn set_state(&self, idx: u32, block: bool) -> Result<()> {
-        let mut file = OpenOptions::new()
-            .write(true)
-            .open(self.dev_path)?;
+        let mut file = OpenOptions::new().write(true).open(self.dev_path)?;
 
         let event = RfkillEvent {
             idx,
@@ -431,9 +429,7 @@ impl RfkillManager {
 
     /// Set state for all devices of a type
     fn set_state_all(&self, type_: RfkillType, block: bool) -> Result<()> {
-        let mut file = OpenOptions::new()
-            .write(true)
-            .open(self.dev_path)?;
+        let mut file = OpenOptions::new().write(true).open(self.dev_path)?;
 
         let event = RfkillEvent {
             idx: 0, // Not used for type-based changes
@@ -505,18 +501,17 @@ impl RfkillManager {
     /// ```
     pub fn find_index_by_interface(&self, interface: &str) -> Result<Option<u32>> {
         let rfkill_path = Path::new(Self::SYS_RFKILL);
-        
+
         if !rfkill_path.exists() {
             return Ok(None);
         }
 
-        let entries = std::fs::read_dir(rfkill_path)
-            .map_err(|e| RfkillError::DeviceOpen(e))?;
+        let entries = std::fs::read_dir(rfkill_path).map_err(|e| RfkillError::DeviceOpen(e))?;
 
         for entry in entries {
             let entry = entry.map_err(|e| RfkillError::DeviceOpen(e))?;
             let path = entry.path();
-            
+
             if let Some(name) = path.file_name() {
                 if let Some(name_str) = name.to_str() {
                     if name_str.starts_with("rfkill") {
@@ -530,7 +525,7 @@ impl RfkillManager {
                                 }
                             }
                         }
-                        
+
                         let name_path = path.join("name");
                         if let Ok(dev_name) = std::fs::read_to_string(&name_path) {
                             if dev_name.trim() == interface {

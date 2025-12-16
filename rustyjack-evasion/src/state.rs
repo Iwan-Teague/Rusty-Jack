@@ -279,13 +279,15 @@ impl StateManager {
     fn restore_mac(&self, interface: &str, mac: &str) -> Result<()> {
         let mgr = rustyjack_netlink::InterfaceManager::new()
             .map_err(|e| EvasionError::System(format!("Failed to initialize netlink: {}", e)))?;
-        
+
         tokio::runtime::Handle::current().block_on(async {
             // Bring down
             let _ = mgr.set_link_down(interface).await;
 
             // Set MAC
-            let result = mgr.set_mac_address(interface, mac).await
+            let result = mgr
+                .set_mac_address(interface, mac)
+                .await
                 .map_err(|e| EvasionError::RestoreError(format!("Failed to set MAC: {}", e)));
 
             // Bring up

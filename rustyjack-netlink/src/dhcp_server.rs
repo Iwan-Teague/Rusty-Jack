@@ -249,6 +249,17 @@ impl DhcpServer {
         Ok(())
     }
 
+    /// Expose a handle to the running flag so callers can stop the background loop.
+    pub fn running_handle(&self) -> Arc<Mutex<bool>> {
+        Arc::clone(&self.running)
+    }
+
+    /// Request server shutdown.
+    pub fn stop(&mut self) {
+        *self.running.lock().unwrap() = false;
+        self.socket = None;
+    }
+
     pub fn serve(&mut self) -> Result<()> {
         let socket = self
             .socket

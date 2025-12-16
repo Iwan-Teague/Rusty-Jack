@@ -1,12 +1,15 @@
 use std::fs;
 use std::net::{IpAddr, Ipv4Addr};
 use std::path::Path;
-use std::process::Command;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::thread::JoinHandle;
 use std::time::Instant;
 
 use rand::{distributions::Alphanumeric, rngs::OsRng, Rng};
-use rustyjack_netlink::{AccessPoint, ApConfig, ApSecurity, InterfaceMode, IptablesManager};
+use rustyjack_netlink::{
+    AccessPoint, ApConfig, ApSecurity, DhcpConfig, DhcpServer, DnsConfig, DnsRule, DnsServer,
+    InterfaceMode, IptablesManager,
+};
 // TODO: These helpers need to be implemented
 // use rustyjack_core::dhcp_helpers::start_hotspot_dhcp_server;
 // use rustyjack_core::dns_helpers::start_hotspot_dns;
@@ -22,6 +25,13 @@ use crate::rfkill_helpers::{rfkill_list, rfkill_unblock, rfkill_unblock_all};
 
 // Global lock to prevent concurrent hotspot operations
 static HOTSPOT_LOCK: Mutex<()> = Mutex::new(());
+static DHCP_SERVER: OnceLock<Mutex<Option<DhcpRuntime>>> = OnceLock::new();
+static DNS_SERVER: OnceLock<Mutex<Option<DnsServer>>> = OnceLock::new();
+
+struct DhcpRuntime {
+    handle: Option<JoinHandle<()>>,
+    running: Arc<Mutex<bool>>,
+}
 
 /// Configuration for starting an access point hotspot.
 #[derive(Debug, Clone)]
@@ -360,8 +370,9 @@ pub fn start_hotspot(config: HotspotConfig) -> Result<HotspotState> {
     eprintln!("[HOTSPOT] Waiting 2 seconds for interface to stabilize...");
     std::thread::sleep(std::time::Duration::from_secs(2));
 
-    // Enable forwarding
-    let _ = run_cmd("sysctl", &["-w", "net.ipv4.ip_forward=1"]);
+    // Enable forwarding without sysctl binary
+    enable_ip_forwarding()
+        .map_err(|e| WirelessError::System(format!("Failed to enable IPv4 forwarding: {}", e)))?;
 
     // NAT rules (only if upstream is present and ready)
     if upstream_ready && !config.upstream_interface.is_empty() {
@@ -480,42 +491,34 @@ pub fn start_hotspot(config: HotspotConfig) -> Result<HotspotState> {
         "[HOTSPOT] Starting Rust DHCP server on {}...",
         config.ap_interface
     );
-    // TODO: Implement DHCP server properly; currently not wired up
-    eprintln!("[HOTSPOT] Note: DHCP/DNS servers need to be started separately");
-    log::warn!("DHCP and DNS server integration not yet implemented");
-
-    /*
-    let dhcp_server = start_hotspot_dhcp_server(
-        &config.ap_interface,
-        gateway_ip,
-        Ipv4Addr::new(10, 20, 30, 10),
-        Ipv4Addr::new(10, 20, 30, 200),
-    ).map_err(|e| {
-        eprintln!("[HOTSPOT] ERROR: Failed to start DHCP server: {}", e);
-        log::error!("Failed to start DHCP server: {}", e);
-        // Clean up AP before returning error
+    start_dhcp_server(&config.ap_interface, gateway_ip).map_err(|e| {
         let _ = tokio::runtime::Handle::try_current()
-            .map(|handle| handle.block_on(async { ap.stop().await }));
-        WirelessError::System(format!("Failed to start DHCP server: {}", e))
+            .map(|handle| handle.block_on(async { ap.stop().await }))
+            .or_else(|_| {
+                tokio::runtime::Runtime::new()
+                    .map(|rt| rt.block_on(async { ap.stop().await }))
+                    .map(|_| ())
+            });
+        e
     })?;
-
     eprintln!("[HOTSPOT] DHCP server started successfully");
     log::info!("DHCP server running on {}", config.ap_interface);
 
     // Start DNS server
-    eprintln!("[HOTSPOT] Starting Rust DNS server on {}...", config.ap_interface);
-    let dns_server = start_hotspot_dns(&config.ap_interface, gateway_ip)
-        .map_err(|e| {
-            eprintln!("[HOTSPOT] ERROR: Failed to start DNS server: {}", e);
-            log::error!("Failed to start DNS server: {}", e);
-            // Clean up AP and DHCP before returning error
-            let _ = tokio::runtime::Handle::try_current()
-                .map(|handle| handle.block_on(async { ap.stop().await }));
-            drop(dhcp_server);
-            WirelessError::System(format!("Failed to start DNS server: {}", e))
-        })?;
-    */
-
+    eprintln!(
+        "[HOTSPOT] Starting Rust DNS server on {}...",
+        config.ap_interface
+    );
+    start_dns_server(&config.ap_interface, gateway_ip).map_err(|e| {
+        let _ = tokio::runtime::Handle::try_current()
+            .map(|handle| handle.block_on(async { ap.stop().await }))
+            .or_else(|_| {
+                tokio::runtime::Runtime::new()
+                    .map(|rt| rt.block_on(async { ap.stop().await }))
+                    .map(|_| ())
+            });
+        e
+    })?;
     eprintln!("[HOTSPOT] DNS server started successfully");
     log::info!("DNS server running on {}", config.ap_interface);
 
@@ -544,9 +547,6 @@ pub fn start_hotspot(config: HotspotConfig) -> Result<HotspotState> {
 
     // Leak AP so it stays alive until stop_hotspot is called
     std::mem::forget(ap);
-    // TODO: Leak servers when implemented
-    // std::mem::forget(dhcp_server);
-    // std::mem::forget(dns_server);
 
     Ok(state)
 }
@@ -562,9 +562,33 @@ pub fn stop_hotspot() -> Result<()> {
     if let Some(s) = state {
         eprintln!("[HOTSPOT] Stopping hotspot services...");
 
-        // Rust AP/DHCP/DNS servers will be automatically dropped when program exits
-        // No need to kill external processes
-        eprintln!("[HOTSPOT] Rust AP/DHCP/DNS servers will be automatically cleaned up");
+        // Stop DNS server
+        if let Some(dns_mutex) = DNS_SERVER.get() {
+            if let Ok(mut guard) = dns_mutex.lock() {
+                if let Some(mut server) = guard.take() {
+                    let _ = server.stop();
+                    log::info!("DNS server stopped");
+                }
+            }
+        }
+
+        // Stop DHCP server
+        if let Some(dhcp_mutex) = DHCP_SERVER.get() {
+            if let Ok(mut guard) = dhcp_mutex.lock() {
+                if let Some(mut dhcp) = guard.take() {
+                    if let Ok(mut running) = dhcp.running.lock() {
+                        *running = false;
+                    }
+                    if let Some(handle) = dhcp.handle.take() {
+                        let _ = handle.join();
+                    }
+                    log::info!("DHCP server stopped");
+                }
+            }
+        }
+
+        // Rust AP will drop when process exits; interface cleanup handled below
+        eprintln!("[HOTSPOT] Rust AP/DHCP/DNS servers cleaned up");
         log::info!("Rust AP/DHCP/DNS servers stopping");
 
         std::thread::sleep(std::time::Duration::from_millis(500));
@@ -641,36 +665,83 @@ fn persist_state(state: &HotspotState) -> Result<()> {
     Ok(())
 }
 
-fn run_cmd(cmd: &str, args: &[&str]) -> Result<()> {
-    eprintln!("[HOTSPOT] Running command: {} {}", cmd, args.join(" "));
-    let start = Instant::now();
+fn enable_ip_forwarding() -> Result<()> {
+    fs::write("/proc/sys/net/ipv4/ip_forward", "1\n")
+        .map_err(|e| WirelessError::System(format!("Failed to enable ip_forward: {}", e)))?;
+    fs::write("/proc/sys/net/ipv4/conf/all/forwarding", "1\n")
+        .map_err(|e| WirelessError::System(format!("Failed to enable all/forwarding: {}", e)))?;
+    Ok(())
+}
 
-    let output = Command::new(cmd).args(args).output().map_err(|e| {
-        eprintln!(
-            "[HOTSPOT] ERROR: Command failed to execute: {} {:?}: {}",
-            cmd, args, e
-        );
-        WirelessError::System(format!("Failed to run {} {:?}: {}", cmd, args, e))
-    })?;
+fn start_dhcp_server(interface: &str, gateway_ip: Ipv4Addr) -> Result<()> {
+    let dhcp_lock = DHCP_SERVER.get_or_init(|| Mutex::new(None));
+    let mut guard = dhcp_lock
+        .lock()
+        .map_err(|_| WirelessError::System("DHCP server mutex poisoned".to_string()))?;
 
-    let duration = start.elapsed();
-    eprintln!("[HOTSPOT] Command completed in {:?}", duration);
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        eprintln!(
-            "[HOTSPOT] ERROR: Command failed with status {}",
-            output.status
-        );
-        eprintln!("[HOTSPOT]   stderr: {}", stderr);
-        eprintln!("[HOTSPOT]   stdout: {}", stdout);
-        return Err(WirelessError::System(format!(
-            "{} {:?} failed: {}",
-            cmd, args, stderr
-        )));
+    if guard.is_some() {
+        return Ok(());
     }
 
+    let dhcp_cfg = DhcpConfig {
+        interface: interface.to_string(),
+        server_ip: gateway_ip,
+        subnet_mask: Ipv4Addr::new(255, 255, 255, 0),
+        range_start: Ipv4Addr::new(10, 20, 30, 10),
+        range_end: Ipv4Addr::new(10, 20, 30, 200),
+        router: Some(gateway_ip),
+        dns_servers: vec![gateway_ip],
+        lease_time_secs: 7200,
+        log_packets: false,
+    };
+
+    let mut server = DhcpServer::new(dhcp_cfg)
+        .map_err(|e| WirelessError::System(format!("Failed to create DHCP server: {}", e)))?;
+    let running_handle = server.running_handle();
+    server
+        .start()
+        .map_err(|e| WirelessError::System(format!("Failed to start DHCP server: {}", e)))?;
+
+    let handle = std::thread::spawn(move || {
+        if let Err(e) = server.serve() {
+            log::error!("DHCP server exited with error: {}", e);
+        }
+    });
+
+    *guard = Some(DhcpRuntime {
+        handle: Some(handle),
+        running: running_handle,
+    });
+
+    Ok(())
+}
+
+fn start_dns_server(interface: &str, gateway_ip: Ipv4Addr) -> Result<()> {
+    let dns_lock = DNS_SERVER.get_or_init(|| Mutex::new(None));
+    let mut guard = dns_lock
+        .lock()
+        .map_err(|_| WirelessError::System("DNS server mutex poisoned".to_string()))?;
+
+    if guard.is_some() {
+        return Ok(());
+    }
+
+    let dns_cfg = DnsConfig {
+        interface: interface.to_string(),
+        listen_ip: gateway_ip,
+        default_ruee: DnsRule::WildcardSpoof(gateway_ip),
+        custom_ruees: std::collections::HashMap::new(),
+        upstream_dns: None,
+        log_queries: false,
+    };
+
+    let mut server = DnsServer::new(dns_cfg)
+        .map_err(|e| WirelessError::System(format!("Failed to create DNS server: {}", e)))?;
+    server
+        .start()
+        .map_err(|e| WirelessError::System(format!("Failed to start DNS server: {}", e)))?;
+
+    *guard = Some(server);
     Ok(())
 }
 

@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use chrono::Local;
 use std::{
     fs,
-    io::{BufRead, BufReader},
+    io::{BufRead, BufReader, Write},
     path::{Path, PathBuf},
     process::Command,
 };

@@ -13,7 +13,7 @@ use systemd_journal_logger::JournalLog;
 pub fn init_journald_logger() {
     #[cfg(feature = "journald")]
     {
-        if let Err(e) = JournalLog::default().install() {
+        if let Err(e) = JournalLog::new().and_then(|l| l.install()) {
             eprintln!("failed to init journald logger: {}", e);
         } else {
             log::info!("journald logger initialized for rustyjack-netlink");

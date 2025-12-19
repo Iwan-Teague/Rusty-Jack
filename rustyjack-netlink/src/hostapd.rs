@@ -409,8 +409,8 @@ impl AccessPoint {
         let (beacon_head, beacon_tail, ssid_bytes) =
             build_beacon_frames(&self.config, bssid, self.config.channel)?;
 
-        // Issue START_AP with fallbacks on channel if unsupported
-        let fallback_channels: &[u8] = &[self.config.channel, 1, 6, 11, 36];
+        // Issue START_AP with fallbacks on channel if unsupported (2.4GHz first)
+        let fallback_channels: &[u8] = &[self.config.channel, 1, 6, 11];
         let mut tried = Vec::new();
         let mut chosen_channel = self.config.channel;
         let mut last_err: Option<String> = None;
@@ -583,7 +583,7 @@ fn send_start_ap(
         .ok_or_else(|| NetlinkError::InvalidInput(format!("Unsupported channel {}", channel)))?;
 
     log::info!(
-        "Sending START_AP ifindex={} chan={} freq={} beacon_int={} dtim={} ssid_len={} head_len={} tail_len={}",
+        "START_AP params: ifindex={} chan={} freq={} beacon_int={} dtim={} ssid_len={} head_len={} tail_len={}",
         ifindex,
         channel,
         freq,
@@ -635,11 +635,20 @@ fn send_start_ap(
             |e| NetlinkError::OperationFailed(format!("Failed to build beacon head attr: {}", e)),
         )?,
     );
-    attrs.push(
-        neli::genl::Nlattr::new(false, false, NL80211_ATTR_BEACON_TAIL, beacon_tail).map_err(
-            |e| NetlinkError::OperationFailed(format!("Failed to build beacon tail attr: {}", e)),
-        )?,
-    );
+    if !beacon_tail.is_empty() {
+        attrs.push(
+            neli::genl::Nlattr::new(false, false, NL80211_ATTR_BEACON_TAIL, beacon_tail).map_err(
+                |e| {
+                    NetlinkError::OperationFailed(format!(
+                        "Failed to build beacon tail attr: {}",
+                        e
+                    ))
+                },
+            )?,
+        );
+    } else {
+        log::debug!("START_AP beacon tail empty; skipping NL80211_ATTR_BEACON_TAIL");
+    }
     attrs.push(
         neli::genl::Nlattr::new(false, false, NL80211_ATTR_WIPHY_FREQ, freq).map_err(|e| {
             NetlinkError::OperationFailed(format!("Failed to build freq attr: {}", e))

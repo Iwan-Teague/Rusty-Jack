@@ -256,26 +256,41 @@ impl WirelessManager {
             })?;
 
         if response.nl_type == NLMSG_ERR {
-            if let NlPayload::Err(err) = response.nl_payload {
-                // NLMSG_ERR with error == 0 is an ACK; anything else is a real failure.
-                if err.error == 0 {
-                    return Ok(());
+            match response.nl_payload {
+                // NLMSG_ERR with error == 0 is the expected ACK
+                NlPayload::Err(err) if err.error == 0 => return Ok(()),
+                NlPayload::Ack(ack) if ack.error == 0 => return Ok(()),
+                NlPayload::Err(err) => {
+                    let errno = err.error.abs();
+                    let io_err = io::Error::from_raw_os_error(errno);
+                    return Err(NetlinkError::OperationFailed(format!(
+                        "Failed to set interface '{}' to {} mode via nl80211: {} (errno {})",
+                        interface,
+                        mode.to_string(),
+                        io_err,
+                        errno
+                    )));
                 }
-                let errno = err.error.abs();
-                let io_err = io::Error::from_raw_os_error(errno);
-                return Err(NetlinkError::OperationFailed(format!(
-                    "Failed to set interface '{}' to {} mode via nl80211: {} (errno {})",
-                    interface,
-                    mode.to_string(),
-                    io_err,
-                    errno
-                )));
+                NlPayload::Ack(ack) => {
+                    let errno = ack.error.abs();
+                    let io_err = io::Error::from_raw_os_error(errno);
+                    return Err(NetlinkError::OperationFailed(format!(
+                        "Failed to set interface '{}' to {} mode via nl80211: {} (errno {})",
+                        interface,
+                        mode.to_string(),
+                        io_err,
+                        errno
+                    )));
+                }
+                other => {
+                    return Err(NetlinkError::OperationFailed(format!(
+                        "Failed to set interface '{}' to {} mode via nl80211 (unexpected payload {:?})",
+                        interface,
+                        mode.to_string(),
+                        other
+                    )));
+                }
             }
-            return Err(NetlinkError::OperationFailed(format!(
-                "Failed to set interface '{}' to {} mode via nl80211 (unknown error)",
-                interface,
-                mode.to_string()
-            )));
         }
 
         Ok(())

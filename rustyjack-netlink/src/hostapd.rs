@@ -549,6 +549,18 @@ fn send_start_ap(
         NetlinkError::InvalidInput(format!("Unsupported channel {}", channel))
     })?;
 
+    log::info!(
+        "Sending START_AP ifindex={} chan={} freq={} beacon_int={} dtim={} ssid_len={} head_len={} tail_len={}",
+        ifindex,
+        channel,
+        freq,
+        beacon_interval_tu,
+        dtim_period,
+        ssid.len(),
+        beacon_head.len(),
+        beacon_tail.len()
+    );
+
     let mut sock =
         NlSocketHandle::connect(neli::consts::socket::NlFamily::Generic, None, &[]).map_err(
             |e| NetlinkError::ConnectionFailed(format!("Failed to open nl80211 socket: {}", e)),
@@ -564,15 +576,21 @@ fn send_start_ap(
         })?,
     );
     attrs.push(
-        neli::genl::Nlattr::new(false, false, NL80211_ATTR_BEACON_INTERVAL, beacon_interval_tu)
-            .map_err(|e| {
-                NetlinkError::OperationFailed(format!("Failed to build beacon interval attr: {}", e))
-            })?,
+        neli::genl::Nlattr::new(
+            false,
+            false,
+            NL80211_ATTR_BEACON_INTERVAL,
+            beacon_interval_tu as u32,
+        )
+        .map_err(|e| {
+            NetlinkError::OperationFailed(format!("Failed to build beacon interval attr: {}", e))
+        })?,
     );
     attrs.push(
-        neli::genl::Nlattr::new(false, false, NL80211_ATTR_DTIM_PERIOD, dtim_period).map_err(
-            |e| NetlinkError::OperationFailed(format!("Failed to build DTIM attr: {}", e)),
-        )?,
+        neli::genl::Nlattr::new(false, false, NL80211_ATTR_DTIM_PERIOD, dtim_period as u32)
+            .map_err(|e| {
+                NetlinkError::OperationFailed(format!("Failed to build DTIM attr: {}", e))
+            })?,
     );
     attrs.push(
         neli::genl::Nlattr::new(false, false, NL80211_ATTR_SSID, ssid).map_err(|e| {
@@ -609,6 +627,7 @@ fn send_start_ap(
         NetlinkError::OperationFailed(format!("Failed to send START_AP: {}", e))
     })?;
 
+    // Consume replies until ACK or ERR
     let resp: Option<Nlmsghdr<u16, Genlmsghdr<u8, u16>>> = sock.recv().map_err(|e| {
         NetlinkError::OperationFailed(format!("Failed to receive START_AP response: {}", e))
     })?;
@@ -618,9 +637,38 @@ fn send_start_ap(
     })?;
 
     if resp.nl_type == neli::consts::nl::Nlmsg::Error.into() {
-        return Err(NetlinkError::OperationFailed(
-            "Kernel rejected START_AP request".to_string(),
-        ));
+        match resp.nl_payload {
+            NlPayload::Err(err) if err.error == 0 => {
+                log::debug!("START_AP acked by kernel");
+                return Ok(());
+            }
+            NlPayload::Ack(ack) if ack.error == 0 => {
+                log::debug!("START_AP ack payload received");
+                return Ok(());
+            }
+            NlPayload::Err(err) => {
+                let errno = err.error.abs();
+                let io_err = std::io::Error::from_raw_os_error(errno);
+                return Err(NetlinkError::OperationFailed(format!(
+                    "Kernel rejected START_AP: {} (errno {})",
+                    io_err, errno
+                )));
+            }
+            NlPayload::Ack(ack) => {
+                let errno = ack.error.abs();
+                let io_err = std::io::Error::from_raw_os_error(errno);
+                return Err(NetlinkError::OperationFailed(format!(
+                    "Kernel rejected START_AP (ack err): {} (errno {})",
+                    io_err, errno
+                )));
+            }
+            other => {
+                return Err(NetlinkError::OperationFailed(format!(
+                    "Kernel rejected START_AP (unexpected payload {:?})",
+                    other
+                )));
+            }
+        }
     }
 
     Ok(())

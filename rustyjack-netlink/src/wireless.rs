@@ -1,5 +1,6 @@
 #[allow(dead_code)]
 use crate::error::{NetlinkError, Result};
+use log::{debug, info};
 use neli::{
     consts::nl::{NlmF, NlmFFlags},
     genl::{Genlmsghdr, Nlattr},
@@ -218,6 +219,12 @@ impl WirelessManager {
     /// - Interface is up (must be down to change mode)
     pub fn set_mode(&mut self, interface: &str, mode: InterfaceMode) -> Result<()> {
         let ifindex = self.get_ifindex(interface)?;
+        debug!(
+            "nl80211 set_mode iface={} ifindex={} mode={}",
+            interface,
+            ifindex,
+            mode.to_string()
+        );
 
         let mut attrs = GenlBuffer::new();
         attrs.push(
@@ -293,6 +300,12 @@ impl WirelessManager {
             }
         }
 
+        info!(
+            "nl80211 set_mode succeeded iface={} ifindex={} mode={}",
+            interface,
+            ifindex,
+            mode.to_string()
+        );
         Ok(())
     }
 
@@ -314,6 +327,10 @@ impl WirelessManager {
         let frequency = Self::channel_to_frequency(channel).ok_or_else(|| {
             NetlinkError::OperationFailed(format!("Invalid channel number: {}", channel))
         })?;
+        debug!(
+            "nl80211 set_channel iface={} channel={} freq={}",
+            interface, channel, frequency
+        );
 
         self.set_frequency(interface, frequency, ChannelWidth::NoHT)
     }
@@ -339,6 +356,10 @@ impl WirelessManager {
         width: ChannelWidth,
     ) -> Result<()> {
         let ifindex = self.get_ifindex(interface)?;
+        debug!(
+            "nl80211 set_frequency iface={} ifindex={} freq={} width={:?}",
+            interface, ifindex, frequency, width
+        );
 
         let mut attrs = GenlBuffer::new();
         attrs.push(
@@ -423,6 +444,10 @@ impl WirelessManager {
             }
         }
 
+        info!(
+            "nl80211 set_frequency succeeded iface={} ifindex={} freq={} width={:?}",
+            interface, ifindex, frequency, width
+        );
         Ok(())
     }
 

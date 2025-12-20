@@ -408,6 +408,13 @@ impl AccessPoint {
 
         let (beacon_head, beacon_tail, ssid_bytes) =
             build_beacon_frames(&self.config, bssid, self.config.channel)?;
+        log::debug!(
+            "Beacon built: head_len={} tail_len={} ssid_len={} hidden={}",
+            beacon_head.len(),
+            beacon_tail.len(),
+            ssid_bytes.len(),
+            self.config.hidden
+        );
 
         // Issue START_AP with fallbacks on channel if unsupported (2.4GHz first)
         let fallback_channels: &[u8] = &[self.config.channel, 1, 6, 11];
@@ -419,7 +426,11 @@ impl AccessPoint {
                 continue;
             }
             tried.push(*ch);
-            log::info!("Attempting START_AP on channel {}", ch);
+            log::info!(
+                "Attempting START_AP on channel {} (freq {:?})",
+                ch,
+                channel_to_frequency(*ch)
+            );
             match send_start_ap(
                 ifindex,
                 *ch,
@@ -655,6 +666,12 @@ fn send_start_ap(
         })?,
     );
 
+    log::debug!(
+        "START_AP building nl80211 frame: ifindex={} attrs={}",
+        ifindex,
+        attrs.len()
+    );
+
     let genlhdr = Genlmsghdr::new(NL80211_CMD_START_AP, 0, attrs);
     let nlhdr = Nlmsghdr::new(
         None,
@@ -690,6 +707,12 @@ fn send_start_ap(
             NlPayload::Err(err) => {
                 let errno = err.error.abs();
                 let io_err = std::io::Error::from_raw_os_error(errno);
+                log::error!(
+                    "START_AP rejected: errno={} ({}) raw_err={:?}",
+                    errno,
+                    io_err,
+                    err
+                );
                 return Err(NetlinkError::OperationFailed(format!(
                     "Kernel rejected START_AP: {} (errno {})",
                     io_err, errno
@@ -698,12 +721,19 @@ fn send_start_ap(
             NlPayload::Ack(ack) => {
                 let errno = ack.error.abs();
                 let io_err = std::io::Error::from_raw_os_error(errno);
+                log::error!(
+                    "START_AP rejected (ack err): errno={} ({}) raw_ack={:?}",
+                    errno,
+                    io_err,
+                    ack
+                );
                 return Err(NetlinkError::OperationFailed(format!(
                     "Kernel rejected START_AP (ack err): {} (errno {})",
                     io_err, errno
                 )));
             }
             other => {
+                log::error!("START_AP rejected: unexpected payload {:?}", other);
                 return Err(NetlinkError::OperationFailed(format!(
                     "Kernel rejected START_AP (unexpected payload {:?})",
                     other
@@ -1059,6 +1089,7 @@ fn open_eapol_socket(ifindex: u32) -> Result<RawFd> {
         )));
     }
 
+    log::info!("EAPOL raw socket opened on ifindex {}", ifindex);
     Ok(sock_fd)
 }
 
@@ -1138,6 +1169,13 @@ fn spawn_eapol_task(
             let replay = u64::from_be_bytes([
                 buf[23], buf[24], buf[25], buf[26], buf[27], buf[28], buf[29], buf[30],
             ]);
+            log::debug!(
+                "EAPOL M2 received len={} replay={} key_data_len={} sta={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+                len,
+                replay,
+                key_data_len,
+                buf[6], buf[7], buf[8], buf[9], buf[10], buf[11]
+            );
 
             // Generate ANonce and PTK
             let anonce = rand::random::<[u8; 32]>();
@@ -1170,6 +1208,15 @@ fn spawn_eapol_task(
                 }
                 continue;
             }
+            log::info!(
+                "EAPOL MIC validated for sta {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+                sta_mac[0],
+                sta_mac[1],
+                sta_mac[2],
+                sta_mac[3],
+                sta_mac[4],
+                sta_mac[5]
+            );
 
             // Build M3
             let replay_counter = replay.saturating_add(1);
@@ -1219,13 +1266,14 @@ fn spawn_eapol_task(
                 }
             } else {
                 log::info!(
-                    "Sent EAPOL M3 to {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+                    "Sent EAPOL M3 to {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x} replay_counter={}",
                     buf[6],
                     buf[7],
                     buf[8],
                     buf[9],
                     buf[10],
-                    buf[11]
+                    buf[11],
+                    replay_counter
                 );
             }
         }

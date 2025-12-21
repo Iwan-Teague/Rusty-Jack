@@ -1,6 +1,8 @@
 use crate::error::{Result, WirelessError};
+use log::{info, warn};
 
 pub fn netlink_set_interface_up(interface: &str) -> Result<()> {
+    info!("netlink: set interface {} up", interface);
     tokio::runtime::Handle::try_current()
         .map(|handle| {
             handle.block_on(async {
@@ -25,6 +27,7 @@ pub fn netlink_set_interface_up(interface: &str) -> Result<()> {
 }
 
 pub fn netlink_set_interface_down(interface: &str) -> Result<()> {
+    info!("netlink: set interface {} down", interface);
     tokio::runtime::Handle::try_current()
         .map(|handle| {
             handle.block_on(async {
@@ -52,6 +55,7 @@ pub fn netlink_set_interface_down(interface: &str) -> Result<()> {
 }
 
 pub fn netlink_flush_addresses(interface: &str) -> Result<()> {
+    info!("netlink: flush addresses on {}", interface);
     tokio::runtime::Handle::try_current()
         .map(|handle| {
             handle.block_on(async {
@@ -82,6 +86,10 @@ pub fn netlink_flush_addresses(interface: &str) -> Result<()> {
 }
 
 pub fn netlink_add_address(interface: &str, addr: std::net::IpAddr, prefix_len: u8) -> Result<()> {
+    info!(
+        "netlink: add address {}/{} to {}",
+        addr, prefix_len, interface
+    );
     tokio::runtime::Handle::try_current()
         .map(|handle| {
             handle.block_on(async {

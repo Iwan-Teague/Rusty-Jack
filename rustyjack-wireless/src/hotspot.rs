@@ -337,9 +337,11 @@ pub fn start_hotspot(config: HotspotConfig) -> Result<HotspotState> {
 
     eprintln!("[HOTSPOT] Bringing interface down via netlink...");
     netlink_set_interface_down(&config.ap_interface)?;
+    log::info!("Hotspot: {} set down via netlink", config.ap_interface);
 
     eprintln!("[HOTSPOT] Flushing addresses via netlink...");
     netlink_flush_addresses(&config.ap_interface)?;
+    log::info!("Hotspot: flushed addresses on {}", config.ap_interface);
 
     // Ensure interface is in AP mode before setting channel to avoid EBUSY from nl80211
     eprintln!(
@@ -350,6 +352,10 @@ pub fn start_hotspot(config: HotspotConfig) -> Result<HotspotState> {
         Ok(_) => {
             eprintln!(
                 "[HOTSPOT] Interface {} set to AP mode (netlink)",
+                config.ap_interface
+            );
+            log::info!(
+                "Hotspot: {} set to AP mode via nl80211",
                 config.ap_interface
             );
         }
@@ -367,9 +373,15 @@ pub fn start_hotspot(config: HotspotConfig) -> Result<HotspotState> {
         AP_GATEWAY
     );
     netlink_add_address(&config.ap_interface, IpAddr::V4(gateway_ip), 24)?;
+    log::info!(
+        "Hotspot: assigned {} to {} via netlink",
+        AP_GATEWAY,
+        config.ap_interface
+    );
 
     eprintln!("[HOTSPOT] Bringing interface up via netlink...");
     netlink_set_interface_up(&config.ap_interface)?;
+    log::info!("Hotspot: {} brought up via netlink", config.ap_interface);
 
     eprintln!("[HOTSPOT] AP interface {} is up", config.ap_interface);
     log::debug!("AP interface {} is up", config.ap_interface);
@@ -381,6 +393,7 @@ pub fn start_hotspot(config: HotspotConfig) -> Result<HotspotState> {
     // Enable forwarding without sysctl binary
     enable_ip_forwarding()
         .map_err(|e| WirelessError::System(format!("Failed to enable IPv4 forwarding: {}", e)))?;
+    log::info!("Hotspot: IPv4 forwarding enabled");
 
     // NAT rules (only if upstream is present and ready)
     if upstream_ready && !config.upstream_interface.is_empty() {

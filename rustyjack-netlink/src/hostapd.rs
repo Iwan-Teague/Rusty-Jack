@@ -53,6 +53,8 @@ use neli::socket::NlSocketHandle;
 use neli::types::GenlBuffer;
 
 use hmac::{Hmac, Mac};
+use std::collections::HashMap as StdHashMap;
+use std::sync::Mutex as StdMutex;
 use tokio::sync::{Mutex, RwLock};
 use tokio::task::JoinHandle;
 
@@ -283,6 +285,14 @@ pub struct AccessPoint {
     ifindex: Option<u32>,
 }
 
+#[derive(Debug, Clone)]
+struct StaHandshake {
+    anonce: [u8; 32],
+    ptk: Option<[u8; 64]>,
+    last_replay: u64,
+    authorized: bool,
+}
+
 static LAST_AP_ERROR: Lazy<std::sync::Mutex<Option<String>>> =
     Lazy::new(|| std::sync::Mutex::new(None));
 
@@ -354,6 +364,13 @@ impl AccessPoint {
                 .supported_modes
                 .iter()
                 .any(|m| *m == InterfaceMode::AccessPoint);
+        log::info!(
+            "Phy {} (wiphy {}) caps: supports_ap={} modes={:?}",
+            phy_caps.name,
+            phy_caps.wiphy,
+            phy_caps.supports_ap,
+            phy_caps.supported_modes
+        );
 
         if !ap_supported {
             return Err(NetlinkError::OperationNotSupported(format!(
@@ -417,11 +434,24 @@ impl AccessPoint {
         );
 
         // Issue START_AP with fallbacks on channel if unsupported (2.4GHz first)
-        let fallback_channels: &[u8] = &[self.config.channel, 1, 6, 11];
+        let mut fallback_channels: Vec<u8> = Vec::new();
+        if self.config.channel <= 14 {
+            fallback_channels.push(self.config.channel);
+        } else {
+            log::warn!(
+                "Configured channel {} is >14; skipping and falling back to 2.4 GHz channels",
+                self.config.channel
+            );
+        }
+        for ch in [1u8, 6u8, 11u8] {
+            if !fallback_channels.contains(&ch) {
+                fallback_channels.push(ch);
+            }
+        }
         let mut tried = Vec::new();
         let mut chosen_channel = self.config.channel;
         let mut last_err: Option<String> = None;
-        for ch in fallback_channels {
+        for ch in fallback_channels.iter() {
             if tried.contains(ch) {
                 continue;
             }
@@ -474,11 +504,12 @@ impl AccessPoint {
                 Ok(fd) => {
                     let running = Arc::clone(&self.running);
                     let stats = Arc::clone(&self.stats);
+                    let clients = Arc::clone(&self.clients);
                     let iface = self.config.interface.clone();
                     let pmk = self.pmk;
                     let bssid = bssid;
                     self.eapol_task = Some(spawn_eapol_task(
-                        fd, running, stats, iface, pmk, bssid, ifindex,
+                        fd, running, stats, clients, iface, pmk, bssid, ifindex,
                     ));
                     self.eapol_fd = Some(fd);
                 }
@@ -509,13 +540,16 @@ impl AccessPoint {
 
         *self.running.lock().await = false;
 
-        if let Some(ifindex) = self.ifindex.take() {
+        // Best-effort deauth before stopping AP
+        if let Some(ifindex) = self.ifindex {
+            self.disconnect_all_clients().await;
             if let Err(e) = send_stop_ap(ifindex) {
                 log::warn!("STOP_AP failed for ifindex {}: {}", ifindex, e);
             } else {
                 log::info!("STOP_AP sent for ifindex {}", ifindex);
             }
         }
+        self.ifindex = None;
         if let Some(fd) = self.eapol_fd.take() {
             unsafe {
                 libc::close(fd);
@@ -553,6 +587,9 @@ impl AccessPoint {
             {
                 let mut stats = self.stats.lock().await;
                 stats.deauth_sent += 1;
+            }
+            if let Some(ifindex) = self.ifindex {
+                let _ = deauth_station(ifindex, mac);
             }
             log::info!(
                 "Disconnected client {:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
@@ -672,7 +709,7 @@ fn send_start_ap(
         attrs.len()
     );
 
-    let genlhdr = Genlmsghdr::new(NL80211_CMD_START_AP, 0, attrs);
+    let genlhdr = Genlmsghdr::new(NL80211_CMD_START_AP, 1, attrs);
     let nlhdr = Nlmsghdr::new(
         None,
         family_id,
@@ -761,7 +798,7 @@ fn send_stop_ap(ifindex: u32) -> Result<()> {
         })?,
     );
 
-    let genlhdr = Genlmsghdr::new(NL80211_CMD_STOP_AP, 0, attrs);
+    let genlhdr = Genlmsghdr::new(NL80211_CMD_STOP_AP, 1, attrs);
     let nlhdr = Nlmsghdr::new(
         None,
         family_id,
@@ -1089,6 +1126,12 @@ fn open_eapol_socket(ifindex: u32) -> Result<RawFd> {
         )));
     }
 
+    // Set non-blocking to allow clean shutdown polling
+    let flags = unsafe { libc::fcntl(sock_fd, libc::F_GETFL) };
+    if flags >= 0 {
+        let _ = unsafe { libc::fcntl(sock_fd, libc::F_SETFL, flags | libc::O_NONBLOCK) };
+    }
+
     log::info!("EAPOL raw socket opened on ifindex {}", ifindex);
     Ok(sock_fd)
 }
@@ -1097,6 +1140,7 @@ fn spawn_eapol_task(
     fd: RawFd,
     running: Arc<Mutex<bool>>,
     stats: Arc<Mutex<ApStats>>,
+    clients: Arc<RwLock<HashMap<[u8; 6], ApClient>>>,
     interface: String,
     pmk: Option<[u8; 32]>,
     bssid: [u8; 6],
@@ -1104,7 +1148,9 @@ fn spawn_eapol_task(
 ) -> JoinHandle<()> {
     tokio::task::spawn_blocking(move || {
         let mut buf = [0u8; 2048];
-        let gtk: [u8; 16] = [0x11; 16];
+        let gtk: [u8; 16] = rand::random();
+        let sta_state: StdMutex<StdHashMap<[u8; 6], StaHandshake>> =
+            StdMutex::new(StdHashMap::new());
         if let Some(_pmk) = pmk {
             log::info!(
                 "WPA2-PSK EAPOL handler active on {} (pmk set, bssid {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x})",
@@ -1130,6 +1176,7 @@ fn spawn_eapol_task(
             if res < 0 {
                 let err = std::io::Error::last_os_error();
                 if err.kind() == std::io::ErrorKind::WouldBlock {
+                    std::thread::sleep(std::time::Duration::from_millis(2));
                     continue;
                 }
                 break;
@@ -1147,6 +1194,7 @@ fn spawn_eapol_task(
             if eapol_type != EAPOL_TYPE_KEY {
                 continue;
             }
+            let key_info = u16::from_be_bytes([buf[19], buf[20]]);
 
             let mut s = stats.blocking_lock();
             s.auth_requests += 1;
@@ -1161,7 +1209,6 @@ fn spawn_eapol_task(
             if key_desc != WPA2_KEY_DESCRIPTOR {
                 continue;
             }
-            let _key_info = u16::from_be_bytes([buf[19], buf[20]]);
             let key_data_len = u16::from_be_bytes([buf[111], buf[112]]) as usize;
             let mut snonce = [0u8; 32];
             snonce.copy_from_slice(&buf[31..63]);
@@ -1177,12 +1224,165 @@ fn spawn_eapol_task(
                 buf[6], buf[7], buf[8], buf[9], buf[10], buf[11]
             );
 
-            // Generate ANonce and PTK
-            let anonce = rand::random::<[u8; 32]>();
+            let mic_set = (key_info & WPA2_KEY_INFO_KEY_MIC) != 0;
+            let ack_set = (key_info & WPA2_KEY_INFO_KEY_ACK) != 0;
+            let install_set = (key_info & WPA2_KEY_INFO_INSTALL) != 0;
+            let secure_set = (key_info & WPA2_KEY_INFO_SECURE) != 0;
+
+            // Generate/reuse ANonce and derive PTK
             let pmk = pmk.unwrap();
             let mut sta_mac = [0u8; 6];
             sta_mac.copy_from_slice(&buf[6..12]);
-            let ptk = derive_ptk(&pmk, &bssid, &sta_mac, &anonce, &snonce);
+            if mic_set && !ack_set && secure_set {
+                // Likely M4
+                let mut state_guard = sta_state.lock().unwrap_or_else(|e| e.into_inner());
+                if let Some(entry) = state_guard.get_mut(&sta_mac) {
+                    if replay != 0 && replay < entry.last_replay {
+                        log::warn!(
+                            "M4 replay too old for {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}: {} < {}",
+                            sta_mac[0], sta_mac[1], sta_mac[2], sta_mac[3], sta_mac[4], sta_mac[5],
+                            replay,
+                            entry.last_replay
+                        );
+                        drop(state_guard);
+                        continue;
+                    }
+                    if let Some(ptk) = entry.ptk {
+                        let mut frame = buf[..len].to_vec();
+                        for b in frame[95..111].iter_mut() {
+                            *b = 0;
+                        }
+                        let calc_mic = hmac_sha1(&ptk[..16], &frame[..(113 + key_data_len)]);
+                        if &calc_mic[..16] != key_mic {
+                            let msg = format!("EAPOL M4 MIC validation failed on {}", interface);
+                            log::warn!("{}", msg);
+                            record_ap_error(msg);
+                            drop(state_guard);
+                            if let Err(e) = deauth_station(ifindex, &sta_mac) {
+                                log::warn!(
+                                    "Failed to deauth station {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}: {}",
+                                    sta_mac[0],
+                                    sta_mac[1],
+                                    sta_mac[2],
+                                    sta_mac[3],
+                                    sta_mac[4],
+                                    sta_mac[5],
+                                    e
+                                );
+                            }
+                            continue;
+                        }
+                        entry.last_replay = replay;
+                        if !entry.authorized {
+                            if let Err(e) =
+                                install_keys_and_authorize(ifindex, &sta_mac, &ptk[..16], &gtk)
+                            {
+                                let msg = format!(
+                                    "Key install/authorize failed on {} during M4: {}",
+                                    interface, e
+                                );
+                                log::warn!("{}", msg);
+                                record_ap_error(msg);
+                                drop(state_guard);
+                                if let Err(deauth_err) = deauth_station(ifindex, &sta_mac) {
+                                    log::warn!(
+                                        "Failed to deauth station {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x} after key failure: {}",
+                                        sta_mac[0],
+                                        sta_mac[1],
+                                        sta_mac[2],
+                                        sta_mac[3],
+                                        sta_mac[4],
+                                        sta_mac[5],
+                                        deauth_err
+                                    );
+                                }
+                                continue;
+                            }
+                            entry.authorized = true;
+                            log::info!(
+                                "Station {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x} authorized (M4 complete)",
+                                sta_mac[0],
+                                sta_mac[1],
+                                sta_mac[2],
+                                sta_mac[3],
+                                sta_mac[4],
+                                sta_mac[5]
+                            );
+                            // Update clients map to reflect authorized state
+                            let mut clients_guard = clients.blocking_write();
+                            clients_guard
+                                .entry(sta_mac)
+                                .and_modify(|c| c.wpa_state = WpaState::Authenticated)
+                                .or_insert_with(|| ApClient {
+                                    mac_address: sta_mac,
+                                    aid: 0,
+                                    associated_at: Instant::now(),
+                                    capabilities: 0,
+                                    rates: Vec::new(),
+                                    wpa_state: WpaState::Authenticated,
+                                });
+                        }
+                    } else {
+                        log::warn!(
+                            "Received M4 without PTK for {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+                            sta_mac[0],
+                            sta_mac[1],
+                            sta_mac[2],
+                            sta_mac[3],
+                            sta_mac[4],
+                            sta_mac[5]
+                        );
+                    }
+                } else {
+                    log::warn!(
+                        "Received M4 for unknown station {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+                        sta_mac[0],
+                        sta_mac[1],
+                        sta_mac[2],
+                        sta_mac[3],
+                        sta_mac[4],
+                        sta_mac[5]
+                    );
+                }
+                drop(state_guard);
+                continue;
+            }
+
+            // Expected M2: MIC set, ACK clear, secure clear
+            if !mic_set || ack_set || secure_set || install_set {
+                log::warn!(
+                    "Unexpected EAPOL-Key (key_info=0x{:04x}) from {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}; ignoring",
+                    key_info,
+                    sta_mac[0], sta_mac[1], sta_mac[2], sta_mac[3], sta_mac[4], sta_mac[5]
+                );
+                continue;
+            }
+
+            let mut state_guard = sta_state.lock().unwrap_or_else(|e| e.into_inner());
+            let entry = state_guard.entry(sta_mac).or_insert_with(|| StaHandshake {
+                anonce: rand::random::<[u8; 32]>(),
+                ptk: None,
+                last_replay: 0,
+                authorized: false,
+            });
+
+            // Drop MIC-only frames that reuse or decrease replay counter
+            if replay != 0 && replay <= entry.last_replay {
+                log::warn!(
+                    "Replay counter not increasing for {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}: {} <= {}",
+                    sta_mac[0], sta_mac[1], sta_mac[2], sta_mac[3], sta_mac[4], sta_mac[5],
+                    replay,
+                    entry.last_replay
+                );
+                drop(state_guard);
+                continue;
+            }
+
+            let ptk = derive_ptk(&pmk, &bssid, &sta_mac, &entry.anonce, &snonce);
+            entry.ptk = Some(ptk);
+            entry.last_replay = replay;
+            let anonce = entry.anonce;
+            drop(state_guard);
 
             // Verify MIC on incoming M2
             let mut frame = buf[..len].to_vec();
@@ -1222,25 +1422,6 @@ fn spawn_eapol_task(
             let replay_counter = replay.saturating_add(1);
             let m3 = build_m3(&bssid, &sta_mac, &anonce, replay_counter, &ptk, &gtk);
 
-            // Install PTK/GTK and authorize station (best effort)
-            if let Err(e) = install_keys_and_authorize(ifindex, &sta_mac, &ptk[..16], &gtk) {
-                let msg = format!("Key install/authorize failed on {}: {}", interface, e);
-                log::warn!("{}", msg);
-                record_ap_error(msg);
-                if let Err(deauth_err) = deauth_station(ifindex, &sta_mac) {
-                    log::warn!(
-                        "Failed to deauth station {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x} after key failure: {}",
-                        sta_mac[0],
-                        sta_mac[1],
-                        sta_mac[2],
-                        sta_mac[3],
-                        sta_mac[4],
-                        sta_mac[5],
-                        deauth_err
-                    );
-                }
-            }
-
             // Send M3 back to station
             let send_res =
                 unsafe { libc::send(fd, m3.as_ptr() as *const libc::c_void, m3.len(), 0) };
@@ -1276,6 +1457,19 @@ fn spawn_eapol_task(
                     replay_counter
                 );
             }
+            // Track client in shared map for visibility/stats
+            let mut clients_guard = clients.blocking_write();
+            clients_guard
+                .entry(sta_mac)
+                .and_modify(|c| c.wpa_state = WpaState::Authenticating)
+                .or_insert_with(|| ApClient {
+                    mac_address: sta_mac,
+                    aid: 0,
+                    associated_at: Instant::now(),
+                    capabilities: 0,
+                    rates: Vec::new(),
+                    wpa_state: WpaState::Authenticating,
+                });
         }
         let _ = unsafe { libc::close(fd) };
         log::info!("EAPOL listener stopped on {}", interface);

@@ -444,7 +444,8 @@ impl AccessPoint {
                 self.config.channel
             );
         }
-        for ch in [1u8, 6u8, 11u8] {
+        // Add common 2.4GHz channels (skip 11 - causes issues on some hardware)
+        for ch in [1u8, 6u8] {
             if !fallback_channels.contains(&ch) {
                 fallback_channels.push(ch);
             }
@@ -462,6 +463,11 @@ impl AccessPoint {
                 ch,
                 channel_to_frequency(*ch)
             );
+            eprintln!(
+                "[HOSTAPD] Trying START_AP on channel {} ({}MHz)",
+                ch,
+                channel_to_frequency(*ch).unwrap_or(0)
+            );
             match send_start_ap(
                 ifindex,
                 *ch,
@@ -474,11 +480,13 @@ impl AccessPoint {
                 Ok(_) => {
                     chosen_channel = *ch;
                     last_err = None;
+                    eprintln!("[HOSTAPD] ✓ START_AP succeeded on channel {}", ch);
                     break;
                 }
                 Err(e) => {
                     let msg = format!("START_AP failed on channel {}: {}", ch, e);
                     log::warn!("{}", msg);
+                    eprintln!("[HOSTAPD] ✗ START_AP failed on channel {}: {}", ch, e);
                     last_err = Some(msg);
                 }
             }
@@ -703,9 +711,10 @@ fn send_start_ap(
             NetlinkError::OperationFailed(format!("Failed to build freq attr: {}", e))
         })?,
     );
-    // Force HT20 channel type to avoid ERANGE on drivers that require explicit channel type
+    // Try NO_HT (0) first for better compatibility with older/limited drivers
+    // HT20 (1) can cause ERANGE on some hardware
     attrs.push(
-        neli::genl::Nlattr::new(false, false, NL80211_ATTR_WIPHY_CHANNEL_TYPE, 1u32).map_err(
+        neli::genl::Nlattr::new(false, false, NL80211_ATTR_WIPHY_CHANNEL_TYPE, 0u32).map_err(
             |e| NetlinkError::OperationFailed(format!("Failed to build channel type attr: {}", e)),
         )?,
     );
@@ -757,9 +766,15 @@ fn send_start_ap(
                     io_err,
                     err
                 );
+                let hint = if errno == 34 {
+                    // ERANGE - common with incompatible channel/bandwidth settings
+                    " (ERANGE: channel/bandwidth not supported by driver - try different channel or NO_HT mode)"
+                } else {
+                    ""
+                };
                 return Err(NetlinkError::OperationFailed(format!(
-                    "Kernel rejected START_AP: {} (errno {})",
-                    io_err, errno
+                    "Kernel rejected START_AP: {} (errno {}){}",
+                    io_err, errno, hint
                 )));
             }
             NlPayload::Ack(ack) => {

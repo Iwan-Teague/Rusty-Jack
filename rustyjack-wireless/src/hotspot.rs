@@ -27,6 +27,7 @@ use crate::rfkill_helpers::{rfkill_list, rfkill_unblock, rfkill_unblock_all};
 static HOTSPOT_LOCK: Mutex<()> = Mutex::new(());
 static DHCP_SERVER: OnceLock<Mutex<Option<DhcpRuntime>>> = OnceLock::new();
 static DNS_SERVER: OnceLock<Mutex<Option<DnsServer>>> = OnceLock::new();
+static ACCESS_POINT: OnceLock<Mutex<Option<AccessPoint>>> = OnceLock::new();
 
 struct DhcpRuntime {
     handle: Option<JoinHandle<()>>,
@@ -196,9 +197,25 @@ pub fn start_hotspot(config: HotspotConfig) -> Result<HotspotState> {
     eprintln!("[HOTSPOT] Creating config directory...");
     fs::create_dir_all(CONF_DIR).map_err(|e| WirelessError::System(format!("mkdir: {e}")))?;
 
+    // Clean up any existing AP/DHCP/DNS from previous run
+    eprintln!("[HOTSPOT] Cleaning up any existing hotspot services...");
+    log::debug!("Cleaning up any existing hotspot services");
+    
+    // Stop any existing Access Point in our global
+    if let Some(ap_mutex) = ACCESS_POINT.get() {
+        if let Ok(mut guard) = ap_mutex.lock() {
+            if let Some(mut old_ap) = guard.take() {
+                eprintln!("[HOTSPOT] Stopping previous Access Point instance...");
+                let _ = tokio::runtime::Runtime::new().and_then(|rt| {
+                    rt.block_on(async { old_ap.stop().await });
+                    Ok(())
+                });
+                std::thread::sleep(std::time::Duration::from_millis(500));
+            }
+        }
+    }
+    
     // Ensure previous instances are stopped to avoid dhcp bind failures
-    eprintln!("[HOTSPOT] Stopping any existing hotspot processes");
-    log::debug!("Stopping any existing hotspot processes");
     let _ = pkill_pattern("hostapd");
     std::thread::sleep(std::time::Duration::from_millis(500));
 
@@ -554,8 +571,12 @@ pub fn start_hotspot(config: HotspotConfig) -> Result<HotspotState> {
     fs::write(&servers_state_path, "ap_dhcp_dns_running")
         .map_err(|e| WirelessError::System(format!("write server marker: {e}")))?;
 
-    // Leak AP so it stays alive until stop_hotspot is called
-    std::mem::forget(ap);
+    // Store AP in global so it can be stopped later
+    let ap_lock = ACCESS_POINT.get_or_init(|| Mutex::new(None));
+    let mut guard = ap_lock
+        .lock()
+        .map_err(|_| WirelessError::System("AP mutex poisoned".to_string()))?;
+    *guard = Some(ap);
 
     Ok(state)
 }
@@ -570,6 +591,23 @@ pub fn stop_hotspot() -> Result<()> {
     // Best-effort cleanup
     if let Some(s) = state {
         eprintln!("[HOTSPOT] Stopping hotspot services...");
+
+        // Stop Access Point first
+        if let Some(ap_mutex) = ACCESS_POINT.get() {
+            if let Ok(mut guard) = ap_mutex.lock() {
+                if let Some(mut ap) = guard.take() {
+                    eprintln!("[HOTSPOT] Stopping Access Point...");
+                    // Need to run in tokio context
+                    let rt = tokio::runtime::Runtime::new()
+                        .map_err(|e| WirelessError::System(format!("Failed to create runtime: {}", e)))?;
+                    if let Err(e) = rt.block_on(async { ap.stop().await }) {
+                        log::warn!("Failed to stop AP cleanly: {}", e);
+                    } else {
+                        log::info!("Access Point stopped");
+                    }
+                }
+            }
+        }
 
         // Stop DNS server
         if let Some(dns_mutex) = DNS_SERVER.get() {
@@ -596,9 +634,8 @@ pub fn stop_hotspot() -> Result<()> {
             }
         }
 
-        // Rust AP will drop when process exits; interface cleanup handled below
         eprintln!("[HOTSPOT] Rust AP/DHCP/DNS servers cleaned up");
-        log::info!("Rust AP/DHCP/DNS servers stopping");
+        log::info!("Rust AP/DHCP/DNS servers stopped");
 
         std::thread::sleep(std::time::Duration::from_millis(500));
 

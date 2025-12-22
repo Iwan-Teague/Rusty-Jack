@@ -19,6 +19,7 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use chrono::Local;
+use log::warn;
 
 use crate::capture::{CaptureFilter, PacketCapture};
 use crate::error::{Result, WirelessError};
@@ -188,10 +189,16 @@ impl KarmaAttack {
 
     /// Get or create a BSSID for an SSID
     fn get_bssid_for_ssid(&self, ssid: &str) -> String {
-        let mut map = self
-            .ssid_to_bssid
-            .lock()
-            .expect("BSSID map mutex poisoned - internal error");
+        let mut map = match self.ssid_to_bssid.lock() {
+            Ok(m) => m,
+            Err(e) => {
+                log::warn!(
+                    "[KARMA] BSSID map mutex poisoned, recovering: {}",
+                    e
+                );
+                e.into_inner()
+            }
+        };
         map.entry(ssid.to_string())
             .or_insert_with(Self::generate_bssid)
             .clone()
@@ -245,15 +252,22 @@ impl KarmaAttack {
         };
 
         if self.config.log_probes {
-            self.probes.lock().unwrap().push(probe);
+            if let Ok(mut probes) = self.probes.lock() {
+                probes.push(probe);
+            } else {
+                warn!("[KARMA] probe log mutex poisoned; skipping probe record");
+            }
         }
 
         // Update stats
         {
-            let mut stats = self.stats.lock().unwrap();
-            stats.probes_seen += 1;
-            if should_respond {
-                stats.probes_responded += 1;
+            if let Ok(mut stats) = self.stats.lock() {
+                stats.probes_seen += 1;
+                if should_respond {
+                    stats.probes_responded += 1;
+                }
+            } else {
+                warn!("[KARMA] stats mutex poisoned; skipping stats update");
             }
         }
 
@@ -275,11 +289,13 @@ impl KarmaAttack {
         let probes: Vec<String> = self
             .probes
             .lock()
-            .unwrap()
-            .iter()
-            .filter(|p| p.client_mac == client_mac)
-            .map(|p| p.ssid.clone())
-            .collect();
+            .map(|p| {
+                p.iter()
+                    .filter(|p| p.client_mac == client_mac)
+                    .map(|p| p.ssid.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
 
         let device_type = self.fingerprint_device(client_mac, &probes);
 
@@ -295,27 +311,38 @@ impl KarmaAttack {
             device_type,
         };
 
-        self.victims.lock().unwrap().push(victim);
+        if let Ok(mut victims) = self.victims.lock() {
+            victims.push(victim);
+        } else {
+            warn!("[KARMA] victims mutex poisoned; skipping victim record");
+        }
 
-        let mut stats = self.stats.lock().unwrap();
-        stats.victims += 1;
-        if handshake_captured {
-            stats.handshakes += 1;
+        if let Ok(mut stats) = self.stats.lock() {
+            stats.victims += 1;
+            if handshake_captured {
+                stats.handshakes += 1;
+            }
+        } else {
+            warn!("[KARMA] stats mutex poisoned; skipping victim counters");
         }
     }
 
     /// Get current statistics
     pub fn get_stats(&self) -> KarmaStats {
-        let mut stats = self.stats.lock().unwrap().clone();
+        let mut stats = self.stats.lock().map(|s| s.clone()).unwrap_or_default();
 
         // Update unique counts
-        let probes = self.probes.lock().unwrap();
-        let unique_ssids: std::collections::HashSet<_> = probes.iter().map(|p| &p.ssid).collect();
-        let unique_clients: std::collections::HashSet<_> =
-            probes.iter().map(|p| &p.client_mac).collect();
+        if let Ok(probes) = self.probes.lock() {
+            let unique_ssids: std::collections::HashSet<_> =
+                probes.iter().map(|p| &p.ssid).collect();
+            let unique_clients: std::collections::HashSet<_> =
+                probes.iter().map(|p| &p.client_mac).collect();
 
-        stats.unique_ssids = unique_ssids.len();
-        stats.unique_clients = unique_clients.len();
+            stats.unique_ssids = unique_ssids.len();
+            stats.unique_clients = unique_clients.len();
+        } else {
+            warn!("[KARMA] probe log mutex poisoned; unique counts unavailable");
+        }
 
         stats
     }
@@ -351,8 +378,8 @@ impl KarmaAttack {
 
     /// Get result summary
     pub fn get_result(&self) -> KarmaResult {
-        let probes = self.probes.lock().unwrap().clone();
-        let victims = self.victims.lock().unwrap().clone();
+        let probes = self.probes.lock().map(|p| p.clone()).unwrap_or_default();
+        let victims = self.victims.lock().map(|v| v.clone()).unwrap_or_default();
 
         let ssids_seen: Vec<String> = {
             let ssids: std::collections::HashSet<String> =

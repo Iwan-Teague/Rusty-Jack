@@ -1,5 +1,5 @@
 use crate::error::{Result, WirelessError};
-use log::{info, warn};
+use log::info;
 
 pub fn netlink_set_interface_up(interface: &str) -> Result<()> {
     info!("netlink: set interface {} up", interface);

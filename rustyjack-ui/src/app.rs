@@ -524,10 +524,17 @@ impl App {
         // Spawn command in background
         thread::spawn(move || {
             let r = core.dispatch(cmd);
-            *result_clone
-                .lock()
-                .map_err(|e| anyhow::anyhow!("Result mutex poisoned: {}", e))
-                .unwrap_or_else(|_| panic!("Failed to lock result mutex")) = Some(r);
+            if let Ok(mut guard) = result_clone.lock() {
+                *guard = Some(r);
+            } else {
+                eprintln!("[UI] Failed to lock result mutex (cancellable dispatch)");
+                // Fallback to an error result so caller can surface a generic failure
+                if let Ok(mut guard) = result_clone.lock() {
+                    *guard = Some(Err(anyhow::anyhow!(
+                        "Internal error: failed to capture command result"
+                    )));
+                }
+            }
         });
 
         let start = std::time::Instant::now();
@@ -5415,10 +5422,16 @@ Do not remove power/USB",
             }));
 
             let r = core.dispatch(command);
-            *result_clone
-                .lock()
-                .map_err(|e| anyhow::anyhow!("Result mutex poisoned: {}", e))
-                .unwrap_or_else(|_| panic!("Failed to lock result mutex")) = Some(r);
+            if let Ok(mut guard) = result_clone.lock() {
+                *guard = Some(r);
+            } else {
+                eprintln!("[UI] Failed to lock result mutex (deauth dispatch)");
+                if let Ok(mut guard) = result_clone.lock() {
+                    *guard = Some(Err(anyhow::anyhow!(
+                        "Internal error: failed to capture deauth result"
+                    )));
+                }
+            }
         });
 
         // Show progress updates while attack runs
@@ -8482,6 +8495,15 @@ Do not remove power/USB",
                     let reconnect_ok = renew_dhcp_and_reconnect(&interface);
 
                     let new_mac = state.current_mac.to_string();
+                    let orig_mac = state.original_mac.to_string();
+                    log::info!(
+                        "[MAC] vendor set on {}: {} -> {} (vendor={}, reconnect_ok={})",
+                        interface,
+                        orig_mac,
+                        new_mac,
+                        selected_vendor.name,
+                        reconnect_ok
+                    );
                     self.config
                         .settings
                         .current_macs
@@ -11621,6 +11643,17 @@ Do not remove power/USB",
                                 if err.contains("Interface") {
                                     lines.push("Check interface selection/cabling or pick a different adapter.".to_string());
                                 }
+                                #[cfg(target_os = "linux")]
+                                if let Some(ap_err) = rustyjack_netlink::take_last_ap_error() {
+                                    lines.push(shorten_for_display(
+                                        &format!("AP detail: {}", ap_err),
+                                        90,
+                                    ));
+                                }
+                                lines.push(
+                                    "See journalctl -u rustyjack.service for full logs."
+                                        .to_string(),
+                                );
                                 self.show_message("Hotspot error", lines)?;
                             }
                         }

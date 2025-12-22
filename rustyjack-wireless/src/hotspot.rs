@@ -10,9 +10,6 @@ use rustyjack_netlink::{
     AccessPoint, ApConfig, ApSecurity, DhcpConfig, DhcpServer, DnsConfig, DnsRule, DnsServer,
     InterfaceMode, IptablesManager,
 };
-// TODO: These helpers need to be implemented
-// use rustyjack_core::dhcp_helpers::start_hotspot_dhcp_server;
-// use rustyjack_core::dns_helpers::start_hotspot_dns;
 
 use crate::error::{Result, WirelessError};
 use crate::netlink_helpers::{
@@ -175,17 +172,11 @@ pub fn start_hotspot(config: HotspotConfig) -> Result<HotspotState> {
                 );
                 log::info!("Upstream {} is ready with IP", config.upstream_interface);
             }
-            Err(WirelessError::Interface(msg)) if msg.contains("has no IPv4 address") => {
-                // Allow offline hotspot; continue without upstream/NAT
-                upstream_ready = false;
-                eprintln!(
-                    "[HOTSPOT] Upstream not ready: {} (continuing in offline mode)",
-                    msg
-                );
-                log::warn!("Hotspot upstream not ready: {msg}");
-            }
             Err(err) => {
-                eprintln!("[HOTSPOT] ERROR: Upstream check failed: {}", err);
+                eprintln!(
+                    "[HOTSPOT] ERROR: Upstream check failed: {}",
+                    err
+                );
                 return Err(err);
             }
         }
@@ -239,7 +230,11 @@ pub fn start_hotspot(config: HotspotConfig) -> Result<HotspotState> {
         config.ap_interface
     );
 
-    let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+    let rt = tokio::runtime::Runtime::new().map_err(|e| {
+        WirelessError::System(format!(
+            "Failed to create tokio runtime for NetworkManager unmanaged: {e}"
+        ))
+    })?;
     let nm_result = rt.block_on(async {
         rustyjack_netlink::networkmanager::set_device_managed(&config.ap_interface, false).await
     });
@@ -326,13 +321,20 @@ pub fn start_hotspot(config: HotspotConfig) -> Result<HotspotState> {
         // Check again
         if let Ok(devices) = rfkill_list() {
             eprintln!("[HOTSPOT] rfkill status after aggressive unblock:");
-            for dev in devices {
+            for dev in &devices {
                 eprintln!(
                     "[HOTSPOT]   rfkill{}: {} - {}",
                     dev.idx,
                     dev.type_.name(),
                     dev.state_string()
                 );
+            }
+            if devices.iter().any(|d| d.is_blocked()) {
+                log::error!("[HOTSPOT] RF-kill still blocking wireless after aggressive unblock");
+                return Err(WirelessError::System(
+                    "RF-kill still blocking wireless devices; check hardware switch or BIOS setting"
+                        .to_string(),
+                ));
             }
         }
     }
@@ -531,6 +533,7 @@ pub fn start_hotspot(config: HotspotConfig) -> Result<HotspotState> {
     );
     start_dhcp_server(&config.ap_interface, gateway_ip).map_err(|e| {
         stop_ap_best_effort(&mut ap);
+        log::error!("[HOTSPOT] DHCP server failed to start: {}", e);
         e
     })?;
     eprintln!("[HOTSPOT] DHCP server started successfully");
@@ -543,6 +546,7 @@ pub fn start_hotspot(config: HotspotConfig) -> Result<HotspotState> {
     );
     start_dns_server(&config.ap_interface, gateway_ip).map_err(|e| {
         stop_ap_best_effort(&mut ap);
+        log::error!("[HOTSPOT] DNS server failed to start: {}", e);
         e
     })?;
     eprintln!("[HOTSPOT] DNS server started successfully");
@@ -741,12 +745,18 @@ fn start_dhcp_server(interface: &str, gateway_ip: Ipv4Addr) -> Result<()> {
         log_packets: false,
     };
 
-    let mut server = DhcpServer::new(dhcp_cfg)
+    let mut server = DhcpServer::new(dhcp_cfg.clone())
         .map_err(|e| WirelessError::System(format!("Failed to create DHCP server: {}", e)))?;
     let running_handle = server.running_handle();
     server
         .start()
         .map_err(|e| WirelessError::System(format!("Failed to start DHCP server: {}", e)))?;
+    log::info!(
+        "DHCP server bound on {} offering {}-{}",
+        interface,
+        dhcp_cfg.range_start,
+        dhcp_cfg.range_end
+    );
 
     let handle = std::thread::spawn(move || {
         if let Err(e) = server.serve() {
@@ -786,6 +796,7 @@ fn start_dns_server(interface: &str, gateway_ip: Ipv4Addr) -> Result<()> {
     server
         .start()
         .map_err(|e| WirelessError::System(format!("Failed to start DNS server: {}", e)))?;
+    log::info!("DNS server bound on {} ({})", interface, gateway_ip);
 
     *guard = Some(server);
     Ok(())

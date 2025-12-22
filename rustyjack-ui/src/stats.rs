@@ -10,11 +10,16 @@ use std::{
 };
 
 use anyhow::Result;
-use rustyjack_core::cli::{HotspotCommand, StatusCommand};
+use rustyjack_core::cli::{HotspotCommand, StatusCommand, WifiCommand};
 use rustyjack_core::{apply_interface_isolation, Commands};
 use serde_json::Value;
 
-use crate::{config::GuiConfig, core::CoreBridge, display::StatusOverlay};
+use crate::{
+    config::GuiConfig,
+    core::CoreBridge,
+    display::StatusOverlay,
+    types::WifiListResponse,
+};
 
 pub struct StatsSampler {
     data: Arc<Mutex<StatusOverlay>>,
@@ -82,6 +87,12 @@ fn sample_once(core: &CoreBridge, shared: &Arc<Mutex<StatusOverlay>>, root: &Pat
     if let Ok((_, data)) = core.dispatch(Commands::Status(StatusCommand::Summary)) {
         if let Some(text) = extract_status_text(&data) {
             overlay.text = text;
+        }
+    }
+
+    if let Ok((_, data)) = core.dispatch(Commands::Wifi(WifiCommand::List)) {
+        if let Ok(list) = serde_json::from_value::<WifiListResponse>(data) {
+            overlay.interfaces = list.interfaces;
         }
     }
 

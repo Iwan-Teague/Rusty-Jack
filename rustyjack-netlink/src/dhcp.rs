@@ -900,12 +900,6 @@ impl DhcpClient {
     }
 }
 
-impl Default for DhcpClient {
-    fn default() -> Self {
-        Self::new().expect("Failed to create DHCP client")
-    }
-}
-
 /// DHCP lease informatifn.
 ///
 /// Cfntains all netwfrk configuration received frfm DHCP server.

@@ -254,7 +254,6 @@ fn wifi_menu() -> Vec<MenuEntry> {
 fn wireless_menu() -> Vec<MenuEntry> {
     vec![
         MenuEntry::new("Get Connected", MenuAction::Submenu("awa")),
-        MenuEntry::new("Add Network Profile", MenuAction::ConnectKnownNetwork),
         MenuEntry::new("Post Connection", MenuAction::Submenu("awc")),
         MenuEntry::new("Hotspot", MenuAction::Hotspot),
         MenuEntry::new("Manage Saved Networks", MenuAction::ManageSavedNetworks),
@@ -264,6 +263,7 @@ fn wireless_menu() -> Vec<MenuEntry> {
 fn wifi_access_menu() -> Vec<MenuEntry> {
     vec![
         MenuEntry::new("Select Target Network", MenuAction::ScanNetworks),
+        MenuEntry::new("Add Network Profile", MenuAction::ConnectKnownNetwork),
         MenuEntry::new("Pipelines", MenuAction::Submenu("ap")),
         MenuEntry::new("Recon", MenuAction::Submenu("awar")),
         MenuEntry::new("Offence", MenuAction::Submenu("awao")),

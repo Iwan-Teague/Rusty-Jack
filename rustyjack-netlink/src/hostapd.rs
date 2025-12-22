@@ -434,32 +434,64 @@ impl AccessPoint {
             self.config.hidden
         );
 
-        // Issue START_AP with fallbacks on channel if unsupported (2.4GHz first)
-        let mut fallback_channels: Vec<u8> = Vec::new();
+        // Build candidate channels (prefer configured, fallback 1/6), validate via set_channel
+        let mut candidate_channels: Vec<u8> = Vec::new();
         if self.config.channel <= 14 {
-            fallback_channels.push(self.config.channel);
+            candidate_channels.push(self.config.channel);
         } else {
             log::warn!(
-                "Configured channel {} is >14; skipping and falling back to 2.4 GHz channels",
+                "Configured channel {} is >14; will fall back to 2.4 GHz channels",
                 self.config.channel
             );
         }
         // Add common 2.4GHz channels (skip 11 - causes issues on some hardware)
         for ch in [1u8, 6u8] {
-            if !fallback_channels.contains(&ch) {
-                fallback_channels.push(ch);
+            if !candidate_channels.contains(&ch) {
+                candidate_channels.push(ch);
             }
         }
-        let mut tried = Vec::new();
+
+        // Validate candidates against driver/regdom by attempting set_channel (best-effort)
+        let mut valid_channels = Vec::new();
+        for ch in candidate_channels {
+            match self
+                .wireless_mgr
+                .set_channel(&self.config.interface, ch)
+            {
+                Ok(_) => {
+                    log::info!(
+                        "Channel {} (freq {:?}) accepted by driver (HT20 assumed)",
+                        ch,
+                        channel_to_frequency(ch)
+                    );
+                    valid_channels.push(ch);
+                }
+                Err(e) => {
+                    log::warn!(
+                        "Channel {} rejected by driver/regdom, skipping: {}",
+                        ch,
+                        e
+                    );
+                }
+            }
+        }
+
+        if valid_channels.is_empty() {
+            let msg = format!(
+                "No valid channels available for interface {} (check regdom/driver)",
+                self.config.interface
+            );
+            log::error!("{}", msg);
+            record_ap_error(&msg);
+            return Err(NetlinkError::OperationFailed(msg));
+        }
+
+        // Attempt START_AP over validated channels
         let mut chosen_channel = self.config.channel;
         let mut last_err: Option<String> = None;
-        for ch in fallback_channels.iter() {
-            if tried.contains(ch) {
-                continue;
-            }
-            tried.push(*ch);
+        for ch in valid_channels.iter() {
             log::info!(
-                "Attempting START_AP on channel {} (freq {:?})",
+                "Attempting START_AP on validated channel {} (freq {:?}, width=HT20)",
                 ch,
                 channel_to_frequency(*ch)
             );
@@ -493,11 +525,15 @@ impl AccessPoint {
         }
 
         if let Some(err) = last_err {
+            record_ap_error(&err);
             return Err(NetlinkError::OperationFailed(err));
         }
 
         self.config.channel = chosen_channel;
-        log::info!("START_AP succeeded on channel {}", chosen_channel);
+        log::info!(
+            "START_AP succeeded on channel {} (width=HT20)",
+            chosen_channel
+        );
 
         *self.running.lock().await = true;
         self.start_time = Some(Instant::now());
@@ -870,6 +906,11 @@ fn build_beacon_frames(
     head.push(4);
     head.extend_from_slice(&[0x82, 0x84, 0x8b, 0x96]);
 
+    // Extended supported rates IE (basic 6,12,24)
+    head.push(50);
+    head.push(3);
+    head.extend_from_slice(&[0x0c, 0x12, 0x18]);
+
     // DS Parameter Set (channel)
     head.push(3);
     head.push(1);
@@ -1030,7 +1071,13 @@ fn derive_ptk(
     let mut output = Vec::new();
     let mut i = 0u8;
     while output.len() < 64 {
-        let mut hmac = HmacSha1::new_from_slice(pmk).expect("HMAC can take key");
+        let mut hmac = match HmacSha1::new_from_slice(pmk) {
+            Ok(h) => h,
+            Err(e) => {
+                log::error!("[AP] HMAC init failed during PTK derivation: {}", e);
+                return ptk;
+            }
+        };
         hmac.update(label);
         hmac.update(&[0x00]);
         hmac.update(&data);
@@ -1039,12 +1086,22 @@ fn derive_ptk(
         output.extend_from_slice(&hash);
         i = i.wrapping_add(1);
     }
-    ptk.copy_from_slice(&output[..64]);
+    if output.len() >= 64 {
+        ptk.copy_from_slice(&output[..64]);
+    } else {
+        log::error!("[AP] PTK derivation output too short ({} bytes)", output.len());
+    }
     ptk
 }
 
 fn hmac_sha1(key: &[u8], data: &[u8]) -> Vec<u8> {
-    let mut h = HmacSha1::new_from_slice(key).expect("HMAC can take key");
+    let mut h = match HmacSha1::new_from_slice(key) {
+        Ok(h) => h,
+        Err(e) => {
+            log::error!("[AP] HMAC init failed: {}", e);
+            return Vec::new();
+        }
+    };
     h.update(data);
     h.finalize().into_bytes().to_vec()
 }
@@ -1275,6 +1332,12 @@ fn spawn_eapol_task(
                             *b = 0;
                         }
                         let calc_mic = hmac_sha1(&ptk[..16], &frame[..(113 + key_data_len)]);
+                        if calc_mic.len() < 16 {
+                            log::error!("[AP] Calculated MIC too short (len={})", calc_mic.len());
+                            record_ap_error("Calculated MIC too short".to_string());
+                            drop(state_guard);
+                            continue;
+                        }
                         if &calc_mic[..16] != key_mic {
                             let msg = format!("EAPOL M4 MIC validation failed on {}", interface);
                             log::warn!("{}", msg);
@@ -1412,6 +1475,11 @@ fn spawn_eapol_task(
                 *b = 0;
             }
             let calc_mic = hmac_sha1(&ptk[..16], &frame[..(113 + key_data_len)]);
+            if calc_mic.len() < 16 {
+                log::error!("[AP] Calculated MIC too short (len={})", calc_mic.len());
+                record_ap_error("Calculated MIC too short".to_string());
+                continue;
+            }
             if &calc_mic[..16] != key_mic {
                 let msg = format!("EAPOL MIC validation failed on {}", interface);
                 log::warn!("{}", msg);

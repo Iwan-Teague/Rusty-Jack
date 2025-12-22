@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use crate::error::{NetlinkError, Result};
+use log::info;
 
 /// WPA supplicant manager
 pub struct WpaManager {
@@ -452,6 +453,10 @@ impl WpaManager {
     /// # Errors
     /// Returns error if any step fails
     pub fn connect_network(&self, config: &WpaNetworkConfig) -> Result<u32> {
+        info!(
+            "[WIFI] WPA: configuring network ssid={} scan_ssid={} priority={}",
+            config.ssid, config.scan_ssid, config.priority
+        );
         // Add network
         let network_id = self.add_network()?;
 
@@ -543,8 +548,21 @@ impl WpaManager {
                         "Connection failed (disconnected)".to_string(),
                     ))
                 }
+                WpaState::Unknown => {
+                    return Err(NetlinkError::Wpa(format!(
+                        "Connection failed (unknown state {:?})",
+                        status
+                    )))
+                }
                 _ => {
-                    std::thread::sleep(Duration::from_millis(500));
+                    log::debug!(
+                        "WPA state {:?} ssid={:?} bssid={:?} elapsed={:?}",
+                        status.wpa_state,
+                        status.ssid,
+                        status.bssid,
+                        start.elapsed()
+                    );
+                    std::thread::sleep(Duration::from_millis(250));
                 }
             }
         }

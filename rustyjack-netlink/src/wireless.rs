@@ -2,6 +2,7 @@
 use crate::error::{NetlinkError, Result};
 use log::{debug, info};
 use neli::{
+    attr::Attribute,
     consts::nl::{NlmF, NlmFFlags},
     genl::{Genlmsghdr, Nlattr},
     nl::{NlPayload, Nlmsghdr},
@@ -9,6 +10,8 @@ use neli::{
     types::GenlBuffer,
 };
 use std::io;
+use std::thread;
+use std::time::Duration;
 
 // Re-export commonly used types from neli
 use neli::consts::socket::NlFamily;
@@ -30,6 +33,7 @@ const NL80211_ATTR_WIPHY_NAME: u16 = 2;
 const NL80211_ATTR_IFINDEX: u16 = 3;
 const NL80211_ATTR_IFNAME: u16 = 4;
 const NL80211_ATTR_IFTYPE: u16 = 5;
+const NL80211_ATTR_MAC: u16 = 6;
 const NL80211_ATTR_WIPHY_FREQ: u16 = 38;
 const NL80211_ATTR_WIPHY_CHANNEL_TYPE: u16 = 39;
 const NL80211_ATTR_WIPHY_TX_POWER_SETTING: u16 = 58;
@@ -41,6 +45,10 @@ const NL80211_IFTYPE_ADHOC: u32 = 1;
 const NL80211_IFTYPE_STATION: u32 = 2;
 const NL80211_IFTYPE_AP: u32 = 3;
 const NL80211_IFTYPE_MONITOR: u32 = 6;
+// Event command IDs (subset)
+const NL80211_CMD_NEW_STATION: u8 = 19;
+const NL80211_CMD_DEL_STATION: u8 = 20;
+const NL80211_CMD_REG_CHANGE: u8 = 28;
 const NL80211_IFTYPE_MESH_POINT: u32 = 7;
 const NL80211_IFTYPE_P2P_CLIENT: u32 = 8;
 const NL80211_IFTYPE_P2P_GO: u32 = 9;
@@ -156,12 +164,101 @@ pub struct PhyCapabilities {
     pub supports_monitor: bool,
     pub supports_ap: bool,
     pub supports_station: bool,
+    pub supported_bands: Vec<String>,
 }
 
 /// Wireless netlink manager
 pub struct WirelessManager {
     socket: NlSocketHandle,
     family_id: u16,
+    event_task: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Drop for WirelessManager {
+    fn drop(&mut self) {
+        if let Some(handle) = self.event_task.take() {
+            handle.thread().unpark();
+            let _ = handle.join();
+        }
+    }
+}
+
+fn spawn_event_logger(_family_id: u16, mut sock: NlSocketHandle) -> std::thread::JoinHandle<()> {
+    thread::spawn(move || loop {
+        match sock.recv::<u16, Genlmsghdr<u8, u16>>() {
+            Ok(Some(msg)) => {
+                let nl_type = msg.nl_type;
+                match msg.nl_payload {
+                    NlPayload::Payload(genl) => {
+                        let cmd = genl.cmd;
+                        if cmd == NL80211_CMD_NEW_STATION || cmd == NL80211_CMD_DEL_STATION {
+                            let attrs = genl.get_attr_handle();
+                            let mut ifidx = None;
+                            let mut mac = None;
+                            for attr in attrs.iter() {
+                                match attr.nla_type.nla_type {
+                                    NL80211_ATTR_IFINDEX => {
+                                        if let Ok(val) = attr.get_payload_as::<u32>() {
+                                            ifidx = Some(val);
+                                        }
+                                    }
+                                    NL80211_ATTR_MAC => {
+                                        let bytes = attr.payload().as_ref();
+                                        if bytes.len() == 6 {
+                                            mac = Some([
+                                                bytes[0], bytes[1], bytes[2], bytes[3], bytes[4],
+                                                bytes[5],
+                                            ]);
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            if cmd == NL80211_CMD_NEW_STATION {
+                                debug!(
+                                    "[WIFI] nl80211 NEW_STATION ifindex={:?} mac={:02x?}",
+                                    ifidx,
+                                    mac.unwrap_or([0; 6])
+                                );
+                            } else {
+                                debug!(
+                                    "[WIFI] nl80211 DEL_STATION ifindex={:?} mac={:02x?}",
+                                    ifidx,
+                                    mac.unwrap_or([0; 6])
+                                );
+                            }
+                        } else if cmd == NL80211_CMD_REG_CHANGE {
+                            debug!(
+                                "[WIFI] nl80211 REG_CHANGE nl_type={} flags={:?}",
+                                nl_type, msg.nl_flags
+                            );
+                        } else {
+                            debug!(
+                                "[WIFI] nl80211 event cmd={} nl_type={} flags={:?}",
+                                cmd, nl_type, msg.nl_flags
+                            );
+                        }
+                    }
+                    NlPayload::Err(err) => {
+                        debug!(
+                            "[WIFI] nl80211 event error nl_type={} code={}",
+                            nl_type, err.error
+                        );
+                    }
+                    _ => {
+                        debug!("[WIFI] nl80211 event other nl_type={}", nl_type);
+                    }
+                }
+            }
+            Ok(None) => {
+                thread::sleep(Duration::from_millis(50));
+            }
+            Err(e) => {
+                debug!("[WIFI] nl80211 event recv error: {}", e);
+                thread::sleep(Duration::from_millis(200));
+            }
+        }
+    })
 }
 
 impl WirelessManager {
@@ -184,7 +281,23 @@ impl WirelessManager {
             ))
         })?;
 
-        Ok(Self { socket, family_id })
+        // Separate socket for event subscription (logger) and one kept for future use
+        let event_socket = NlSocketHandle::connect(NlFamily::Generic, None, &[]).map_err(|e| {
+            NetlinkError::ConnectionFailed(format!("Failed to create nl80211 event socket: {}", e))
+        })?;
+        let _ = event_socket.add_mcast_membership(&[family_id as u32]);
+
+        let logger_socket = NlSocketHandle::connect(NlFamily::Generic, None, &[]).map_err(|e| {
+            NetlinkError::ConnectionFailed(format!("Failed to create nl80211 logger socket: {}", e))
+        })?;
+        let _ = logger_socket.add_mcast_membership(&[family_id as u32]);
+        let event_task = Some(spawn_event_logger(family_id, logger_socket));
+
+        Ok(Self {
+            socket,
+            family_id,
+            event_task,
+        })
     }
 
     /// Get interface index from name
@@ -843,6 +956,7 @@ impl WirelessManager {
             supports_monitor: false,
             supports_ap: false,
             supports_station: false,
+            supported_bands: Vec::new(),
         };
 
         if let NlPayload::Payload(genlhdr) = &response.nl_payload {

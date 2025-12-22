@@ -5,6 +5,7 @@
 
 use crate::error::{NetlinkError, Result};
 use futures::stream::TryStreamExt;
+use log::debug;
 use netlink_packet_route::address::AddressAttribute;
 use netlink_packet_route::link::{LinkAttribute, LinkFlag};
 use rtnetlink::{new_connection, Handle};
@@ -450,6 +451,10 @@ impl InterfaceManager {
             });
         }
 
+        debug!(
+            "[NETLINK] list_interfaces returned {} entries",
+            interfaces.len()
+        );
         Ok(interfaces)
     }
 

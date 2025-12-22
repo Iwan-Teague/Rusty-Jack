@@ -245,7 +245,13 @@ impl DhcpServer {
             })?;
 
         self.socket = Some(socket);
-        *self.running.lock().unwrap() = true;
+        if let Ok(mut running) = self.running.lock() {
+            *running = true;
+        } else {
+            return Err(DhcpError::InvalidConfig(
+                "DHCP running flag lock poisoned".to_string(),
+            ));
+        }
 
         Ok(())
     }
@@ -257,7 +263,9 @@ impl DhcpServer {
 
     /// Request server shutdown.
     pub fn stop(&mut self) {
-        *self.running.lock().unwrap() = false;
+        if let Ok(mut running) = self.running.lock() {
+            *running = false;
+        }
         self.socket = None;
     }
 
@@ -269,7 +277,7 @@ impl DhcpServer {
 
         let mut buf = vec![0u8; 1500];
 
-        while *self.running.lock().unwrap() {
+        while self.running.lock().map(|r| *r).unwrap_or(false) {
             match socket.recv_from(&mut buf) {
                 Ok((size, src)) => {
                     if let Err(e) = self.handle_packet(&buf[..size], src) {
@@ -291,17 +299,22 @@ impl DhcpServer {
     }
 
     pub fn get_leases(&self) -> Vec<DhcpLease> {
-        let leases = self.leases.lock().unwrap();
-        leases
-            .values()
-            .filter(|l| !l.is_expired())
-            .cloned()
-            .collect()
+        self.leases
+            .lock()
+            .map(|leases| {
+                leases
+                    .values()
+                    .filter(|l| !l.is_expired())
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     pub fn release_lease(&self, mac: &[u8; 6]) {
-        let mut leases = self.leases.lock().unwrap();
-        leases.remove(mac);
+        if let Ok(mut leases) = self.leases.lock() {
+            leases.remove(mac);
+        }
     }
 
     fn handle_packet(&self, data: &[u8], _src: SocketAddr) -> Result<()> {
@@ -411,7 +424,14 @@ impl DhcpServer {
             lease_duration: self.config.lease_time_secs,
         };
 
-        self.leases.lock().unwrap().insert(client_mac, lease);
+        if let Ok(mut leases) = self.leases.lock() {
+            leases.insert(client_mac, lease);
+        } else {
+            eprintln!("[DHCP] Lease map poisoned; dropping ACK for {:02x?}", client_mac);
+            return Err(DhcpError::InvalidConfig(
+                "lease map lock poisoned".to_string(),
+            ));
+        }
 
         let response = self.build_ack(packet, ip_to_ack);
         self.send_packet(&response)?;
@@ -471,7 +491,15 @@ impl DhcpServer {
     }
 
     fn get_or_allocate_ip(&self, mac: &[u8; 6]) -> Result<Ipv4Addr> {
-        let leases = self.leases.lock().unwrap();
+        let leases = match self.leases.lock() {
+            Ok(l) => l,
+            Err(e) => {
+                eprintln!("[DHCP] Lease map poisoned: {}", e);
+                return Err(DhcpError::InvalidConfig(
+                    "lease map lock poisoned".to_string(),
+                ));
+            }
+        };
 
         if let Some(lease) = leases.get(mac) {
             if !lease.is_expired() {
@@ -523,12 +551,18 @@ impl DhcpServer {
             }
         }
 
-        let leases = self.leases.lock().unwrap();
-
-        if let Some(lease) = leases.values().find(|l| l.ip == ip && !l.is_expired()) {
-            lease.mac == *requesting_mac
-        } else {
-            true
+        match self.leases.lock() {
+            Ok(leases) => {
+                if let Some(lease) = leases.values().find(|l| l.ip == ip && !l.is_expired()) {
+                    lease.mac == *requesting_mac
+                } else {
+                    true
+                }
+            }
+            Err(_) => {
+                eprintln!("[DHCP] Lease map poisoned while checking IP availability");
+                false
+            }
         }
     }
 

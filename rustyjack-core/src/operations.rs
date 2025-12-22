@@ -509,6 +509,14 @@ fn handle_eth_inventory(root: &Path, args: EthernetInventoryArgs) -> Result<Hand
 fn handle_hotspot_start(args: HotspotStartArgs) -> Result<HandlerResult> {
     use crate::system::apply_interface_isolation;
 
+    log::info!(
+        "[CORE] Hotspot start requested ap_interface={} upstream_interface={} ssid={} channel={}",
+        args.ap_interface,
+        args.upstream_interface,
+        args.ssid,
+        args.channel
+    );
+
     let cfg = HotspotConfig {
         ap_interface: args.ap_interface.clone(),
         upstream_interface: args.upstream_interface.clone(),
@@ -532,6 +540,12 @@ fn handle_hotspot_start(args: HotspotStartArgs) -> Result<HandlerResult> {
         log::warn!("Interface isolation failed: {}", e);
     }
 
+    log::info!(
+        "[CORE] Hotspot start completed running=true ap={} upstream={}",
+        state.ap_interface,
+        state.upstream_interface
+    );
+
     let data = json!({
         "running": true,
         "ssid": state.ssid,
@@ -547,12 +561,15 @@ fn handle_hotspot_start(args: HotspotStartArgs) -> Result<HandlerResult> {
 }
 
 fn handle_hotspot_stop() -> Result<HandlerResult> {
+    log::info!("[CORE] Hotspot stop requested");
     stop_hotspot().context("stopping hotspot")?;
     let data = json!({ "running": false });
+    log::info!("[CORE] Hotspot stop completed");
     Ok(("Hotspot stopped".to_string(), data))
 }
 
 fn handle_hotspot_status() -> Result<HandlerResult> {
+    log::debug!("[CORE] Hotspot status requested");
     if let Some(HotspotState {
         ssid,
         password,
@@ -563,6 +580,11 @@ fn handle_hotspot_status() -> Result<HandlerResult> {
         ..
     }) = status_hotspot()
     {
+        log::debug!(
+            "[CORE] Hotspot status running ap={} upstream={}",
+            ap_interface,
+            upstream_interface
+        );
         let data = json!({
             "running": true,
             "ssid": ssid,
@@ -574,6 +596,7 @@ fn handle_hotspot_status() -> Result<HandlerResult> {
         });
         Ok(("Hotspot running".to_string(), data))
     } else {
+        log::debug!("[CORE] Hotspot status not running");
         let data = json!({ "running": false });
         Ok(("Hotspot not running".to_string(), data))
     }
@@ -2858,7 +2881,10 @@ fn handle_wifi_profile_save(root: &Path, args: WifiProfileSaveArgs) -> Result<Ha
         auto_connect,
     } = args;
 
-    log::info!("Saving WiFi profile for SSID: {ssid}");
+    log::info!(
+        "[CORE] Saving WiFi profile for SSID: {ssid} iface={}",
+        interface
+    );
 
     let profile = WifiProfile {
         ssid: ssid.clone(),
@@ -2873,11 +2899,11 @@ fn handle_wifi_profile_save(root: &Path, args: WifiProfileSaveArgs) -> Result<Ha
 
     let path = match save_wifi_profile(root, &profile) {
         Ok(p) => {
-            log::info!("Profile saved successfully to: {}", p.display());
+            log::info!("[CORE] Profile saved successfully to: {}", p.display());
             p
         }
         Err(e) => {
-            log::error!("Failed to save WiFi profile for {ssid}: {e}");
+            log::error!("[CORE] Failed to save WiFi profile for {ssid}: {e}");
             bail!("Failed to save WiFi profile: {e}");
         }
     };
@@ -2890,7 +2916,13 @@ fn handle_wifi_profile_save(root: &Path, args: WifiProfileSaveArgs) -> Result<Ha
 }
 
 fn handle_wifi_profile_connect(root: &Path, args: WifiProfileConnectArgs) -> Result<HandlerResult> {
-    log::info!("Attempting WiFi profile connection");
+    log::info!(
+        "[CORE] WiFi connect requested profile={:?} ssid={:?} iface={:?} remember={}",
+        args.profile,
+        args.ssid,
+        args.interface,
+        args.remember
+    );
 
     let interface = match select_wifi_interface(args.interface.clone()) {
         Ok(iface) => {
@@ -2930,7 +2962,7 @@ fn handle_wifi_profile_connect(root: &Path, args: WifiProfileConnectArgs) -> Res
         .clone()
         .or_else(|| stored.as_ref().map(|p| p.profile.ssid.clone()))
         .ok_or_else(|| {
-            log::error!("No SSID provided and no profile found");
+            log::error!("[CORE] WiFi connect failed: no SSID provided/profile not found");
             anyhow!("Provide --ssid or --profile when connecting to Wi-Fi")
         })?;
 
@@ -2939,14 +2971,14 @@ fn handle_wifi_profile_connect(root: &Path, args: WifiProfileConnectArgs) -> Res
         .clone()
         .or_else(|| stored.as_ref().and_then(|p| p.profile.password.clone()));
 
-    log::info!("Connecting to SSID: {ssid} on interface: {interface}");
+    log::info!("[CORE] Connecting to SSID: {ssid} on interface: {interface}");
 
     if let Err(e) = connect_wifi_network(&interface, &ssid, password.as_deref()) {
-        log::error!("Failed to connect to {ssid}: {e}");
+        log::error!("[CORE] Failed to connect to {ssid}: {e}");
         bail!("WiFi connection failed: {e}");
     }
 
-    log::info!("WiFi connection successful");
+    log::info!("[CORE] WiFi connection successful ssid={ssid} iface={interface}");
 
     let mut remembered = false;
     if let Some(mut stored_profile) = stored {
@@ -3000,31 +3032,34 @@ fn handle_wifi_profile_connect(root: &Path, args: WifiProfileConnectArgs) -> Res
 }
 
 fn handle_wifi_profile_delete(root: &Path, args: WifiProfileDeleteArgs) -> Result<HandlerResult> {
-    log::info!("Attempting to delete WiFi profile: {}", args.ssid);
+    log::info!("[CORE] Attempting to delete WiFi profile: {}", args.ssid);
 
     match delete_wifi_profile(root, &args.ssid) {
         Ok(()) => {
-            log::info!("Profile deleted successfully: {}", args.ssid);
+            log::info!("[CORE] Profile deleted successfully: {}", args.ssid);
             let data = json!({ "ssid": args.ssid });
             Ok(("Wi-Fi profile deleted".to_string(), data))
         }
         Err(e) => {
-            log::error!("Failed to delete profile '{}': {e}", args.ssid);
+            log::error!("[CORE] Failed to delete profile '{}': {e}", args.ssid);
             bail!("Failed to delete profile: {e}");
         }
     }
 }
 
 fn handle_wifi_disconnect(args: WifiDisconnectArgs) -> Result<HandlerResult> {
-    log::info!("Attempting WiFi disconnect");
+    log::info!(
+        "[CORE] Attempting WiFi disconnect iface={:?}",
+        args.interface
+    );
 
     let interface = match disconnect_wifi_interface(args.interface.clone()) {
         Ok(iface) => {
-            log::info!("Successfully disconnected interface: {iface}");
+            log::info!("[CORE] Successfully disconnected interface: {iface}");
             iface
         }
         Err(e) => {
-            log::error!("Failed to disconnect WiFi: {e}");
+            log::error!("[CORE] Failed to disconnect WiFi: {e}");
             bail!("WiFi disconnect failed: {e}");
         }
     };

@@ -34,6 +34,8 @@ use std::str::FromStr;
 
 use crate::error::{EvasionError, Result};
 use crate::vendor::VendorOui;
+#[cfg(target_os = "linux")]
+use tokio::runtime::Runtime;
 
 /// A validated MAC address
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -500,7 +502,9 @@ impl MacManager {
                 EvasionError::System(format!("Failed to initialize netlink: {}", e))
             })?;
 
-            tokio::runtime::Handle::current().block_on(async {
+            let rt = Runtime::new()
+                .map_err(|e| EvasionError::System(format!("Failed to create runtime: {e}")))?;
+            rt.block_on(async {
                 mgr.set_link_down(interface).await.map_err(|e| {
                     if e.to_string().contains("Operation not permitted")
                         || e.to_string().contains("Permission denied")
@@ -532,10 +536,12 @@ impl MacManager {
                 EvasionError::System(format!("Failed to initialize netlink: {}", e))
             })?;
 
-            tokio::runtime::Handle::current().block_on(async {
-                mgr.set_link_up(interface).await.map_err(|e| {
-                    EvasionError::InterfaceError(format!("Failed to bring {} up: {}", interface, e))
-                })
+            let rt = Runtime::new()
+                .map_err(|e| EvasionError::System(format!("Failed to create runtime: {e}")))?;
+            rt.block_on(async {
+                mgr.set_link_up(interface)
+                    .await
+                    .map_err(|e| EvasionError::InterfaceError(format!("Failed to bring {} up: {}", interface, e)))
             })
         }
     }
@@ -557,7 +563,9 @@ impl MacManager {
                 EvasionError::System(format!("Failed to initialize netlink: {}", e))
             })?;
 
-            tokio::runtime::Handle::current().block_on(async {
+            let rt = Runtime::new()
+                .map_err(|e| EvasionError::System(format!("Failed to create runtime: {e}")))?;
+            rt.block_on(async {
                 mgr.set_mac_address(interface, &mac_str).await.map_err(|e| {
                     if e.to_string().contains("Operation not permitted")
                         || e.to_string().contains("Permission denied")

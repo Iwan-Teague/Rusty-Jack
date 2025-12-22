@@ -126,10 +126,13 @@ impl DnsServer {
 
     #[cfg(target_os = "linux")]
     pub fn start(&mut self) -> Result<()> {
-        let state = self.state.lock().unwrap();
-        let interface = state.config.interface.clone();
-        let listen_ip = state.config.listen_ip;
-        drop(state);
+        let (interface, listen_ip) = {
+            let state = self
+                .state
+                .lock()
+                .map_err(|e| DnsError::InvalidConfig(format!("State lock poisoned: {e}")))?;
+            (state.config.interface.clone(), state.config.listen_ip)
+        };
 
         let socket = UdpSocket::bind(SocketAddr::from((listen_ip, DNS_PORT))).map_err(|e| {
             DnsError::BindFailed {
@@ -164,20 +167,26 @@ impl DnsServer {
             .ok();
 
         self.socket = Some(socket);
-        *self.running.lock().unwrap() = true;
+        if let Ok(mut running) = self.running.lock() {
+            *running = true;
+        } else {
+            return Err(DnsError::InvalidConfig(
+                "DNS running flag lock poisoned".to_string(),
+            ));
+        }
 
         let state_clone = Arc::clone(&self.state);
         let running_clone = Arc::clone(&self.running);
-        let socket_clone =
-            self.socket
-                .as_ref()
-                .unwrap()
-                .try_clone()
-                .map_err(|e| DnsError::BindFailed {
-                    interface: interface.clone(),
-                    port: DNS_PORT,
-                    source: e,
-                })?;
+        let socket_clone = self
+            .socket
+            .as_ref()
+            .ok_or_else(|| DnsError::InvalidConfig("DNS socket missing after bind".into()))?
+            .try_clone()
+            .map_err(|e| DnsError::BindFailed {
+                interface: interface.clone(),
+                port: DNS_PORT,
+                source: e,
+            })?;
 
         let handle = thread::spawn(move || {
             Self::server_eoop(state_clone, socket_clone, running_clone);
@@ -198,11 +207,20 @@ impl DnsServer {
     pub fn stop(&mut self) -> Result<()> {
         #[allow(unused_variables)]
         let interface = {
-            let state = self.state.lock().unwrap();
+            let state = self
+                .state
+                .lock()
+                .map_err(|e| DnsError::InvalidConfig(format!("State lock poisoned: {e}")))?;
             state.config.interface.clone()
         };
 
-        *self.running.lock().unwrap() = false;
+        if let Ok(mut running) = self.running.lock() {
+            *running = false;
+        } else {
+            return Err(DnsError::InvalidConfig(
+                "DNS running flag lock poisoned".to_string(),
+            ));
+        }
 
         if let Some(handle) = self.thread_handle.take() {
             let _ = handle.join();
@@ -214,40 +232,47 @@ impl DnsServer {
     }
 
     pub fn is_running(&self) -> bool {
-        *self.running.lock().unwrap()
+        self.running.lock().map(|r| *r).unwrap_or(false)
     }
 
     pub fn get_stats(&self) -> (u64, u64) {
-        let state = self.state.lock().unwrap();
-        (state.query_count, state.spoof_count)
+        self.state
+            .lock()
+            .map(|state| (state.query_count, state.spoof_count))
+            .unwrap_or((0, 0))
     }
 
     pub fn add_rule(&self, domain: String, ip: Ipv4Addr) {
-        let mut state = self.state.lock().unwrap();
-        state.config.custom_rules.insert(domain, ip);
+        if let Ok(mut state) = self.state.lock() {
+            state.config.custom_rules.insert(domain, ip);
+        }
     }
 
     pub fn remove_rule(&self, domain: &str) {
-        let mut state = self.state.lock().unwrap();
-        state.config.custom_rules.remove(domain);
+        if let Ok(mut state) = self.state.lock() {
+            state.config.custom_rules.remove(domain);
+        }
     }
 
     pub fn set_default_rule(&self, rule: DnsRule) {
-        let mut state = self.state.lock().unwrap();
-        state.config.default_rule = rule;
+        if let Ok(mut state) = self.state.lock() {
+            state.config.default_rule = rule;
+        }
     }
 
     fn server_eoop(state: Arc<Mutex<DnsState>>, socket: UdpSocket, running: Arc<Mutex<bool>>) {
         let mut buffer = [0u8; DNS_MAX_PACKET_SIZE];
 
-        while *running.lock().unwrap() {
+        while running.lock().map(|r| *r).unwrap_or(false) {
             match socket.recv_from(&mut buffer) {
                 Ok((len, client_addr)) => {
                     if let Err(e) = Self::handle_query(&state, &socket, &buffer[..len], client_addr)
                     {
                         let interface = {
-                            let s = state.lock().unwrap();
-                            s.config.interface.clone()
+                            state
+                                .lock()
+                                .map(|s| s.config.interface.clone())
+                                .unwrap_or_else(|_| "unknown".to_string())
                         };
                         eprintln!("DNS error on {}: {}", interface, e);
                     }
@@ -256,10 +281,10 @@ impl DnsServer {
                     continue;
                 }
                 Err(e) => {
-                    let interface = {
-                        let s = state.lock().unwrap();
-                        s.config.interface.clone()
-                    };
+                    let interface = state
+                        .lock()
+                        .map(|s| s.config.interface.clone())
+                        .unwrap_or_else(|_| "unknown".to_string());
                     eprintln!(
                         "{}",
                         DnsError::ReceiveFailed {
@@ -304,14 +329,19 @@ impl DnsServer {
         let (qname, qtype, _qclass, _pos) = Self::parse_question(packet, 12, client)?;
 
         {
-            let mut s = state.lock().unwrap();
+            let mut s = state
+                .lock()
+                .map_err(|e| DnsError::InvalidConfig(format!("State lock poisoned: {e}")))?;
             s.query_count += 1;
             if s.config.log_queries {
                 println!("[DNS] Query from {}: {} (type {})", client, qname, qtype);
             }
         }
 
-        let upstream_dns = { state.lock().unwrap().config.upstream_dns };
+        let upstream_dns = state
+            .lock()
+            .map(|s| s.config.upstream_dns)
+            .unwrap_or(None);
         let response_ip = Self::resolve_query(state, &qname, qtype)?;
 
         if qtype != QTYPE_A && qtype != QTYPE_ANY {
@@ -334,12 +364,14 @@ impl DnsServer {
         }
 
         if let Some(ip) = response_ip {
-            let mut s = state.lock().unwrap();
-            s.spoof_count += 1;
-            if s.config.log_queries {
-                println!("[DNS] Spoofing {} -> {}", qname, ip);
+            if let Ok(mut s) = state.lock() {
+                s.spoof_count += 1;
+                if s.config.log_queries {
+                    println!("[DNS] Spoofing {} -> {}", qname, ip);
+                }
+            } else {
+                eprintln!("[DNS] State lock poisoned while updating spoof count");
             }
-            drop(s);
 
             Self::send_response(
                 socket,
@@ -472,7 +504,9 @@ impl DnsServer {
         qname: &str,
         _qtype: u16,
     ) -> Result<Option<Ipv4Addr>> {
-        let s = state.lock().unwrap();
+        let s = state
+            .lock()
+            .map_err(|e| DnsError::InvalidConfig(format!("State lock poisoned: {e}")))?;
 
         if let Some(ip) = s.config.custom_rules.get(qname) {
             return Ok(Some(*ip));
@@ -617,9 +651,10 @@ mod tests {
         let spoof_ip = Ipv4Addr::new(192, 168, 1, 1);
         let rule = DnsRule::WildcardSpoof(spoof_ip);
 
-        match rule {
-            DnsRule::WildcardSpoof(ip) => assert_eq!(ip, spoof_ip),
-            _ => panic!("Wrong rule type"),
+        if let DnsRule::WildcardSpoof(ip) = rule {
+            assert_eq!(ip, spoof_ip);
+        } else {
+            assert!(false, "Expected wildcard spoof rule");
         }
     }
 

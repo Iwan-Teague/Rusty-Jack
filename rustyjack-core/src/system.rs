@@ -35,12 +35,15 @@ use std::{
 
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::Local;
-use log::debug;
+use log::{debug, info};
 use regex::Regex;
 use reqwest::blocking::{multipart, Client};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use zeroize::Zeroize;
+
+use rustyjack_netlink::wireless::{InterfaceMode, WirelessManager};
+use rustyjack_netlink::{WpaManager, WpaNetworkConfig};
 
 use crate::netlink_helpers::{
     netlink_set_interface_down, netlink_set_interface_up, process_kill_pattern, process_running,
@@ -846,7 +849,15 @@ pub fn list_interface_summaries() -> Result<Vec<InterfaceSummary>> {
             .unwrap_or_else(|_| "unknown".into())
             .trim()
             .to_string();
-        let ip = interface_ipv4(&name);
+        let carrier = fs::read_to_string(entry.path().join("carrier"))
+            .unwrap_or_else(|_| "0".into())
+            .trim()
+            .to_string();
+        let ip = if oper_state == "up" && carrier == "1" {
+            interface_ipv4(&name)
+        } else {
+            None
+        };
         summaries.push(InterfaceSummary {
             name,
             kind,
@@ -2085,7 +2096,8 @@ pub fn connect_wifi_network(interface: &str, ssid: &str, password: Option<&str>)
 
     log::info!("Connecting to WiFi: ssid={ssid}, interface={interface}");
 
-    let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+    let rt = tokio::runtime::Runtime::new()
+        .with_context(|| "Failed to create tokio runtime for WiFi connect")?;
 
     // Stop wpa_supplicant if running
     if let Err(e) = rustyjack_netlink::stop_wpa_supplicant(interface) {
@@ -2099,32 +2111,122 @@ pub fn connect_wifi_network(interface: &str, ssid: &str, password: Option<&str>)
     }
     std::thread::sleep(std::time::Duration::from_millis(100));
 
-    // Ensure interface is up
+    // Reset interface: down, flush, set to station, then up
+    log::info!(
+        "Resetting interface {} for WiFi connect (down/flush/station/up)",
+        interface
+    );
+    netlink_set_interface_down(interface)
+        .with_context(|| format!("bringing interface {interface} down"))?;
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    if let Err(e) = rt.block_on(async { rustyjack_netlink::flush_addresses(interface).await }) {
+        log::warn!("Failed to flush addresses on {}: {}", interface, e);
+    }
+    {
+        let mut wm =
+            WirelessManager::new().map_err(|e| anyhow!("Failed to open nl80211 socket: {}", e))?;
+        if let Err(e) = wm.set_mode(interface, InterfaceMode::Station) {
+            log::warn!(
+                "Failed to set {} to station mode via nl80211 (continuing): {}",
+                interface,
+                e
+            );
+        }
+    }
     netlink_set_interface_up(interface)
         .with_context(|| format!("bringing interface {interface} up"))?;
+    std::thread::sleep(std::time::Duration::from_millis(300));
 
-    std::thread::sleep(std::time::Duration::from_millis(500));
-
-    // Connect via NetworkManager D-Bus
-    log::info!("Connecting via NetworkManager...");
-    if let Err(e) = rt.block_on(async {
-        rustyjack_netlink::networkmanager::connect_wifi(
-            interface, ssid, password, 20, // 20 second timeout
-        )
-        .await
-    }) {
-        log::error!("NetworkManager connection failed for {ssid} on {interface}: {e}");
-
-        // Attempt cleanup before failing
-        let _ = cleanup_wifi_interface(interface);
-
-        bail!("Failed to connect to {ssid} on {interface}: {e}");
+    // Mark interface unmanaged by NetworkManager (best effort)
+    if let Ok(nm) =
+        rt.block_on(async { rustyjack_netlink::networkmanager::NetworkManagerClient::new().await })
+    {
+        if let Err(e) = rt.block_on(async { nm.set_device_managed(interface, false).await }) {
+            log::debug!(
+                "[WIFI] Could not set {} unmanaged via NetworkManager (continuing): {}",
+                interface,
+                e
+            );
+        }
+    } else {
+        log::debug!("[WIFI] NetworkManager not available; continuing with in-process supplicant");
     }
 
-    log::info!("NetworkManager connection successful, requesting DHCP lease...");
+    // Start wpa_supplicant (in-process helper) and connect via WPA control socket
+    if let Err(e) = rustyjack_netlink::start_wpa_supplicant(interface, None) {
+        log::warn!(
+            "[WIFI] Failed to start wpa_supplicant for {}: {}",
+            interface,
+            e
+        );
+    }
+
+    // Build WPA config and connect
+    let wpa_cfg = WpaNetworkConfig {
+        ssid: ssid.to_string(),
+        psk: password.map(|p| p.to_string()),
+        scan_ssid: true,
+        priority: 0,
+        key_mgmt: "WPA-PSK".to_string(),
+    };
+
+    let wpa = WpaManager::new(interface)
+        .with_context(|| format!("Failed to open wpa_supplicant control for {}", interface))?;
+
+    // Remove any stale networks to avoid conflicts
+    if let Err(e) = wpa.disconnect() {
+        debug!(
+            "[WIFI] Disconnect before connect returned error (may already be disconnected): {}",
+            e
+        );
+    }
+    // Best-effort removal of any existing networks by listing and deleting
+    if let Ok(networks) = wpa.list_networks() {
+        for net in networks {
+            if let Some(id_str) = net.get("id") {
+                if let Ok(id) = id_str.parse::<u32>() {
+                    info!(
+                        "[WIFI] Removing stale network id={} ssid={:?}",
+                        id,
+                        net.get("ssid")
+                    );
+                    let _ = wpa.remove_network(id);
+                }
+            }
+        }
+    }
+
+    let net_id = wpa
+        .connect_network(&wpa_cfg)
+        .with_context(|| format!("Failed to configure WPA network for {}", ssid))?;
+
+    // Wait for WPA completion
+    match wpa.wait_for_connection(Duration::from_secs(20)) {
+        Ok(status) => {
+            log::info!(
+                "[WIFI] WPA connection completed: state={}, bssid={:?}, freq={:?}",
+                status.wpa_state,
+                status.bssid,
+                status.freq
+            );
+        }
+        Err(e) => {
+            let _ = wpa.disconnect();
+            let _ = wpa.remove_network(net_id);
+            bail!(
+                "[WIFI] WPA connection failed for {} on {}: {}",
+                ssid,
+                interface,
+                e
+            );
+        }
+    }
+
+    log::info!("[WIFI] WPA connection successful, requesting DHCP lease...");
 
     // Request DHCP lease with retry
-    let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+    let rt = tokio::runtime::Runtime::new()
+        .with_context(|| "Failed to create tokio runtime for DHCP acquire")?;
     let mut dhcp_success = false;
     for attempt in 1..=3 {
         let dhcp_result =
@@ -2174,7 +2276,8 @@ pub fn disconnect_wifi_interface(interface: Option<String>) -> Result<String> {
 
     log::info!("Disconnecting WiFi interface: {iface}");
 
-    let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+    let rt = tokio::runtime::Runtime::new()
+        .with_context(|| "Failed to create tokio runtime for disconnect")?;
     if let Err(e) =
         rt.block_on(async { rustyjack_netlink::networkmanager::disconnect_device(&iface).await })
     {
@@ -2183,7 +2286,8 @@ pub fn disconnect_wifi_interface(interface: Option<String>) -> Result<String> {
     }
 
     log::info!("Releasing DHCP lease for {iface}");
-    let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+    let rt = tokio::runtime::Runtime::new()
+        .with_context(|| "Failed to create tokio runtime for DHCP release")?;
     if let Err(e) = rt.block_on(async { rustyjack_netlink::dhcp_release(&iface).await }) {
         log::warn!("Failed to release DHCP lease for {}: {}", iface, e);
     }
@@ -2221,7 +2325,8 @@ pub fn cleanup_wifi_interface(interface: &str) -> Result<()> {
     }
 
     // Release DHCP if any
-    let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+    let rt = tokio::runtime::Runtime::new()
+        .with_context(|| "Failed to create tokio runtime for cleanup DHCP release")?;
     if let Err(e) = rt.block_on(async { rustyjack_netlink::dhcp_release(interface).await }) {
         log::warn!(
             "Failed to release DHCP lease during cleanup for {}: {}",

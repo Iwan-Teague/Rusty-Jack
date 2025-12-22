@@ -1208,47 +1208,31 @@ impl Display {
 
         let mut entries = Vec::new();
 
-        #[cfg(target_os = "linux")]
-        {
-            use std::fs;
-
-            if let Ok(dir_entries) = fs::read_dir("/sys/class/net") {
-                for entry in dir_entries.flatten() {
-                    let name = entry.file_name().to_string_lossy().to_string();
-
-                    if name == "lo" {
-                        continue;
-                    }
-
-                    let kind = if entry.path().join("wireless").exists() {
-                        "wifi"
-                    } else {
-                        "eth"
-                    };
-
-                    let oper_state = fs::read_to_string(entry.path().join("operstate"))
-                        .unwrap_or_else(|_| "?".into())
-                        .trim()
-                        .to_string();
-
-                    let state_symbol = match oper_state.as_str() {
-                        "up" => "UP",
-                        "down" => "DN",
-                        _ => "??",
-                    };
-
-                    let ip = self.get_interface_ip(&name);
-                    let ip_display = ip.as_deref().unwrap_or("-");
-
-                    entries.push(format!("{} [{}] {}", name, state_symbol, kind));
-                    entries.push(format!("  IP: {}", ip_display));
-                }
+        for iface in status.interfaces.iter() {
+            if iface.name == "lo" {
+                continue;
             }
-        }
 
-        #[cfg(not(target_os = "linux"))]
-        {
-            entries.push("No interfaces".to_string());
+            let state_symbol = match iface.oper_state.as_str() {
+                "up" => "UP",
+                "down" => "DN",
+                other => {
+                    if other.eq_ignore_ascii_case("dormant") {
+                        "DR"
+                    } else {
+                        "??"
+                    }
+                }
+            };
+
+            let ip_display = if iface.oper_state == "up" {
+                iface.ip.as_deref().unwrap_or("-")
+            } else {
+                "-"
+            };
+
+            entries.push(format!("{} [{}] {}", iface.name, state_symbol, iface.kind));
+            entries.push(format!("  IP: {}", ip_display));
         }
 
         if entries.is_empty() {
@@ -1283,30 +1267,6 @@ impl Display {
         .draw(&mut self.lcd)
         .map_err(|_| anyhow::anyhow!("Draw error"))?;
         Ok(())
-    }
-
-    fn get_interface_ip(&self, interface: &str) -> Option<String> {
-        use std::process::Command;
-
-        let output = Command::new("ip")
-            .args(["-4", "addr", "show", "dev", interface])
-            .output()
-            .ok()?;
-
-        if !output.status.success() {
-            return None;
-        }
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        for line in stdout.lines() {
-            let line = line.trim();
-            if line.starts_with("inet ") {
-                if let Some(addr) = line.split_whitespace().nth(1) {
-                    return Some(addr.split('/').next().unwrap_or(addr).to_string());
-                }
-            }
-        }
-        None
     }
 
     fn draw_progress_bar(&mut self, pos: Point, fill_width: u32) -> Result<()> {
@@ -1597,6 +1557,7 @@ pub struct StatusOverlay {
     pub active_interface: String,
     pub original_mac: String,
     pub current_mac: String,
+    pub interfaces: Vec<rustyjack_core::InterfaceSummary>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

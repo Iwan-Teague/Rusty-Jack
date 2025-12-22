@@ -5,6 +5,7 @@
 
 use anyhow::{Context, Result};
 use chrono::Local;
+use log::info;
 use rustyjack_evasion::logs_disabled;
 use std::{
     fs,
@@ -284,6 +285,14 @@ pub fn randomize_mac_with_reconnect(
         .context("setting randomized MAC")?;
 
     let reconnect_ok = renew_dhcp_and_reconnect(interface);
+    info!(
+        "[MAC] randomized interface {}: {} -> {} (vendor_reused={}, reconnect_ok={})",
+        interface,
+        state.original_mac,
+        state.current_mac,
+        vendor_reused,
+        reconnect_ok
+    );
     Ok((state, reconnect_ok, vendor_reused))
 }
 

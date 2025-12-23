@@ -78,6 +78,14 @@ const NL80211_ATTR_BEACON_INTERVAL: u16 = 74;
 const NL80211_ATTR_DTIM_PERIOD: u16 = 75;
 const NL80211_ATTR_WIPHY_FREQ: u16 = 38;
 const NL80211_ATTR_WIPHY_CHANNEL_TYPE: u16 = 39;
+const NL80211_ATTR_CHANNEL_WIDTH: u16 = 159;
+const NL80211_ATTR_CENTER_FREQ1: u16 = 160;
+const NL80211_ATTR_BSS_BASIC_RATES: u16 = 36;
+const NL80211_ATTR_PRIVACY: u16 = 14;
+const NL80211_ATTR_WPA_VERSIONS: u16 = 48;
+const NL80211_ATTR_CIPHER_SUITE_GROUP: u16 = 15;
+const NL80211_ATTR_CIPHER_SUITES_PAIRWISE: u16 = 16;
+const NL80211_ATTR_AKM_SUITES: u16 = 17;
 const NL80211_ATTR_KEY_DATA: u16 = 13;
 const NL80211_ATTR_KEY_IDX: u16 = 10;
 const NL80211_ATTR_KEY_CIPHER: u16 = 12;
@@ -98,6 +106,9 @@ const NL80211_KEYTYPE_GROUP: u8 = 0;
 const NL80211_KEYTYPE_PAIRWISE: u8 = 1;
 const NL80211_STA_FLAG_AUTHORIZED: u32 = 1 << 0;
 const CIPHER_SUITE_CCMP: u32 = 0x000f_ac_04;
+const AKM_SUITE_PSK: u32 = 0x000f_ac_02;
+const WPA_VERSION_2: u32 = 2;
+const NL80211_CHAN_WIDTH_20_NOHT: u32 = 0;
 type HmacSha1 = Hmac<sha1::Sha1>;
 
 /// Access Point security mode
@@ -424,16 +435,6 @@ impl AccessPoint {
             self.config.security
         );
 
-        let (beacon_head, beacon_tail, ssid_bytes) =
-            build_beacon_frames(&self.config, bssid, self.config.channel)?;
-        log::debug!(
-            "Beacon built: head_len={} tail_len={} ssid_len={} hidden={}",
-            beacon_head.len(),
-            beacon_tail.len(),
-            ssid_bytes.len(),
-            self.config.hidden
-        );
-
         // Build candidate channels (prefer configured, fallback 1/6), validate via set_channel
         let mut candidate_channels: Vec<u8> = Vec::new();
         if self.config.channel <= 14 {
@@ -451,8 +452,8 @@ impl AccessPoint {
             }
         }
 
-        // Validate candidates against driver/regdom by attempting set_channel (best-effort)
-        let mut valid_channels = Vec::new();
+        // Attempt set_channel for each candidate (best-effort), but do not filter
+        let mut attempt_channels = Vec::new();
         for ch in candidate_channels {
             match self
                 .wireless_mgr
@@ -460,23 +461,23 @@ impl AccessPoint {
             {
                 Ok(_) => {
                     log::info!(
-                        "Channel {} (freq {:?}) accepted by driver (HT20 assumed)",
+                        "Channel {} (freq {:?}) accepted by driver (NoHT assumed)",
                         ch,
                         channel_to_frequency(ch)
                     );
-                    valid_channels.push(ch);
                 }
                 Err(e) => {
                     log::warn!(
-                        "Channel {} rejected by driver/regdom, skipping: {}",
+                        "Channel {} set_channel failed (continuing with START_AP chandef): {}",
                         ch,
                         e
                     );
                 }
             }
+            attempt_channels.push(ch);
         }
 
-        if valid_channels.is_empty() {
+        if attempt_channels.is_empty() {
             let msg = format!(
                 "No valid channels available for interface {} (check regdom/driver)",
                 self.config.interface
@@ -489,9 +490,25 @@ impl AccessPoint {
         // Attempt START_AP over validated channels
         let mut chosen_channel = self.config.channel;
         let mut last_err: Option<String> = None;
-        for ch in valid_channels.iter() {
+        let dtim_period = if self.config.dtim_period == 0 {
+            1
+        } else {
+            self.config.dtim_period
+        };
+        for ch in attempt_channels.iter() {
+            let (beacon_head, beacon_tail, ssid_bytes, basic_rates) =
+                build_beacon_frames(&self.config, bssid, *ch)?;
+            log::debug!(
+                "Beacon built for channel {}: head_len={} tail_len={} ssid_len={} basic_rates={} hidden={}",
+                ch,
+                beacon_head.len(),
+                beacon_tail.len(),
+                ssid_bytes.len(),
+                basic_rates.len(),
+                self.config.hidden
+            );
             log::info!(
-                "Attempting START_AP on validated channel {} (freq {:?}, width=HT20)",
+                "Attempting START_AP on validated channel {} (freq {:?}, width=NoHT)",
                 ch,
                 channel_to_frequency(*ch)
             );
@@ -500,25 +517,28 @@ impl AccessPoint {
                 ch,
                 channel_to_frequency(*ch).unwrap_or(0)
             );
+            let wpa_enabled = matches!(self.config.security, ApSecurity::Wpa2Psk { .. });
             match send_start_ap(
                 ifindex,
                 *ch,
                 self.config.beacon_interval,
-                self.config.dtim_period,
+                dtim_period,
                 &ssid_bytes,
                 &beacon_head,
                 &beacon_tail,
+                wpa_enabled,
+                &basic_rates,
             ) {
                 Ok(_) => {
                     chosen_channel = *ch;
                     last_err = None;
-                    eprintln!("[HOSTAPD] ✓ START_AP succeeded on channel {}", ch);
+                    eprintln!("[HOSTAPD] START_AP succeeded on channel {}", ch);
                     break;
                 }
                 Err(e) => {
                     let msg = format!("START_AP failed on channel {}: {}", ch, e);
                     log::warn!("{}", msg);
-                    eprintln!("[HOSTAPD] ✗ START_AP failed on channel {}: {}", ch, e);
+                    eprintln!("[HOSTAPD] START_AP failed on channel {}: {}", ch, e);
                     last_err = Some(msg);
                 }
             }
@@ -531,7 +551,7 @@ impl AccessPoint {
 
         self.config.channel = chosen_channel;
         log::info!(
-            "START_AP succeeded on channel {} (width=HT20)",
+            "START_AP succeeded on channel {} (width=NoHT)",
             chosen_channel
         );
 
@@ -671,40 +691,57 @@ fn send_start_ap(
     ssid: &[u8],
     beacon_head: &[u8],
     beacon_tail: &[u8],
+    wpa_enabled: bool,
+    basic_rates: &[u8],
 ) -> Result<()> {
-    match send_start_ap_inner(
-        ifindex,
-        channel,
-        beacon_interval_tu,
-        dtim_period,
-        ssid,
-        beacon_head,
-        beacon_tail,
-        true,
-    ) {
-        Ok(()) => Ok(()),
-        Err(err) => {
-            if matches!(err, NetlinkError::OperationFailed(ref msg) if msg.contains("errno 34")) {
-                log::warn!(
-                    "START_AP ERANGE with channel_type; retrying without channel_type attribute"
-                );
-                eprintln!(
-                    "[HOSTAPD] START_AP ERANGE; retrying without channel_type attribute"
-                );
-                send_start_ap_inner(
-                    ifindex,
-                    channel,
-                    beacon_interval_tu,
-                    dtim_period,
-                    ssid,
-                    beacon_head,
-                    beacon_tail,
-                    false,
-                )
-            } else {
-                Err(err)
+    let attempts = [
+        (true, false, "chandef (channel_width + center_freq1)"),
+        (false, true, "legacy channel_type"),
+        (false, false, "no channel attrs"),
+    ];
+    let mut last_err: Option<NetlinkError> = None;
+    for (include_channel_width, include_channel_type, label) in attempts.iter() {
+        log::info!("START_AP attempt using {}", label);
+        eprintln!("[HOSTAPD] START_AP using {}", label);
+        match send_start_ap_inner(
+            ifindex,
+            channel,
+            beacon_interval_tu,
+            dtim_period,
+            ssid,
+            beacon_head,
+            beacon_tail,
+            *include_channel_type,
+            *include_channel_width,
+            wpa_enabled,
+            basic_rates,
+        ) {
+            Ok(()) => return Ok(()),
+            Err(err) => {
+                if is_retryable_start_ap(&err) {
+                    log::warn!("START_AP failed with {}; retrying", err);
+                    eprintln!("[HOSTAPD] START_AP failed with {}; retrying", err);
+                    last_err = Some(err);
+                    continue;
+                }
+                return Err(err);
             }
         }
+    }
+    Err(last_err.unwrap_or_else(|| {
+        NetlinkError::OperationFailed("START_AP failed after retries".to_string())
+    }))
+}
+
+fn is_retryable_start_ap(err: &NetlinkError) -> bool {
+    match err {
+        NetlinkError::OperationFailed(msg) => {
+            msg.contains("errno 34")
+                || msg.contains("os error 34")
+                || msg.contains("errno 22")
+                || msg.contains("os error 22")
+        }
+        _ => false,
     }
 }
 
@@ -717,12 +754,15 @@ fn send_start_ap_inner(
     beacon_head: &[u8],
     beacon_tail: &[u8],
     include_channel_type: bool,
+    include_channel_width: bool,
+    wpa_enabled: bool,
+    basic_rates: &[u8],
 ) -> Result<()> {
     let freq = channel_to_frequency(channel)
         .ok_or_else(|| NetlinkError::InvalidInput(format!("Unsupported channel {}", channel)))?;
 
     log::info!(
-        "START_AP params: ifindex={} chan={} freq={} beacon_int={} dtim={} ssid_len={} head_len={} tail_len={} channel_type={}",
+        "START_AP params: ifindex={} chan={} freq={} beacon_int={} dtim={} ssid_len={} head_len={} tail_len={} basic_rates_len={} channel_type={} channel_width={} wpa={}",
         ifindex,
         channel,
         freq,
@@ -731,7 +771,10 @@ fn send_start_ap_inner(
         ssid.len(),
         beacon_head.len(),
         beacon_tail.len(),
-        include_channel_type
+        basic_rates.len(),
+        include_channel_type,
+        include_channel_width,
+        wpa_enabled
     );
 
     let mut sock = NlSocketHandle::connect(neli::consts::socket::NlFamily::Generic, None, &[])
@@ -770,6 +813,59 @@ fn send_start_ap_inner(
             NetlinkError::OperationFailed(format!("Failed to build SSID attr: {}", e))
         })?,
     );
+    if !basic_rates.is_empty() {
+        attrs.push(
+            neli::genl::Nlattr::new(false, false, NL80211_ATTR_BSS_BASIC_RATES, basic_rates)
+                .map_err(|e| {
+                    NetlinkError::OperationFailed(format!(
+                        "Failed to build basic rates attr: {}",
+                        e
+                    ))
+                })?,
+        );
+    }
+    if wpa_enabled {
+        attrs.push(
+            neli::genl::Nlattr::new(false, false, NL80211_ATTR_PRIVACY, &[] as &[u8]).map_err(
+                |e| NetlinkError::OperationFailed(format!("Failed to build privacy attr: {}", e)),
+            )?,
+        );
+        attrs.push(
+            neli::genl::Nlattr::new(false, false, NL80211_ATTR_WPA_VERSIONS, WPA_VERSION_2)
+                .map_err(|e| {
+                    NetlinkError::OperationFailed(format!("Failed to build WPA versions attr: {}", e))
+                })?,
+        );
+        attrs.push(
+            neli::genl::Nlattr::new(
+                false,
+                false,
+                NL80211_ATTR_CIPHER_SUITE_GROUP,
+                CIPHER_SUITE_CCMP,
+            )
+            .map_err(|e| {
+                NetlinkError::OperationFailed(format!("Failed to build group cipher attr: {}", e))
+            })?,
+        );
+        let pairwise = u32_list_bytes(&[CIPHER_SUITE_CCMP]);
+        attrs.push(
+            neli::genl::Nlattr::new(
+                false,
+                false,
+                NL80211_ATTR_CIPHER_SUITES_PAIRWISE,
+                pairwise,
+            )
+            .map_err(|e| {
+                NetlinkError::OperationFailed(format!("Failed to build pairwise cipher attr: {}", e))
+            })?,
+        );
+        let akm = u32_list_bytes(&[AKM_SUITE_PSK]);
+        attrs.push(
+            neli::genl::Nlattr::new(false, false, NL80211_ATTR_AKM_SUITES, akm).map_err(
+                |e| NetlinkError::OperationFailed(format!("Failed to build AKM suites attr: {}", e)),
+            )?,
+        );
+    }
     attrs.push(
         neli::genl::Nlattr::new(false, false, NL80211_ATTR_BEACON_HEAD, beacon_head).map_err(
             |e| NetlinkError::OperationFailed(format!("Failed to build beacon head attr: {}", e)),
@@ -805,6 +901,24 @@ fn send_start_ap_inner(
                         e
                     ))
                 },
+            )?,
+        );
+    }
+    if include_channel_width {
+        attrs.push(
+            neli::genl::Nlattr::new(
+                false,
+                false,
+                NL80211_ATTR_CHANNEL_WIDTH,
+                NL80211_CHAN_WIDTH_20_NOHT,
+            )
+            .map_err(|e| {
+                NetlinkError::OperationFailed(format!("Failed to build channel width attr: {}", e))
+            })?,
+        );
+        attrs.push(
+            neli::genl::Nlattr::new(false, false, NL80211_ATTR_CENTER_FREQ1, freq).map_err(
+                |e| NetlinkError::OperationFailed(format!("Failed to build center freq1 attr: {}", e)),
             )?,
         );
     }
@@ -930,7 +1044,7 @@ fn build_beacon_frames(
     config: &ApConfig,
     bssid: [u8; 6],
     channel: u8,
-) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
+) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>)> {
     let mut head = Vec::new();
     // 802.11 beacon header
     head.extend_from_slice(&[0x80, 0x00]); // Frame control
@@ -959,28 +1073,53 @@ fn build_beacon_frames(
     head.push(ssid_bytes.len() as u8);
     head.extend_from_slice(&ssid_bytes);
 
-    // Supported rates IE (1,2,5.5,11)
-    head.push(1);
-    head.push(4);
-    head.extend_from_slice(&[0x82, 0x84, 0x8b, 0x96]);
+    let (supported_rates, extended_rates) = if channel <= 14 {
+        (
+            &[0x82, 0x84, 0x8b, 0x96][..],
+            &[0x0c, 0x12, 0x18, 0x24, 0x30, 0x48, 0x60, 0x6c][..],
+        )
+    } else {
+        (
+            &[0x8c, 0x98, 0xb0][..],
+            &[0x12, 0x24, 0x48, 0x60, 0x6c][..],
+        )
+    };
+    let basic_rates: Vec<u8> = supported_rates.iter().map(|rate| rate & 0x7f).collect();
 
-    // Extended supported rates IE (basic 6,12,24)
-    head.push(50);
-    head.push(3);
-    head.extend_from_slice(&[0x0c, 0x12, 0x18]);
+    // Supported rates IE
+    head.push(1);
+    head.push(supported_rates.len() as u8);
+    head.extend_from_slice(supported_rates);
 
     // DS Parameter Set (channel)
     head.push(3);
     head.push(1);
     head.push(channel);
 
+    // TIM IE (must be in beacon head)
+    let dtim_period = if config.dtim_period == 0 {
+        1
+    } else {
+        config.dtim_period
+    };
+    head.extend_from_slice(&build_tim_ie(dtim_period));
+
     let mut tail = Vec::new();
+    if channel <= 14 && config.hw_mode != HardwareMode::A {
+        tail.extend_from_slice(&build_erp_ie());
+    }
+
+    // Extended supported rates IE (after TIM)
+    tail.push(50);
+    tail.push(extended_rates.len() as u8);
+    tail.extend_from_slice(extended_rates);
+
     if matches!(config.security, ApSecurity::Wpa2Psk { .. }) {
         let rsn = build_rsn_ie();
         tail.extend_from_slice(&rsn);
     }
 
-    Ok((head, tail, ssid_bytes))
+    Ok((head, tail, ssid_bytes, basic_rates))
 }
 
 fn read_interface_mac(interface: &str) -> Result<[u8; 6]> {
@@ -1102,6 +1241,24 @@ fn build_rsn_ie() -> Vec<u8> {
     let len = ie.len() - 2;
     ie[1] = len as u8;
     ie
+}
+
+fn build_tim_ie(dtim_period: u8) -> [u8; 6] {
+    // TIM IE: ID, length, DTIM count, DTIM period, bitmap control, partial virtual bitmap
+    [5, 4, 0, dtim_period, 0, 0]
+}
+
+fn build_erp_ie() -> [u8; 3] {
+    // ERP IE: ID, length, value (no protection)
+    [42, 1, 0x00]
+}
+
+fn u32_list_bytes(values: &[u32]) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(values.len() * 4);
+    for value in values {
+        bytes.extend_from_slice(&value.to_ne_bytes());
+    }
+    bytes
 }
 
 fn derive_ptk(

@@ -672,11 +672,57 @@ fn send_start_ap(
     beacon_head: &[u8],
     beacon_tail: &[u8],
 ) -> Result<()> {
+    match send_start_ap_inner(
+        ifindex,
+        channel,
+        beacon_interval_tu,
+        dtim_period,
+        ssid,
+        beacon_head,
+        beacon_tail,
+        true,
+    ) {
+        Ok(()) => Ok(()),
+        Err(err) => {
+            if matches!(err, NetlinkError::OperationFailed(ref msg) if msg.contains("errno 34")) {
+                log::warn!(
+                    "START_AP ERANGE with channel_type; retrying without channel_type attribute"
+                );
+                eprintln!(
+                    "[HOSTAPD] START_AP ERANGE; retrying without channel_type attribute"
+                );
+                send_start_ap_inner(
+                    ifindex,
+                    channel,
+                    beacon_interval_tu,
+                    dtim_period,
+                    ssid,
+                    beacon_head,
+                    beacon_tail,
+                    false,
+                )
+            } else {
+                Err(err)
+            }
+        }
+    }
+}
+
+fn send_start_ap_inner(
+    ifindex: u32,
+    channel: u8,
+    beacon_interval_tu: u16,
+    dtim_period: u8,
+    ssid: &[u8],
+    beacon_head: &[u8],
+    beacon_tail: &[u8],
+    include_channel_type: bool,
+) -> Result<()> {
     let freq = channel_to_frequency(channel)
         .ok_or_else(|| NetlinkError::InvalidInput(format!("Unsupported channel {}", channel)))?;
 
     log::info!(
-        "START_AP params: ifindex={} chan={} freq={} beacon_int={} dtim={} ssid_len={} head_len={} tail_len={}",
+        "START_AP params: ifindex={} chan={} freq={} beacon_int={} dtim={} ssid_len={} head_len={} tail_len={} channel_type={}",
         ifindex,
         channel,
         freq,
@@ -684,7 +730,8 @@ fn send_start_ap(
         dtim_period,
         ssid.len(),
         beacon_head.len(),
-        beacon_tail.len()
+        beacon_tail.len(),
+        include_channel_type
     );
 
     let mut sock = NlSocketHandle::connect(neli::consts::socket::NlFamily::Generic, None, &[])
@@ -747,13 +794,20 @@ fn send_start_ap(
             NetlinkError::OperationFailed(format!("Failed to build freq attr: {}", e))
         })?,
     );
-    // Try NO_HT (0) first for better compatibility with older/limited drivers
-    // HT20 (1) can cause ERANGE on some hardware
-    attrs.push(
-        neli::genl::Nlattr::new(false, false, NL80211_ATTR_WIPHY_CHANNEL_TYPE, 0u32).map_err(
-            |e| NetlinkError::OperationFailed(format!("Failed to build channel type attr: {}", e)),
-        )?,
-    );
+    if include_channel_type {
+        // Try NO_HT (0) first for better compatibility with older/limited drivers.
+        // HT20 (1) can cause ERANGE on some hardware.
+        attrs.push(
+            neli::genl::Nlattr::new(false, false, NL80211_ATTR_WIPHY_CHANNEL_TYPE, 0u32).map_err(
+                |e| {
+                    NetlinkError::OperationFailed(format!(
+                        "Failed to build channel type attr: {}",
+                        e
+                    ))
+                },
+            )?,
+        );
+    }
 
     log::debug!(
         "START_AP building nl80211 frame: ifindex={} attrs={}",
@@ -888,8 +942,12 @@ fn build_beacon_frames(
     head.extend_from_slice(&[0x00; 8]); // Timestamp (kernel fills)
     head.extend_from_slice(&config.beacon_interval.to_le_bytes()); // Beacon interval
 
-    // Capability: ESS + short preamble + short slot
-    head.extend_from_slice(&0x0421u16.to_le_bytes());
+    // Capability: ESS + short preamble + short slot (+ privacy if WPA2)
+    let mut capab: u16 = 0x0421;
+    if matches!(config.security, ApSecurity::Wpa2Psk { .. }) {
+        capab |= 0x0010;
+    }
+    head.extend_from_slice(&capab.to_le_bytes());
 
     // SSID IE
     let ssid_bytes = if config.hidden {

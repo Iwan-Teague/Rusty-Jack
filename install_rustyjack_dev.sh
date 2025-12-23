@@ -437,6 +437,7 @@ WorkingDirectory=$PROJECT_ROOT
 ExecStart=/usr/local/bin/rustyjack-ui
 Environment=RUSTYJACK_DISPLAY_ROTATION=landscape
 Environment=RUST_BACKTRACE=1
+Environment="RUST_LOG=rustyjack_hotspot=trace,rustyjack_netlink=trace,rustyjack_wireless=trace,rustyjack_ui=debug"
 Restart=on-failure
 RestartSec=5
 User=root

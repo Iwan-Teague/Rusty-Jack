@@ -698,15 +698,106 @@ fn send_start_ap(
     wpa_enabled: bool,
     basic_rates: &[u32],
 ) -> Result<()> {
-    let attempts = [
+    struct FrameAttempt {
+        include_basic_rates: bool,
+        include_probe_resp: bool,
+        include_beacon_tail: bool,
+        label: &'static str,
+    }
+    struct StartApAttempt {
+        include_channel_type: bool,
+        include_channel_width: bool,
+        include_basic_rates: bool,
+        include_probe_resp: bool,
+        include_beacon_tail: bool,
+        label: String,
+    }
+
+    let channel_attempts = [
         (true, false, "chandef (channel_width + center_freq1)"),
         (false, true, "legacy channel_type"),
         (false, false, "no channel attrs"),
     ];
+
+    let frame_attempts: Vec<FrameAttempt> = if wpa_enabled {
+        vec![
+            FrameAttempt {
+                include_basic_rates: true,
+                include_probe_resp: true,
+                include_beacon_tail: true,
+                label: "full frames",
+            },
+            FrameAttempt {
+                include_basic_rates: false,
+                include_probe_resp: true,
+                include_beacon_tail: true,
+                label: "no basic rates attr",
+            },
+            FrameAttempt {
+                include_basic_rates: true,
+                include_probe_resp: false,
+                include_beacon_tail: true,
+                label: "no probe resp",
+            },
+            FrameAttempt {
+                include_basic_rates: false,
+                include_probe_resp: false,
+                include_beacon_tail: true,
+                label: "no probe resp + no basic rates",
+            },
+        ]
+    } else {
+        vec![
+            FrameAttempt {
+                include_basic_rates: true,
+                include_probe_resp: true,
+                include_beacon_tail: true,
+                label: "full frames",
+            },
+            FrameAttempt {
+                include_basic_rates: false,
+                include_probe_resp: true,
+                include_beacon_tail: true,
+                label: "no basic rates attr",
+            },
+            FrameAttempt {
+                include_basic_rates: true,
+                include_probe_resp: false,
+                include_beacon_tail: true,
+                label: "no probe resp",
+            },
+            FrameAttempt {
+                include_basic_rates: false,
+                include_probe_resp: false,
+                include_beacon_tail: true,
+                label: "no probe resp + no basic rates",
+            },
+            FrameAttempt {
+                include_basic_rates: false,
+                include_probe_resp: false,
+                include_beacon_tail: false,
+                label: "minimal beacon (no tail/probe/basics)",
+            },
+        ]
+    };
+
+    let mut attempts: Vec<StartApAttempt> = Vec::new();
+    for (include_channel_width, include_channel_type, channel_label) in channel_attempts.iter() {
+        for frame in frame_attempts.iter() {
+            attempts.push(StartApAttempt {
+                include_channel_type: *include_channel_type,
+                include_channel_width: *include_channel_width,
+                include_basic_rates: frame.include_basic_rates,
+                include_probe_resp: frame.include_probe_resp,
+                include_beacon_tail: frame.include_beacon_tail,
+                label: format!("{} + {}", channel_label, frame.label),
+            });
+        }
+    }
     let mut last_err: Option<NetlinkError> = None;
-    for (include_channel_width, include_channel_type, label) in attempts.iter() {
-        log::info!("START_AP attempt using {}", label);
-        eprintln!("[HOSTAPD] START_AP using {}", label);
+    for attempt in attempts.iter() {
+        log::info!("START_AP attempt using {}", attempt.label);
+        eprintln!("[HOSTAPD] START_AP using {}", attempt.label);
         match send_start_ap_inner(
             ifindex,
             channel,
@@ -717,8 +808,11 @@ fn send_start_ap(
             beacon_tail,
             probe_resp,
             hidden_ssid,
-            *include_channel_type,
-            *include_channel_width,
+            attempt.include_channel_type,
+            attempt.include_channel_width,
+            attempt.include_basic_rates,
+            attempt.include_probe_resp,
+            attempt.include_beacon_tail,
             wpa_enabled,
             basic_rates,
         ) {
@@ -763,6 +857,9 @@ fn send_start_ap_inner(
     hidden_ssid: u32,
     include_channel_type: bool,
     include_channel_width: bool,
+    include_basic_rates: bool,
+    include_probe_resp: bool,
+    include_beacon_tail: bool,
     wpa_enabled: bool,
     basic_rates: &[u32],
 ) -> Result<()> {
@@ -770,7 +867,7 @@ fn send_start_ap_inner(
         .ok_or_else(|| NetlinkError::InvalidInput(format!("Unsupported channel {}", channel)))?;
 
     log::info!(
-        "START_AP params: ifindex={} chan={} freq={} beacon_int={} dtim={} ssid_len={} head_len={} tail_len={} probe_len={} basic_rates_len={} channel_type={} channel_width={} wpa={}",
+        "START_AP params: ifindex={} chan={} freq={} beacon_int={} dtim={} ssid_len={} head_len={} tail_len={} probe_len={} basic_rates_len={} channel_type={} channel_width={} basic_rates={} probe_resp={} beacon_tail={} wpa={}",
         ifindex,
         channel,
         freq,
@@ -783,6 +880,9 @@ fn send_start_ap_inner(
         basic_rates.len(),
         include_channel_type,
         include_channel_width,
+        include_basic_rates,
+        include_probe_resp,
+        include_beacon_tail,
         wpa_enabled
     );
 
@@ -834,7 +934,7 @@ fn send_start_ap_inner(
             )?,
         );
     }
-    if !basic_rates.is_empty() {
+    if include_basic_rates && !basic_rates.is_empty() {
         let basic_rates_bytes = u32_list_bytes(basic_rates);
         attrs.push(
             neli::genl::Nlattr::new(
@@ -898,7 +998,7 @@ fn send_start_ap_inner(
             |e| NetlinkError::OperationFailed(format!("Failed to build beacon head attr: {}", e)),
         )?,
     );
-    if !beacon_tail.is_empty() {
+    if include_beacon_tail && !beacon_tail.is_empty() {
         attrs.push(
             neli::genl::Nlattr::new(false, false, NL80211_ATTR_BEACON_TAIL, beacon_tail).map_err(
                 |e| {
@@ -910,9 +1010,13 @@ fn send_start_ap_inner(
             )?,
         );
     } else {
-        log::debug!("START_AP beacon tail empty; skipping NL80211_ATTR_BEACON_TAIL");
+        if !include_beacon_tail {
+            log::debug!("START_AP beacon tail omitted by attempt");
+        } else {
+            log::debug!("START_AP beacon tail empty; skipping NL80211_ATTR_BEACON_TAIL");
+        }
     }
-    if !probe_resp.is_empty() {
+    if include_probe_resp && !probe_resp.is_empty() {
         attrs.push(
             neli::genl::Nlattr::new(false, false, NL80211_ATTR_PROBE_RESP, probe_resp).map_err(
                 |e| {

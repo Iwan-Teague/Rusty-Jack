@@ -8273,12 +8273,20 @@ Do not remove power/USB",
 
             let ssid = ssid.unwrap_or("").trim();
             if per_network_mac && !ssid.is_empty() {
-                let _ = self.apply_per_network_mac(&active_interface, ssid);
+                if let Err(e) = self.apply_per_network_mac(&active_interface, ssid) {
+                    log::warn!(
+                        "[MAC] per-network MAC failed on {}: {}",
+                        active_interface,
+                        e
+                    );
+                }
                 return;
             }
 
             if mac_randomization {
-                let _ = randomize_mac_with_reconnect(&active_interface);
+                if let Err(e) = randomize_mac_with_reconnect(&active_interface) {
+                    log::warn!("[MAC] randomize failed on {}: {}", active_interface, e);
+                }
             }
         }
     }

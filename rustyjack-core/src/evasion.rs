@@ -1,7 +1,7 @@
 use std::{fs, path::Path, process::Command, thread, time::Duration};
 
 use crate::netlink_helpers::{netlink_set_interface_down, netlink_set_interface_up};
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use log::{debug, info, warn};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
@@ -38,22 +38,31 @@ pub fn generate_random_mac(preserve_vendor: bool, current_mac: Option<&str>) -> 
         if let Some(mac) = current_mac {
             let parts: Vec<&str> = mac.split(':').collect();
             if parts.len() == 6 {
-                return Ok(format!(
-                    "{}:{}:{}:{:02x}:{:02x}:{:02x}",
-                    parts[0],
-                    parts[1],
-                    parts[2],
-                    rng.gen::<u8>(),
-                    rng.gen::<u8>(),
-                    rng.gen::<u8>()
-                ));
+                let parsed = parts
+                    .iter()
+                    .map(|p| u8::from_str_radix(p, 16))
+                    .collect::<std::result::Result<Vec<_>, _>>();
+                if let Ok(bytes) = parsed {
+                    if bytes.len() == 6 {
+                        let first = (bytes[0] | 0x02) & 0xFE;
+                        return Ok(format!(
+                            "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+                            first,
+                            bytes[1],
+                            bytes[2],
+                            rng.gen::<u8>(),
+                            rng.gen::<u8>(),
+                            rng.gen::<u8>()
+                        ));
+                    }
+                }
             }
         }
     }
 
     // Generate completely random MAC
-    // Set locally administered bit (bit 1 of first octet)
-    let first = rng.gen::<u8>() | 0x02;
+    // Set locally administered bit and clear multicast bit (bit 0)
+    let first = (rng.gen::<u8>() | 0x02) & 0xFE;
 
     Ok(format!(
         "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
@@ -72,10 +81,14 @@ pub fn set_mac_address(interface: &str, mac: &str) -> Result<()> {
     netlink_set_interface_down(interface).context("bringing interface down")?;
 
     // Set new MAC (still requires ip command - netlink MAC setting pending)
-    Command::new("ip")
+    let status = Command::new("ip")
         .args(["link", "set", interface, "address", mac])
         .status()
         .context("setting MAC address")?;
+    if !status.success() {
+        let _ = netlink_set_interface_up(interface);
+        bail!("Failed to set MAC on {}: {}", interface, status);
+    }
 
     // Bring interface back up
     netlink_set_interface_up(interface).context("bringing interface up")?;

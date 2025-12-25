@@ -51,6 +51,9 @@ impl GuiConfig {
         let mut config: GuiConfig = serde_json::from_str(&contents)
             .with_context(|| format!("parsing {}", path.display()))?;
         config.paths.apply_defaults();
+        if config.settings.normalize_active_interface() {
+            config.save(&path)?;
+        }
         Ok(config)
     }
 
@@ -322,7 +325,7 @@ impl SettingsConfig {
     }
 
     fn default_active_interface() -> String {
-        "wlan0".to_string()
+        "eth0".to_string()
     }
 
     fn default_target_network() -> String {
@@ -348,4 +351,29 @@ impl SettingsConfig {
     fn default_hotspot_password() -> String {
         "rustyjack".to_string()
     }
+}
+
+impl SettingsConfig {
+    fn normalize_active_interface(&mut self) -> bool {
+        let iface = self.active_network_interface.trim();
+        if iface.is_empty() || !interface_exists(iface) {
+            let preferred = if interface_exists("eth0") {
+                "eth0".to_string()
+            } else {
+                self.active_network_interface.clone()
+            };
+            if preferred != self.active_network_interface {
+                self.active_network_interface = preferred;
+                return true;
+            }
+        }
+        false
+    }
+}
+
+fn interface_exists(name: &str) -> bool {
+    if name.is_empty() {
+        return false;
+    }
+    Path::new("/sys/class/net").join(name).exists()
 }

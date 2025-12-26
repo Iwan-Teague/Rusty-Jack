@@ -1911,6 +1911,48 @@ pub fn load_wifi_profile(root: &Path, identifier: &str) -> Result<Option<StoredW
     Ok(None)
 }
 
+pub fn ensure_default_wifi_profiles(root: &Path) -> Result<usize> {
+    let defaults = [
+        ("rustyjack", "123456789"),
+        ("SKYHN7XM", "6HekvGQvxuVV"),
+    ];
+
+    let mut created = 0usize;
+    for (ssid, password) in defaults {
+        match load_wifi_profile(root, ssid) {
+            Ok(Some(_)) => continue,
+            Ok(None) => {}
+            Err(err) => {
+                log::warn!("Failed to check WiFi profile {}: {}", ssid, err);
+                continue;
+            }
+        }
+
+        let profile = WifiProfile {
+            ssid: ssid.to_string(),
+            password: Some(password.to_string()),
+            interface: "auto".to_string(),
+            priority: 1,
+            auto_connect: true,
+            created: None,
+            last_used: None,
+            notes: Some("Preloaded WiFi profile".to_string()),
+        };
+
+        match save_wifi_profile(root, &profile) {
+            Ok(path) => {
+                log::info!("Seeded WiFi profile {} at {}", ssid, path.display());
+                created += 1;
+            }
+            Err(err) => {
+                log::warn!("Failed to seed WiFi profile {}: {}", ssid, err);
+            }
+        }
+    }
+
+    Ok(created)
+}
+
 pub fn save_wifi_profile(root: &Path, profile: &WifiProfile) -> Result<PathBuf> {
     // Validate profile before saving
     if profile.ssid.trim().is_empty() {

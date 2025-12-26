@@ -126,7 +126,8 @@ fn extract_status_text(data: &Value) -> Option<String> {
 fn enforce_isolation_watchdog(core: &CoreBridge, root: &Path) -> Result<()> {
     let cfg = GuiConfig::load(root)?;
     let active_iface = cfg.settings.active_network_interface.trim().to_string();
-    let mut allow_list = vec![active_iface.clone()];
+
+    let mut allow_list = Vec::new();
 
     if let Ok((_, hs_data)) = core.dispatch(Commands::Hotspot(HotspotCommand::Status)) {
         let running = hs_data
@@ -135,28 +136,61 @@ fn enforce_isolation_watchdog(core: &CoreBridge, root: &Path) -> Result<()> {
             .unwrap_or(false);
         if running {
             if let Some(ap) = hs_data.get("ap_interface").and_then(|v| v.as_str()) {
-                if !ap.is_empty() {
+                if !ap.is_empty() && interface_exists(ap) {
                     allow_list.push(ap.to_string());
                 }
             }
             if let Some(up) = hs_data.get("upstream_interface").and_then(|v| v.as_str()) {
-                if !up.is_empty() {
+                if !up.is_empty() && interface_exists(up) {
                     allow_list.push(up.to_string());
                 }
             }
+
+            allow_list.sort();
+            allow_list.dedup();
+            if allow_list.is_empty() {
+                return Ok(());
+            }
+
+            apply_interface_isolation(&allow_list)?;
+            if let Some(up) = hs_data
+                .get("upstream_interface")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+            {
+                maybe_ensure_wired_dhcp(core, up)?;
+            }
+            return Ok(());
         }
+    }
+
+    if active_iface.is_empty() || active_iface.eq_ignore_ascii_case("auto") {
+        if let Some(fallback) = select_default_interface() {
+            allow_list.push(fallback);
+        }
+    } else if interface_exists(&active_iface) {
+        allow_list.push(active_iface.clone());
+    } else {
+        eprintln!(
+            "[isolation] active interface {} not found; skipping enforcement",
+            active_iface
+        );
+        return Ok(());
     }
 
     allow_list.retain(|s| !s.is_empty());
     allow_list.sort();
     allow_list.dedup();
+    allow_list.retain(|s| interface_exists(s));
 
     if allow_list.is_empty() {
         return Ok(());
     }
 
     apply_interface_isolation(&allow_list)?;
-    maybe_ensure_wired_dhcp(core, &active_iface)?;
+    if let Some(primary) = allow_list.first() {
+        maybe_ensure_wired_dhcp(core, primary)?;
+    }
     Ok(())
 }
 
@@ -226,6 +260,30 @@ fn interface_has_ipv4(interface: &str) -> bool {
     };
     let stdout = String::from_utf8_lossy(&output.stdout);
     stdout.lines().any(|line| line.trim_start().starts_with("inet "))
+}
+
+fn interface_exists(name: &str) -> bool {
+    if name.is_empty() {
+        return false;
+    }
+    Path::new("/sys/class/net").join(name).exists()
+}
+
+fn select_default_interface() -> Option<String> {
+    if interface_exists("eth0") {
+        return Some("eth0".to_string());
+    }
+    if interface_exists("wlan0") {
+        return Some("wlan0".to_string());
+    }
+    let entries = fs::read_dir("/sys/class/net").ok()?;
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name != "lo" {
+            return Some(name);
+        }
+    }
+    None
 }
 
 fn read_temp() -> Result<f32> {

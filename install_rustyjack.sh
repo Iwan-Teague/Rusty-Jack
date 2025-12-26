@@ -387,6 +387,40 @@ PROFILE
   info "Created sample WiFi profile"
 fi
 
+if [ ! -f "$PROJECT_ROOT/wifi/profiles/rustyjack.json" ]; then
+  sudo tee "$PROJECT_ROOT/wifi/profiles/rustyjack.json" >/dev/null <<'PROFILE'
+{
+  "ssid": "rustyjack",
+  "password": "123456789",
+  "interface": "auto",
+  "priority": 1,
+  "auto_connect": true,
+  "created": "2024-01-01T12:00:00",
+  "last_used": null,
+  "notes": "Preloaded WiFi profile"
+}
+PROFILE
+  sudo chmod 600 "$PROJECT_ROOT/wifi/profiles/rustyjack.json"
+  info "Created default WiFi profile: rustyjack"
+fi
+
+if [ ! -f "$PROJECT_ROOT/wifi/profiles/skyhn7xm.json" ]; then
+  sudo tee "$PROJECT_ROOT/wifi/profiles/skyhn7xm.json" >/dev/null <<'PROFILE'
+{
+  "ssid": "SKYHN7XM",
+  "password": "6HekvGQvxuVV",
+  "interface": "auto",
+  "priority": 1,
+  "auto_connect": true,
+  "created": "2024-01-01T12:00:00",
+  "last_used": null,
+  "notes": "Preloaded WiFi profile"
+}
+PROFILE
+  sudo chmod 600 "$PROJECT_ROOT/wifi/profiles/skyhn7xm.json"
+  info "Created default WiFi profile: SKYHN7XM"
+fi
+
 # ---- 5: systemd service -------------------------------------
 SERVICE=/etc/systemd/system/rustyjack.service
 step "Installing systemd service $SERVICE..."

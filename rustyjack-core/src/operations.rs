@@ -1799,13 +1799,20 @@ fn interface_has_carrier(interface: &str) -> bool {
     if interface.is_empty() {
         return false;
     }
-    let path = format!("/sys/class/net/{}/carrier", interface);
-    fs::read_to_string(&path)
-        .map(|val| val.trim() == "1")
-        .unwrap_or(false)
+    let carrier_path = format!("/sys/class/net/{}/carrier", interface);
+    let oper_path = format!("/sys/class/net/{}/operstate", interface);
+    let oper_state = fs::read_to_string(&oper_path)
+        .unwrap_or_else(|_| "unknown".to_string())
+        .trim()
+        .to_string();
+    let oper_ready = matches!(oper_state.as_str(), "up" | "unknown");
+    match fs::read_to_string(&carrier_path) {
+        Ok(val) => val.trim() == "1" || oper_ready,
+        Err(_) => oper_ready,
+    }
 }
 
-fn try_dhcp_acquire(interface: &str) -> Result<bool> {
+fn try_dhcp_acquire(interface: &str) -> Result<Option<Ipv4Addr>> {
     #[cfg(target_os = "linux")]
     {
         let result = match tokio::runtime::Handle::try_current() {
@@ -1828,18 +1835,18 @@ fn try_dhcp_acquire(interface: &str) -> Result<bool> {
                     lease.prefix_len,
                     lease.gateway
                 );
-                Ok(true)
+                Ok(lease.gateway)
             }
             Err(e) => {
                 log::warn!("[ROUTE] DHCP acquire failed on {}: {}", interface, e);
-                Ok(false)
+                Ok(None)
             }
         }
     }
     #[cfg(not(target_os = "linux"))]
     {
         let _ = interface;
-        Ok(false)
+        Ok(None)
     }
 }
 
@@ -1884,13 +1891,18 @@ fn handle_wifi_route_ensure(root: &Path, args: WifiRouteEnsureArgs) -> Result<Ha
         .cloned()
         .ok_or_else(|| anyhow!("interface {} not found", target_interface))?;
 
-    if iface_summary.kind == "wired"
-        && interface_has_carrier(&target_interface)
-        && iface_summary.ip.is_none()
-    {
+    let mut dhcp_gateway = None;
+    if iface_summary.kind == "wired" && iface_summary.ip.is_none() {
         #[cfg(target_os = "linux")]
         let _ = netlink_set_interface_up(&target_interface);
-        if try_dhcp_acquire(&target_interface)? {
+        if !interface_has_carrier(&target_interface) {
+            log::warn!(
+                "[ROUTE] No carrier detected on {}; attempting DHCP anyway",
+                target_interface
+            );
+        }
+        dhcp_gateway = try_dhcp_acquire(&target_interface)?;
+        if dhcp_gateway.is_some() {
             summaries = list_interface_summaries()?;
             if let Some(updated) = summaries
                 .iter()
@@ -1902,7 +1914,7 @@ fn handle_wifi_route_ensure(root: &Path, args: WifiRouteEnsureArgs) -> Result<Ha
         }
     }
 
-    let gateway = interface_gateway(&target_interface)?;
+    let gateway = interface_gateway(&target_interface)?.or(dhcp_gateway);
     let mut route_set = false;
     let mut gateway_ip = None;
 
@@ -2183,6 +2195,7 @@ fn handle_wifi_scan(root: &Path, args: WifiScanArgs) -> Result<HandlerResult> {
             }
         }
     };
+    let interface = select_wifi_interface(Some(interface.trim().to_string()))?;
 
     enforce_single_interface(&interface)?;
 

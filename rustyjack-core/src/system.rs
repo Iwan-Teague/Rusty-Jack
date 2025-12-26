@@ -852,14 +852,9 @@ pub fn list_interface_summaries() -> Result<Vec<InterfaceSummary>> {
             .unwrap_or_else(|_| "unknown".into())
             .trim()
             .to_string();
-        let carrier = fs::read_to_string(entry.path().join("carrier"))
-            .unwrap_or_else(|_| "0".into())
-            .trim()
-            .to_string();
-        let ip = if oper_state == "up" && carrier == "1" {
-            interface_ipv4(&name)
-        } else {
-            None
+        let ip = match oper_state.as_str() {
+            "down" | "dormant" | "lowerlayerdown" => None,
+            _ => interface_ipv4(&name),
         };
         summaries.push(InterfaceSummary {
             name,
@@ -1504,6 +1499,13 @@ pub fn scan_wifi_networks(interface: &str) -> Result<Vec<WifiNetwork>> {
     if iwlist_check.is_err() || !iwlist_check.unwrap().status.success() {
         log::error!("iwlist not found - wireless-tools may not be installed");
         bail!("WiFi scanning requires wireless-tools package. Install with: apt-get install wireless-tools");
+    }
+
+    // Unblock rfkill if present
+    if let Ok(Some(idx)) = rfkill_find_index(interface) {
+        if let Err(e) = rfkill_unblock(idx) {
+            log::warn!("Failed to unblock rfkill for {interface}: {e}");
+        }
     }
 
     // Ensure interface is up before scanning

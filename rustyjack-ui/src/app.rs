@@ -26,7 +26,7 @@ use rustyjack_core::cli::{
     WifiProfileCommand, WifiProfileConnectArgs, WifiProfileDeleteArgs, WifiProfileSaveArgs,
     WifiRouteCommand, WifiRouteEnsureArgs, WifiScanArgs, WifiStatusArgs,
 };
-use rustyjack_core::{apply_interface_isolation, InterfaceSummary};
+use rustyjack_core::{apply_interface_isolation, ensure_default_wifi_profiles, InterfaceSummary};
 use rustyjack_encryption::{clear_encryption_key, set_encryption_key};
 use serde_json::{self, Value};
 use tempfile::{NamedTempFile, TempPath};
@@ -741,6 +741,11 @@ impl App {
         app.try_load_saved_key();
         rustyjack_encryption::set_wifi_profile_encryption(app.wifi_encryption_active());
         rustyjack_encryption::set_loot_encryption(app.loot_encryption_active());
+        if let Ok(count) = ensure_default_wifi_profiles(&app.root) {
+            if count > 0 {
+                log::info!("Seeded {} default WiFi profile(s)", count);
+            }
+        }
         Ok(app)
     }
 

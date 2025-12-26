@@ -31,8 +31,8 @@ pub use cli::{
 pub use operations::{dispatch_command, HandlerResult};
 pub use rustyjack_evasion::{logs_disabled, logs_enabled};
 pub use system::{
-    apply_interface_isolation, enforce_single_interface, is_wireless_interface, resolve_root,
-    rfkill_index_for_interface, InterfaceSummary,
+    apply_interface_isolation, enforce_single_interface, ensure_default_wifi_profiles,
+    is_wireless_interface, resolve_root, rfkill_index_for_interface, InterfaceSummary,
 };
 pub use wireless_native::{
     check_capabilities, execute_deauth_attack, execute_evil_twin, execute_karma,

@@ -356,11 +356,16 @@ impl SettingsConfig {
 impl SettingsConfig {
     fn normalize_active_interface(&mut self) -> bool {
         let iface = self.active_network_interface.trim();
-        if iface.is_empty() || !interface_exists(iface) {
+        let needs_default = iface.is_empty()
+            || iface.eq_ignore_ascii_case("auto")
+            || (iface == "eth0" && !interface_exists("eth0"));
+        if needs_default {
             let preferred = if interface_exists("eth0") {
                 "eth0".to_string()
+            } else if interface_exists("wlan0") {
+                "wlan0".to_string()
             } else {
-                self.active_network_interface.clone()
+                first_non_loopback_interface().unwrap_or_else(|| self.active_network_interface.clone())
             };
             if preferred != self.active_network_interface {
                 self.active_network_interface = preferred;
@@ -376,4 +381,15 @@ fn interface_exists(name: &str) -> bool {
         return false;
     }
     Path::new("/sys/class/net").join(name).exists()
+}
+
+fn first_non_loopback_interface() -> Option<String> {
+    let entries = fs::read_dir("/sys/class/net").ok()?;
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name != "lo" {
+            return Some(name);
+        }
+    }
+    None
 }

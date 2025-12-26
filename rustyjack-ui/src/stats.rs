@@ -253,10 +253,17 @@ fn interface_has_carrier(interface: &str) -> bool {
     if interface.is_empty() {
         return false;
     }
-    let path = format!("/sys/class/net/{}/carrier", interface);
-    fs::read_to_string(&path)
-        .map(|val| val.trim() == "1")
-        .unwrap_or(false)
+    let carrier_path = format!("/sys/class/net/{}/carrier", interface);
+    let oper_path = format!("/sys/class/net/{}/operstate", interface);
+    let oper_state = fs::read_to_string(&oper_path)
+        .unwrap_or_else(|_| "unknown".to_string())
+        .trim()
+        .to_string();
+    let oper_ready = matches!(oper_state.as_str(), "up" | "unknown");
+    match fs::read_to_string(&carrier_path) {
+        Ok(val) => val.trim() == "1" || oper_ready,
+        Err(_) => oper_ready,
+    }
 }
 
 fn interface_has_ipv4(interface: &str) -> bool {

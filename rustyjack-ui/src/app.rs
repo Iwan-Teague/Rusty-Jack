@@ -402,9 +402,15 @@ impl App {
             return false;
         }
         let carrier_path = format!("/sys/class/net/{}/carrier", interface);
+        let oper_path = format!("/sys/class/net/{}/operstate", interface);
+        let oper_state = fs::read_to_string(&oper_path)
+            .unwrap_or_else(|_| "unknown".to_string())
+            .trim()
+            .to_string();
+        let oper_ready = matches!(oper_state.as_str(), "up" | "unknown");
         match fs::read_to_string(&carrier_path) {
-            Ok(val) => val.trim() == "1",
-            Err(_) => false,
+            Ok(val) => val.trim() == "1" || oper_ready,
+            Err(_) => oper_ready,
         }
     }
 

@@ -19,8 +19,8 @@ Prebuilt sequences that chain wireless/ethernet actions. Orchestrated by `rustyj
 
 ## Dependencies
 - Wireless: `rustyjack-wireless` (nl80211, injection, capture), `rustyjack-netlink` (iface control, DHCP/DNS), `rustyjack-core` orchestration, optional `rustyjack-encryption` for loot, external adapters for monitor/injection.
-- Ethernet: `rustyjack-ethernet` for discovery/port scan/inventory, tcpdump/arp spoof/DNS spoof via core, iptables/NAT via `rustyjack-netlink`.
-- External fallbacks: `tcpdump`, `ettercap`, PHP server, depending on pipeline steps.
+- Ethernet: `rustyjack-ethernet` for discovery/port scan/inventory, Rust PCAP capture/arp spoof/DNS spoof via core, iptables/NAT via `rustyjack-netlink`.
+- External fallbacks: PHP server, depending on pipeline steps.
 
 ## Notes
 - Each step returns explicit outcomes; timeouts prevent “empty success” behavior.

@@ -1,5 +1,8 @@
 # Rustyjack External Binary Dependencies - Status
 
+> Note: Archived doc. Current builds no longer use external tcpdump, ettercap, ncat, arp-scan, or arpspoof/dsniff; references below are historical.
+
+
 ## Overview
 
 This document tracks which external system binaries Rustyjack originally depended on and which have been replaced with pure Rust implementations via the `rustyjack-netlink` crate.

@@ -93,19 +93,15 @@ pub use system::{
    - ✅ Calls `enforce_single_interface(&interface.name)`
    - ✅ Returns `"isolation_enforced": true` (implied by inclusion in verification)
 
-#### Attack Operations (2) ✅
+#### Attack Operations (1) ✅
 
-10. **`handle_responder_on`** - Line 655
-    - ✅ Calls `enforce_single_interface(&interface)`
-    - ✅ Returns `"isolation_enforced": true`
-
-11. **`handle_mitm_start`** - Line 704
+10. **`handle_mitm_start`** - Line 704
     - ✅ Calls `enforce_single_interface(&interface_info.name)`
     - ✅ Returns `"isolation_enforced": true`
 
 #### Multi-Interface Operations (1) ✅
 
-12. **`handle_hotspot_start`** - Line 474
+11. **`handle_hotspot_start`** - Line 474
     - ✅ Calls `apply_interface_isolation(&allowed_interfaces)`
     - ✅ Whitelists: `[ap_interface, upstream_interface]`
     - ✅ Returns `"isolation_enforced": true`
@@ -168,7 +164,6 @@ use rustyjack_core::{
 - operations.rs enforce_single_interface calls:
   - Line 86 (validate_and_enforce_interface helper)
   - Line 196 (eth_discover)
-  - Line 655 (responder)
   - Line 704 (mitm)
   - Line 1052 (recon_gateway)
   - Line 1081 (recon_arp_scan)
@@ -195,7 +190,6 @@ use rustyjack_core::{
 ✅ **WiFi Recon Gateway** - Only selected wireless interface active
 ✅ **WiFi Recon ARP Scan** - Only selected wireless interface active
 ✅ **Ethernet Discover** - Only selected ethernet interface active
-✅ **Responder** - Only selected interface active
 ✅ **MITM** - Only selected interface active
 
 ### Multi-Interface Exception:

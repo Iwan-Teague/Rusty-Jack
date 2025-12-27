@@ -1,6 +1,6 @@
 use std::{fs, path::Path, process::Command, thread, time::Duration};
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{anyhow, Context, Result};
 use log::{debug, info, warn};
 use rand::Rng;
 use serde::{Deserialize, Serialize};

@@ -156,7 +156,6 @@ Hardware detection helps plan bridge configurations:
 Know your hardware before launching:
 - **MITM** - Verify active interface
 - **DNS Spoof** - Check target interface
-- **Responder** - Ensure interface is up
 
 ## Troubleshooting
 

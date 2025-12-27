@@ -228,6 +228,78 @@ pub fn quick_port_scan(
     })
 }
 
+/// Perform a TCP connect scan bound to a specific source IP.
+/// Useful for matching Nmap-style `-S` behavior on multi-homed systems.
+pub fn quick_port_scan_with_source(
+    target: Ipv4Addr,
+    ports: &[u16],
+    timeout: Duration,
+    source_ip: Ipv4Addr,
+    capture_banners: bool,
+) -> Result<PortScanResult> {
+    let mut open = Vec::new();
+    let mut banners = Vec::new();
+    for port in ports {
+        let addr = SocketAddr::new(target.into(), *port);
+        let stream = connect_with_source(addr, source_ip, timeout)
+            .or_else(|_| TcpStream::connect_timeout(&addr, timeout));
+        if let Ok(stream) = stream {
+            stream.set_read_timeout(Some(DEFAULT_BANNER_READ)).ok();
+            stream.set_write_timeout(Some(DEFAULT_CONNECT_TIMEOUT)).ok();
+            open.push(*port);
+            if capture_banners {
+                if let Some(info) = grab_banner(stream, *port) {
+                    banners.push(info);
+                }
+            }
+        }
+    }
+
+    Ok(PortScanResult {
+        target,
+        open_ports: open,
+        banners,
+    })
+}
+
+/// Connect to a TCP endpoint, optionally binding to a specific IPv4 source.
+pub fn connect_tcp_with_source(
+    addr: SocketAddr,
+    source_ip: Option<Ipv4Addr>,
+    timeout: Duration,
+) -> Result<TcpStream> {
+    match (addr, source_ip) {
+        (SocketAddr::V4(_), Some(source_ip)) => {
+            let socket = Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP))
+                .context("creating TCP socket")?;
+            let bind_addr = SocketAddr::new(source_ip.into(), 0);
+            socket
+                .bind(&socket2::SockAddr::from(bind_addr))
+                .context("binding TCP socket to source")?;
+            socket
+                .connect_timeout(&socket2::SockAddr::from(addr), timeout)
+                .context("connecting TCP socket")?;
+            Ok(socket.into())
+        }
+        _ => TcpStream::connect_timeout(&addr, timeout).context("connecting TCP stream"),
+    }
+}
+
+fn connect_with_source(
+    addr: SocketAddr,
+    source_ip: Ipv4Addr,
+    timeout: Duration,
+) -> io::Result<TcpStream> {
+    let socket = Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP))?;
+    let bind_addr = SocketAddr::new(source_ip.into(), 0);
+    socket.bind(&socket2::SockAddr::from(bind_addr))?;
+    socket.connect_timeout(&socket2::SockAddr::from(addr), timeout)?;
+    let stream: TcpStream = socket.into();
+    stream.set_read_timeout(Some(DEFAULT_BANNER_READ)).ok();
+    stream.set_write_timeout(Some(DEFAULT_CONNECT_TIMEOUT)).ok();
+    Ok(stream)
+}
+
 fn checksum(data: &[u8]) -> u16 {
     let mut sum = 0u32;
     let mut chunks = data.chunks_exact(2);

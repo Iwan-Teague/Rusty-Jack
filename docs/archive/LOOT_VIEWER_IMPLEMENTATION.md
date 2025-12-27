@@ -1,5 +1,8 @@
 # Loot Viewer Implementation - Scrollable File Browser
 
+> Note: Archived doc. Current builds no longer use external tcpdump, ettercap, ncat, arp-scan, or arpspoof/dsniff; references below are historical.
+
+
 ## Overview
 This implementation replaces the static Loot section with an interactive, scrollable file viewer that allows users to browse and read captured loot files directly on the device's small display.
 
@@ -7,14 +10,14 @@ This implementation replaces the static Loot section with an interactive, scroll
 
 ### Previous Behavior
 1. User navigated to Loot menu
-2. Selected category (Nmap/Responder/DNSSpoof)
+2. Selected category (Nmap/DNSSpoof)
 3. Saw a list of files (one at a time via up/down navigation)
 4. Selected a file
 5. Viewed entire file content in a **static dialog** (no scrolling, limited to ~6 visible lines)
 
 ### New Behavior
 1. User navigates to Loot menu
-2. Selects category (Nmap/Responder/DNSSpoof)
+2. Selects category (Nmap/DNSSpoof)
 3. **Immediately sees a browsable file list** (navigates with up/down buttons)
 4. Selects a file to view
 5. **Opens scrollable viewer** with:

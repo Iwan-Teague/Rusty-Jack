@@ -1,5 +1,8 @@
 # app.rs Refactoring Plan
 
+> Note: Archived doc. Current builds no longer use external tcpdump, ettercap, ncat, arp-scan, or arpspoof/dsniff; references below are historical.
+
+
 ## Current State
 - **Total Lines**: 9,303 lines
 - **Location**: `rustyjack-ui/src/app.rs`
@@ -58,8 +61,6 @@ Functions for LAN reconnaissance:
 Functions for man-in-the-middle attacks:
 - `start_dns_spoof()` - Start DNS spoofing
 - `stop_dns_spoof()` - Stop DNS spoofing
-- `start_responder()` - Start Responder
-- `stop_responder()` - Stop Responder
 - `launch_reverse_shell()` - Launch reverse shell
 - MITM session management
 

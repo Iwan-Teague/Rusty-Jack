@@ -138,8 +138,8 @@ PACKAGES=(
   build-essential pkg-config libssl-dev
   # DKMS for WiFi driver compilation (kernel headers added separately, best-effort)
   dkms bc libelf-dev
-  # network / offensive tools (nmap, tcpdump, etc. still useful for advanced operations)
-  nmap ncat tcpdump dsniff ettercap-text-only php
+  # network / offensive tools (used for advanced operations)
+  php
   # WiFi interface tools
   # - wpasupplicant: provides wpa_supplicant daemon and wpa_cli for WPA auth fallback
   # - network-manager: provides NetworkManager daemon for D-Bus WiFi management (nmcli not used - we use D-Bus directly)
@@ -342,7 +342,7 @@ fi
 step "Setting up WiFi attack environment..."
 
 # Create loot directories
-sudo mkdir -p "$PROJECT_ROOT/loot"/{Wireless,Ethernet,reports}
+sudo mkdir -p "$PROJECT_ROOT/loot"/{Wireless,Ethernet,Scan,reports}
 sudo chmod -R 755 "$PROJECT_ROOT/loot"
 
 # Create WiFi profiles directory

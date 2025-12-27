@@ -1,5 +1,8 @@
 # Rustyjack-Netlink Crate - Complete Reference
 
+> Note: Archived doc. Current builds no longer use external tcpdump, ettercap, ncat, arp-scan, or arpspoof/dsniff; references below are historical.
+
+
 ## Overview
 
 The `rustyjack-netlink` crate is a comprehensive pure-Rust networking library that provides all core networking functionality for Rustyjack without external binary dependencies. It replaces 11 system binaries with native Rust implementations using Linux kernel APIs.

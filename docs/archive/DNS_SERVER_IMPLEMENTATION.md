@@ -1,5 +1,8 @@
 # DNS Server Implementation - Complete
 
+> Note: Archived doc. Current builds no longer use external tcpdump, ettercap, ncat, arp-scan, or arpspoof/dsniff; references below are historical.
+
+
 ## ✅ Implementation Summary
 
 **Module:** `rustyjack-netlink/src/dns_server.rs`  

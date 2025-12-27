@@ -1,5 +1,8 @@
 # Loot Viewer Architecture Diagram
 
+> Note: Archived doc. Current builds no longer use external tcpdump, ettercap, ncat, arp-scan, or arpspoof/dsniff; references below are historical.
+
+
 ## Before vs After Comparison
 
 ### BEFORE - Static File Viewer
@@ -10,7 +13,7 @@ Main Menu
     ↓
 [Select Category]
     ↓
-Nmap/Responder/DNSSpoof
+Nmap/DNSSpoof
     ↓
 [One file shown at a time]
 UP/DOWN cycles through filenames
@@ -41,7 +44,7 @@ Main Menu
     ↓
 [Select Category]
     ↓
-Nmap/Responder/DNSSpoof
+Nmap/DNSSpoof
     ↓
 ┌─────────────────────────┐
 │ Loot files              │
@@ -140,7 +143,7 @@ BACK exits to Main Menu
 │   Category  │
 │   Selector  │
 └──────┬──────┘
-       │ Select category (Nmap/Responder/DNSSpoof)
+       │ Select category (Nmap/DNSSpoof)
        ↓
 ┌─────────────────┐
 │  File Browser   │◄────────────┐

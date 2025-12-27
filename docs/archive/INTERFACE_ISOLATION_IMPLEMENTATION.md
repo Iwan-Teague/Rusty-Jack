@@ -69,7 +69,6 @@ Added helper functions:
 - `handle_eth_discover` - Enforces isolation before host discovery
 
 **Network Attack Operations:**
-- `handle_responder_on` - Enforces isolation before starting Responder
 - `handle_mitm_start` - Enforces isolation before MITM attack
 
 **Hotspot (Multi-Interface Exception):**
@@ -180,14 +179,13 @@ The implementation ensures:
 ### Ethernet Operations (1)
 - Ethernet Discover
 
-### Attack Operations (2)
-- Responder
+### Attack Operations (1)
 - MITM
 
 ### Multi-Interface Operations (1)
 - Hotspot (properly whitelists 2 interfaces)
 
-### Total Operations Enforcing Isolation: 12
+### Total Operations Enforcing Isolation: 11
 
 ## Security Implications
 

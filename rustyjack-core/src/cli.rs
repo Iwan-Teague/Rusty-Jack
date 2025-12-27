@@ -42,8 +42,6 @@ pub enum Commands {
     #[command(subcommand)]
     Wifi(WifiCommand),
     #[command(subcommand)]
-    Responder(ResponderCommand),
-    #[command(subcommand)]
     Mitm(MitmCommand),
     #[command(subcommand)]
     DnsSpoof(DnsSpoofCommand),
@@ -192,7 +190,7 @@ pub struct ScanRunArgs {
     #[arg(long)]
     pub label: String,
 
-    /// Individual nmap arguments (repeat for each entry, e.g., --nmap-arg -sV)
+    /// Legacy Nmap-compatible flags (subset supported). Repeat for each entry, e.g., --nmap-arg -sV
     #[arg(long = "nmap-arg")]
     pub nmap_args: Vec<String>,
 
@@ -211,6 +209,58 @@ pub struct ScanRunArgs {
     /// Disable Discord notifications for this run
     #[arg(long = "no-discord")]
     pub no_discord: bool,
+
+    /// Explicit ports to scan (comma-separated, supports ranges like 80,443,8000-8100)
+    #[arg(long)]
+    pub ports: Option<String>,
+
+    /// Limit scan to the top N ports from the built-in list (default: all)
+    #[arg(long)]
+    pub top_ports: Option<usize>,
+
+    /// Timeout per TCP connect in milliseconds
+    #[arg(long, default_value_t = 500)]
+    pub timeout_ms: u64,
+
+    /// Host discovery mode (icmp/arp/both/none)
+    #[arg(long, value_enum, default_value_t = ScanDiscovery::Both)]
+    pub discovery: ScanDiscovery,
+
+    /// Skip host discovery and assume targets are up (equivalent to Nmap -Pn)
+    #[arg(long)]
+    pub no_discovery: bool,
+
+    /// Skip port scan and only perform host discovery (equivalent to Nmap -sn)
+    #[arg(long)]
+    pub no_port_scan: bool,
+
+    /// Enable service/version detection (Nmap -sV compatible behavior)
+    #[arg(long)]
+    pub service_detect: bool,
+
+    /// Enable OS guess output (Nmap -O compatible behavior)
+    #[arg(long)]
+    pub os_detect: bool,
+
+    /// Number of worker threads for port scanning
+    #[arg(long, default_value_t = 4)]
+    pub workers: usize,
+
+    /// Maximum number of hosts to scan (safety cap for large CIDRs)
+    #[arg(long)]
+    pub max_hosts: Option<usize>,
+
+    /// ARP rate limit in packets per second (local discovery)
+    #[arg(long)]
+    pub arp_rate_pps: Option<u32>,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub enum ScanDiscovery {
+    Icmp,
+    Arp,
+    Both,
+    None,
 }
 
 #[derive(Subcommand, Debug)]
@@ -251,23 +301,8 @@ pub struct DiscordSendArgs {
 }
 
 #[derive(Subcommand, Debug)]
-pub enum ResponderCommand {
-    /// Start Responder on the requested/auto interface
-    On(ResponderArgs),
-    /// Stop any running Responder instance
-    Off,
-}
-
-#[derive(Args, Debug)]
-pub struct ResponderArgs {
-    /// Optional interface override
-    #[arg(long)]
-    pub interface: Option<String>,
-}
-
-#[derive(Subcommand, Debug)]
 pub enum MitmCommand {
-    /// Launch ARP spoof + tcpdump capture
+    /// Launch ARP spoof + packet capture
     Start(MitmStartArgs),
     /// Stop running MITM/sniff processes
     Stop,
@@ -663,8 +698,8 @@ pub enum LootCommand {
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
 pub enum LootKind {
-    Nmap,
-    Responder,
+    #[value(alias = "nmap")]
+    Scan,
     Dnsspoof,
     Ethernet,
     /// Wireless attack captures (deauth, handshakes, etc.)
@@ -726,7 +761,7 @@ pub enum HardwareCommand {
 
 #[derive(Subcommand, Debug)]
 pub enum ReverseCommand {
-    /// Launch a reverse shell via ncat
+    /// Launch a reverse shell via Rust TCP
     Launch(ReverseLaunchArgs),
 }
 

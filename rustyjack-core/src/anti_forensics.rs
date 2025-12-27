@@ -274,7 +274,6 @@ pub fn perform_complete_purge(root: &Path) -> PurgeReport {
 
     let data_paths = [
         root.join("loot"),
-        root.join("Responder"),
         root.join("wifi"),
         root.join("scripts"),
         root.join("target"),
@@ -698,7 +697,7 @@ pub fn verify_clean() -> Result<Vec<String>> {
     let output = Command::new("ps").args(["aux"]).output()?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    if stdout.contains("rustyjack") || stdout.contains("arpspoof") {
+    if stdout.contains("rustyjack") {
         artifacts.push("Suspicious processes found".to_string());
     }
 

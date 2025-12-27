@@ -1,5 +1,8 @@
 # DNS Server Implementation - COMPLETE ✅
 
+> Note: Archived doc. Current builds no longer use external tcpdump, ettercap, ncat, arp-scan, or arpspoof/dsniff; references below are historical.
+
+
 ## 📋 Summary
 
 Successfully implemented a complete DNS server in pure Rust to replace `dnsmasq` DNS functionality in the Rustyjack project.

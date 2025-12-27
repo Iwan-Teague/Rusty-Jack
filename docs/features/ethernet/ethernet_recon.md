@@ -10,7 +10,7 @@ LAN discovery, port scanning, inventory, and credential capture pipelines for wi
 
 ## Dependencies
 - `rustyjack-ethernet` for ICMP/ARP discovery, port scan, multicast probes.
-- `rustyjack-netlink` for interface control/NAT when needed; tcpdump/ettercap/PHP used in pipelines.
+- `rustyjack-netlink` for interface control/NAT when needed; Rust PCAP capture/PHP used in pipelines.
 - Root/CAP_NET_RAW required for ICMP/ARP.
 
 ## Loot/outputs

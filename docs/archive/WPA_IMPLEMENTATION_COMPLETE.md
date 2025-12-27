@@ -1,5 +1,8 @@
 # WPA Supplicant Implementation Complete
 
+> Note: Archived doc. Current builds no longer use external tcpdump, ettercap, ncat, arp-scan, or arpspoof/dsniff; references below are historical.
+
+
 ## Overview
 
 Successfully implemented pure Rust WPA supplicant functionality in `rustyjack-netlink`, eliminating the need for external `wpa_cli` and `wpa_supplicant` process calls throughout the Rustyjack codebase.

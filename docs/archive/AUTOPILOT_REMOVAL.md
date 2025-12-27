@@ -1,7 +1,10 @@
 # Autopilot Feature Removal
 
+> Note: Archived doc. Current builds no longer use external tcpdump, ettercap, ncat, arp-scan, or arpspoof/dsniff; references below are historical.
+
+
 ## Summary
-Removed the deprecated autopilot feature from Rustyjack. This was an older automated attack orchestration system that relied on third-party tools (nmap, arpspoof, tcpdump, Responder, ettercap, php) which we no longer need given our in-house Rust implementations.
+Removed the deprecated autopilot feature from Rustyjack. This was an older automated attack orchestration system that relied on third-party tools (nmap, arpspoof, tcpdump, ettercap, php) which we no longer need given our in-house Rust implementations.
 
 ## Files Removed
 - `rustyjack-core/src/autopilot.rs` - Complete autopilot engine implementation
@@ -54,7 +57,7 @@ Removed the deprecated autopilot feature from Rustyjack. This was an older autom
   - Setting of `autopilot_running` and `autopilot_mode` fields
 
 ## Rationale
-The autopilot feature was built for an earlier version of Rustyjack that depended on external tools like nmap, arpspoof, Responder.py, ettercap, and PHP. With our comprehensive in-house Rust implementations via:
+The autopilot feature was built for an earlier version of Rustyjack that depended on external tools like nmap, arpspoof, ettercap, and PHP. With our comprehensive in-house Rust implementations via:
 - `rustyjack-netlink` (replaces ip, iw, nmcli, rfkill, hostapd, iptables, pgrep/pkill)
 - `rustyjack-ethernet` (native ARP, DHCP client/server, DNS server)
 - `rustyjack-wireless` (native 802.11 operations)
@@ -64,7 +67,7 @@ The autopilot feature was built for an earlier version of Rustyjack that depende
 ## No Breaking Changes
 This removal does not affect:
 - Attack pipelines (PipelineType) which remain intact
-- Individual attack features (MITM, DNS spoof, Responder, etc.)
+- Individual attack features (MITM, DNS spoof, etc.)
 - Ethernet reconnaissance and offensive capabilities
 - Wireless attack workflows
 

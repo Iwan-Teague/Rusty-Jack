@@ -1,6 +1,6 @@
 use std::{fs, path::Path, process::Command, thread, time::Duration};
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, Result};
 use log::{debug, info};
 use regex::Regex;
 use serde::{Deserialize, Serialize};

@@ -1,5 +1,8 @@
 # Pipeline Indefinite Mode Fix
 
+> Note: Archived doc. Current builds no longer use external tcpdump, ettercap, ncat, arp-scan, or arpspoof/dsniff; references below are historical.
+
+
 ## Problem Analysis
 
 The "Get WiFi Password" pipeline had a critical bug in **Indefinite Mode** that caused it to:

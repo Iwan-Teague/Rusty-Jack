@@ -44,9 +44,6 @@ pub enum MenuAction {
     ReconDnsCapture,
     ManageSavedNetworks,
     /// Post-connection wireless offensive actions
-    ResponderOn,
-    ResponderOff,
-    ToggleResponder,
     DnsSpoofStart,
     DnsSpoofStop,
     ToggleDnsSpoof,
@@ -312,7 +309,6 @@ fn wifi_connected_recon_menu() -> Vec<MenuEntry> {
 
 fn wifi_connected_offence_menu() -> Vec<MenuEntry> {
     vec![
-        MenuEntry::new("Responder [OFF]", MenuAction::ToggleResponder),
         MenuEntry::new("DNS Spoof [OFF]", MenuAction::ToggleDnsSpoof),
         MenuEntry::new("Reverse Shell", MenuAction::ReverseShell),
     ]

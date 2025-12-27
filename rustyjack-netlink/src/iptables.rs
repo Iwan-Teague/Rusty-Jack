@@ -602,6 +602,45 @@ impl IptablesManager {
         self.add_rule(&rule)
     }
 
+    /// Add UDP DNAT rule to redirect traffic to a different destination
+    pub fn add_dnat_udp(
+        &self,
+        in_iface: &str,
+        dst_port: u16,
+        to_addr: &str,
+        to_port: u16,
+    ) -> Result<()> {
+        log::info!(
+            "Adding UDP DNAT rule: {}:{} -> {}:{} on {}",
+            dst_port,
+            to_addr,
+            to_port,
+            in_iface,
+            dst_port
+        );
+
+        let addr: IpAddr = to_addr
+            .parse()
+            .map_err(|_| IptablesError::InvalidAddress(to_addr.to_string()))?;
+
+        let rule = Self::with_visibility(
+            Rule::new(
+                Table::Nat,
+                Chain::Prerouting,
+                Target::Dnat {
+                    to: addr,
+                    port: Some(to_port),
+                },
+            )
+            .in_interface(in_iface)
+            .protocol(Protocol::Udp)
+            .dst_port(dst_port),
+            &format!("dnat udp {}:{}->{}:{}", in_iface, dst_port, to_addr, to_port),
+        );
+
+        self.add_rule(&rule)
+    }
+
     /// Remove DNAT rule
     pub fn delete_dnat(
         &self,
@@ -631,6 +670,40 @@ impl IptablesManager {
         )
         .in_interface(in_iface)
         .protocol(Protocol::Tcp)
+        .dst_port(dst_port);
+
+        self.delete_rule(&rule)
+    }
+
+    /// Remove UDP DNAT rule
+    pub fn delete_dnat_udp(
+        &self,
+        in_iface: &str,
+        dst_port: u16,
+        to_addr: &str,
+        to_port: u16,
+    ) -> Result<()> {
+        log::info!(
+            "Removing UDP DNAT rule: {}:{} on {}",
+            to_addr,
+            to_port,
+            in_iface
+        );
+
+        let addr: IpAddr = to_addr
+            .parse()
+            .map_err(|_| IptablesError::InvalidAddress(to_addr.to_string()))?;
+
+        let rule = Rule::new(
+            Table::Nat,
+            Chain::Prerouting,
+            Target::Dnat {
+                to: addr,
+                port: Some(to_port),
+            },
+        )
+        .in_interface(in_iface)
+        .protocol(Protocol::Udp)
         .dst_port(dst_port);
 
         self.delete_rule(&rule)

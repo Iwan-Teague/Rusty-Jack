@@ -21,8 +21,8 @@ use rustyjack_core::cli::{
     Commands, DiscordCommand, DiscordSendArgs, DnsSpoofCommand, DnsSpoofStartArgs, EthernetCommand,
     EthernetDiscoverArgs, EthernetInventoryArgs, EthernetPortScanArgs, EthernetSiteCredArgs,
     HardwareCommand, HotspotCommand, HotspotStartArgs, LootCommand, LootReadArgs, MitmCommand,
-    MitmStartArgs, NotifyCommand, ResponderArgs, ResponderCommand, ReverseCommand,
-    ReverseLaunchArgs, SystemCommand, WifiCommand, WifiDeauthArgs, WifiDisconnectArgs,
+    MitmStartArgs, NotifyCommand, ReverseCommand, ReverseLaunchArgs, SystemCommand, WifiCommand,
+    WifiDeauthArgs, WifiDisconnectArgs,
     WifiProfileCommand, WifiProfileConnectArgs, WifiProfileDeleteArgs, WifiProfileSaveArgs,
     WifiRouteCommand, WifiRouteEnsureArgs, WifiScanArgs, WifiStatusArgs,
 };
@@ -923,15 +923,9 @@ impl App {
                     };
                     entry.label = format!("WiFi Profiles [{}]", state);
                 }
-                MenuAction::ToggleResponder => {
-                    use rustyjack_core::system::process_running_pattern;
-                    let is_running = process_running_pattern("Responder.py").unwrap_or(false);
-                    let state = if is_running { "ON" } else { "OFF" };
-                    entry.label = format!("Responder [{}]", state);
-                }
                 MenuAction::ToggleDnsSpoof => {
-                    use rustyjack_core::system::process_running_exact;
-                    let is_running = process_running_exact("ettercap").unwrap_or(false);
+                    use rustyjack_core::system::dns_spoof_running;
+                    let is_running = dns_spoof_running();
                     let state = if is_running { "ON" } else { "OFF" };
                     entry.label = format!("DNS Spoof [{}]", state);
                 }
@@ -1025,9 +1019,6 @@ impl App {
             MenuAction::ReconMdnsScan => self.recon_mdns_scan()?,
             MenuAction::ReconBandwidth => self.recon_bandwidth()?,
             MenuAction::ReconDnsCapture => self.recon_dns_capture()?,
-            MenuAction::ResponderOn => self.start_responder()?,
-            MenuAction::ResponderOff => self.stop_responder()?,
-            MenuAction::ToggleResponder => self.toggle_responder()?,
             MenuAction::DnsSpoofStart => self.start_dns_spoof()?,
             MenuAction::DnsSpoofStop => self.stop_dns_spoof()?,
             MenuAction::ToggleDnsSpoof => self.toggle_dns_spoof()?,
@@ -2988,10 +2979,7 @@ impl App {
             }
         }
 
-        let targets = vec![
-            self.root.join("loot"),
-            self.root.join("Responder").join("logs"),
-        ];
+        let targets = vec![self.root.join("loot")];
         let mut files = Vec::new();
 
         for dir in targets {
@@ -3911,9 +3899,8 @@ Do not remove power/USB",
         };
 
         let loot_dir = self.root.join("loot");
-        let responder_logs = self.root.join("Responder").join("logs");
 
-        if !loot_dir.exists() && !responder_logs.exists() {
+        if !loot_dir.exists() {
             self.show_message("USB Transfer", ["No loot to transfer"])?;
             return Ok(());
         }
@@ -3928,15 +3915,6 @@ Do not remove power/USB",
                 }
             }
         }
-        if responder_logs.exists() {
-            for entry in WalkDir::new(&responder_logs) {
-                let entry = entry?;
-                if entry.file_type().is_file() {
-                    files.push(entry.path().to_path_buf());
-                }
-            }
-        }
-
         if files.is_empty() {
             self.show_message("USB Transfer", ["No files to transfer"])?;
             return Ok(());
@@ -3961,12 +3939,6 @@ Do not remove power/USB",
             let dest = if file_path.starts_with(&loot_dir) {
                 let rel = file_path.strip_prefix(&loot_dir).unwrap_or(file_path);
                 usb_path.join("Rustyjack_Loot").join("loot").join(rel)
-            } else if file_path.starts_with(&responder_logs) {
-                let rel = file_path.strip_prefix(&responder_logs).unwrap_or(file_path);
-                usb_path
-                    .join("Rustyjack_Loot")
-                    .join("ResponderLogs")
-                    .join(rel)
             } else {
                 continue;
             };
@@ -4447,12 +4419,6 @@ Do not remove power/USB",
             let mut zip = ZipWriter::new(&mut temp);
             let options = FileOptions::default().compression_method(CompressionMethod::Deflated);
             self.add_directory_to_zip(&mut zip, &self.root.join("loot"), "loot/", options.clone())?;
-            self.add_directory_to_zip(
-                &mut zip,
-                &self.root.join("Responder").join("logs"),
-                "ResponderLogs/",
-                options,
-            )?;
             zip.finish()?;
         }
         let temp_path = temp.into_temp_path();
@@ -4771,75 +4737,10 @@ Do not remove power/USB",
         Ok(())
     }
 
-    fn start_responder(&mut self) -> Result<()> {
-        let Some(iface) = self.require_connected_wireless("Responder")? else {
-            return Ok(());
-        };
-
-        self.show_message(
-            "Responder",
-            [
-                "Listens on this network",
-                "for LLMNR/NBT/MDNS and",
-                "captures hashes/creds.",
-                "",
-                "Press Start to launch.",
-                "Stop via Responder Off.",
-            ],
-        )?;
-        let confirm = self.choose_from_list(
-            "Start Responder?",
-            &["Start".to_string(), "Cancel".to_string()],
-        )?;
-        if confirm != Some(0) {
-            return Ok(());
-        }
-
-        let args = ResponderArgs {
-            interface: Some(iface.clone()),
-        };
-        match self
-            .core
-            .dispatch(Commands::Responder(ResponderCommand::On(args)))
-        {
-            Ok((msg, _)) => self.show_message(
-                "Responder",
-                [
-                    msg,
-                    format!("Interface: {}", iface),
-                    "Loot: Responder/logs".to_string(),
-                ],
-            ),
-            Err(e) => self.show_message("Responder", [format!("Start failed: {}", e)]),
-        }
-    }
-
-    fn stop_responder(&mut self) -> Result<()> {
-        match self
-            .core
-            .dispatch(Commands::Responder(ResponderCommand::Off))
-        {
-            Ok((msg, _)) => self.show_message("Responder", [msg]),
-            Err(e) => self.show_message("Responder", [format!("Stop failed: {}", e)]),
-        }
-    }
-
-    fn toggle_responder(&mut self) -> Result<()> {
-        // Check current status
-        use rustyjack_core::system::process_running_pattern;
-        let is_running = process_running_pattern("Responder.py").unwrap_or(false);
-
-        if is_running {
-            self.stop_responder()
-        } else {
-            self.start_responder()
-        }
-    }
-
     fn toggle_dns_spoof(&mut self) -> Result<()> {
         // Check current status
-        use rustyjack_core::system::process_running_exact;
-        let is_running = process_running_exact("ettercap").unwrap_or(false);
+        use rustyjack_core::system::dns_spoof_running;
+        let is_running = dns_spoof_running();
 
         if is_running {
             self.stop_dns_spoof()
@@ -5393,7 +5294,7 @@ Do not remove power/USB",
                 [
                     "Passively capture DNS",
                     "queries on the network",
-                    "using tcpdump.",
+                    "using packet capture.",
                     "",
                     &format!("Interface: {}", iface),
                     "Duration: 30 seconds",
@@ -5439,7 +5340,7 @@ Do not remove power/USB",
                         if queries.is_empty() {
                             lines.push("No DNS queries captured".to_string());
                             lines.push("".to_string());
-                            lines.push("Note: Requires tcpdump".to_string());
+                            lines.push("Note: Requires capture support".to_string());
                         } else {
                             lines.push("Captured Domains:".to_string());
                             lines.push("".to_string());
@@ -10953,10 +10854,8 @@ Do not remove power/USB",
             return;
         }
 
-        // Responder/DNS spoof/reverse shell context
-        let responder_logs = self.root.join("Responder").join("logs");
+        // DNS spoof/reverse shell context
         let dnsspoof_caps = self.root.join("DNSSpoof").join("captures");
-        let responder_present = dir_has_files(&responder_logs);
         let dnsspoof_present = dir_has_files(&dnsspoof_caps);
         let (reverse_shells, bridge_events, payload_samples) = self.summarize_payload_activity();
         let bridge_pcaps = self.count_bridge_pcaps();
@@ -10971,13 +10870,6 @@ Do not remove power/USB",
         } else {
             lines.push("Captures: none found".to_string());
             next_steps.push("Attempt handshake/PMKID capture to obtain credentials.".to_string());
-        }
-
-        // Responder loot summary
-        if responder_present {
-            lines.push("Responder loot present".to_string());
-            insights.push("Responder/hash capture available; attempt cracking/relay.".to_string());
-            next_steps.push("Review Responder/logs for captured hashes/creds.".to_string());
         }
 
         // DNS spoof captures
@@ -11071,13 +10963,8 @@ Do not remove power/USB",
             summary.push(format!("MAC entries: {}", mac_count));
         }
 
-        let responder_logs = self.root.join("Responder").join("logs");
         let dnsspoof_caps = self.root.join("DNSSpoof").join("captures");
-        let responder_present = dir_has_files(&responder_logs);
         let dnsspoof_present = dir_has_files(&dnsspoof_caps);
-        if responder_present {
-            summary.push("Responder loot captured".to_string());
-        }
         if dnsspoof_present {
             summary.push("DNS spoof captures present".to_string());
         }
@@ -11100,21 +10987,9 @@ Do not remove power/USB",
                 );
             }
         }
-        if handshake_count > 0 && responder_present {
-            insights.push(
-                "Wireless captures + Responder hashes collected; prioritize credential cracking."
-                    .to_string(),
-            );
-        }
         if dnsspoof_present && handshake_count == 0 {
             next_steps.push(
                 "DNS spoof run captured visits; follow up with wireless capture/handshake if needed."
-                    .to_string(),
-            );
-        }
-        if dnsspoof_present && !responder_present {
-            next_steps.push(
-                "Pair DNS spoof with Responder to harvest NTLM/HTTP credentials during portal use."
                     .to_string(),
             );
         }
@@ -11878,7 +11753,7 @@ Do not remove power/USB",
 
     fn purge_logs(&mut self) -> Result<()> {
         let root = self.root.clone();
-        let bases = vec![root.join("loot"), root.join("Responder").join("logs")];
+        let bases = vec![root.join("loot")];
 
         // Collect candidates first for confirmation
         let mut candidates = Vec::new();

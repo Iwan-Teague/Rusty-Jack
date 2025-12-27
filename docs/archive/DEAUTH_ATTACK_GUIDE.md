@@ -1,5 +1,8 @@
 # Deauthentication Attack Implementation Guide
 
+> Note: Archived doc. Current builds no longer use external tcpdump, ettercap, ncat, arp-scan, or arpspoof/dsniff; references below are historical.
+
+
 ## Overview
 
 This document explains how deauthentication attacks work, the **native Rust implementation** in RustyJack using `rustyjack-wireless`, hardware requirements, and technical details.

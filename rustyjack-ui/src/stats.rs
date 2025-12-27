@@ -1,5 +1,7 @@
 use std::{
     fs,
+    fs::OpenOptions,
+    io::Write,
     path::Path,
     process::Command,
     sync::{
@@ -11,6 +13,7 @@ use std::{
 };
 
 use anyhow::Result;
+use chrono::Local;
 use rustyjack_core::cli::{
     HotspotCommand, StatusCommand, WifiCommand, WifiRouteCommand, WifiRouteEnsureArgs,
 };
@@ -156,12 +159,17 @@ fn enforce_isolation_watchdog(core: &CoreBridge, root: &Path) -> Result<()> {
             allow_list.sort();
             allow_list.dedup();
             if allow_list.is_empty() {
-                log_isolation_state("hotspot", &allow_list);
+                log_watchdog_event(
+                    root,
+                    "hotspot running but no valid interfaces in allow list",
+                );
+                log_isolation_state(root, "hotspot", &allow_list);
                 return Ok(());
             }
 
+            log_watchdog_mismatches(root, &allow_list);
             apply_interface_isolation(&allow_list)?;
-            log_isolation_state("hotspot", &allow_list);
+            log_isolation_state(root, "hotspot", &allow_list);
             if let Some(up) = hs_data
                 .get("upstream_interface")
                 .and_then(|v| v.as_str())
@@ -180,11 +188,15 @@ fn enforce_isolation_watchdog(core: &CoreBridge, root: &Path) -> Result<()> {
     } else if interface_exists(&active_iface) {
         allow_list.push(active_iface.clone());
     } else {
+        log_watchdog_event(
+            root,
+            &format!("active interface {} not found; skipping isolation", active_iface),
+        );
         eprintln!(
             "[isolation] active interface {} not found; skipping enforcement",
             active_iface
         );
-        log_isolation_state("skipped", &[]);
+        log_isolation_state(root, "skipped", &[]);
         return Ok(());
     }
 
@@ -194,12 +206,13 @@ fn enforce_isolation_watchdog(core: &CoreBridge, root: &Path) -> Result<()> {
     allow_list.retain(|s| interface_exists(s));
 
     if allow_list.is_empty() {
-        log_isolation_state("single", &allow_list);
+        log_isolation_state(root, "single", &allow_list);
         return Ok(());
     }
 
+    log_watchdog_mismatches(root, &allow_list);
     apply_interface_isolation(&allow_list)?;
-    log_isolation_state("single", &allow_list);
+    log_isolation_state(root, "single", &allow_list);
     if let Some(primary) = allow_list.first() {
         maybe_ensure_wired_dhcp(core, primary)?;
     }
@@ -211,12 +224,15 @@ fn maybe_ensure_wired_dhcp(core: &CoreBridge, interface: &str) -> Result<()> {
         return Ok(());
     }
     if interface_is_wireless(interface) {
+        log::debug!("[ROUTE] Skip DHCP ensure on wireless interface {}", interface);
         return Ok(());
     }
     if !interface_has_carrier(interface) {
+        log::debug!("[ROUTE] Skip DHCP ensure on {} (no carrier)", interface);
         return Ok(());
     }
     if interface_has_ipv4(interface) {
+        log::debug!("[ROUTE] Skip DHCP ensure on {} (IPv4 already assigned)", interface);
         return Ok(());
     }
 
@@ -226,10 +242,12 @@ fn maybe_ensure_wired_dhcp(core: &CoreBridge, interface: &str) -> Result<()> {
         .as_secs();
     let last = LAST_DHCP_ATTEMPT.load(Ordering::Relaxed);
     if now.saturating_sub(last) < DHCP_RETRY_SECS {
+        log::debug!("[ROUTE] DHCP ensure throttled for {}", interface);
         return Ok(());
     }
     LAST_DHCP_ATTEMPT.store(now, Ordering::Relaxed);
 
+    log::info!("[ROUTE] Attempting DHCP ensure on {}", interface);
     let args = WifiRouteEnsureArgs {
         interface: interface.to_string(),
     };
@@ -300,7 +318,7 @@ fn interface_has_ipv4(interface: &str) -> bool {
     }
 }
 
-fn log_isolation_state(mode: &str, allow_list: &[String]) {
+fn log_isolation_state(root: &Path, mode: &str, allow_list: &[String]) {
     let state = LAST_ISOLATION_STATE.get_or_init(|| {
         Mutex::new(IsolationState {
             mode: String::new(),
@@ -312,9 +330,64 @@ fn log_isolation_state(mode: &str, allow_list: &[String]) {
         Err(poisoned) => poisoned.into_inner(),
     };
     if guard.mode != mode || guard.allow_list != allow_list {
-        log::info!("[ISOLATION] mode={} allow={:?}", mode, allow_list);
+        let message = format!("mode={} allow={:?}", mode, allow_list);
+        log_watchdog_event(root, &message);
         guard.mode = mode.to_string();
         guard.allow_list = allow_list.to_vec();
+    }
+}
+
+fn log_watchdog_mismatches(root: &Path, allow_list: &[String]) {
+    let mut allowed_set = std::collections::HashSet::new();
+    for iface in allow_list {
+        allowed_set.insert(iface.as_str());
+    }
+
+    let entries = match fs::read_dir("/sys/class/net") {
+        Ok(entries) => entries,
+        Err(err) => {
+            log_watchdog_event(root, &format!("failed to read /sys/class/net: {}", err));
+            return;
+        }
+    };
+
+    for entry in entries.flatten() {
+        let iface = entry.file_name().to_string_lossy().to_string();
+        if iface == "lo" {
+            continue;
+        }
+        let oper_path = format!("/sys/class/net/{}/operstate", iface);
+        let state = fs::read_to_string(&oper_path)
+            .unwrap_or_else(|_| "unknown".to_string())
+            .trim()
+            .to_string();
+        let is_allowed = allowed_set.contains(iface.as_str());
+
+        if is_allowed && matches!(state.as_str(), "down" | "lowerlayerdown") {
+            log_watchdog_event(
+                root,
+                &format!("bring up {} (state={})", iface, state),
+            );
+        }
+        if !is_allowed && matches!(state.as_str(), "up" | "unknown") {
+            log_watchdog_event(
+                root,
+                &format!("bring down {} (state={})", iface, state),
+            );
+        }
+    }
+}
+
+fn log_watchdog_event(root: &Path, message: &str) {
+    log::info!("[WATCHDOG] {}", message);
+    let log_dir = root.join("loot").join("logs");
+    if fs::create_dir_all(&log_dir).is_err() {
+        return;
+    }
+    let path = log_dir.join("watchdog.log");
+    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(&path) {
+        let ts = Local::now().to_rfc3339();
+        let _ = writeln!(file, "{} {}", ts, message);
     }
 }
 

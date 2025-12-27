@@ -150,6 +150,7 @@ echo "  ip addr flush dev $AP_IFACE"
 echo "  nmcli device set $AP_IFACE managed yes"
 echo
 echo "To check status:"
-echo "  iw dev $AP_IFACE info"
+echo "  cat /sys/class/net/$AP_IFACE/operstate"
+echo "  cat /sys/class/net/$AP_IFACE/address"
 echo "  journalctl -n 50 | grep hostapd"
 echo "=========================================="

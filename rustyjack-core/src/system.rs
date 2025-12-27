@@ -38,7 +38,7 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::Local;
-use log::debug;
+use log::{debug, info, warn};
 use regex::Regex;
 use reqwest::blocking::{multipart, Client};
 use serde::{Deserialize, Serialize};
@@ -194,8 +194,20 @@ pub fn detect_interface(override_name: Option<String>) -> Result<InterfaceInfo> 
         None => discover_default_interface().context("could not detect a default interface")?,
     };
 
+    info!("[NET] Detect interface: {}", name);
     let addrs = netlink_get_ipv4_addresses(&name)
         .with_context(|| format!("collecting IPv4 data for {name}"))?;
+    let mut ipv4_list = Vec::new();
+    for addr in &addrs {
+        if let std::net::IpAddr::V4(v4) = addr.address {
+            ipv4_list.push(format!("{}/{}", v4, addr.prefix_len));
+        }
+    }
+    if ipv4_list.is_empty() {
+        warn!("[NET] {} has no IPv4 addresses", name);
+    } else {
+        info!("[NET] {} IPv4 addresses: {}", name, ipv4_list.join(", "));
+    }
     let (addr, prefix) = addrs
         .into_iter()
         .find_map(|addr| match addr.address {
@@ -214,10 +226,27 @@ pub fn detect_interface(override_name: Option<String>) -> Result<InterfaceInfo> 
 /// Detect an Ethernet interface (eth*/en*) and fail if none are present.
 pub fn detect_ethernet_interface(override_name: Option<String>) -> Result<InterfaceInfo> {
     let summaries = list_interface_summaries().context("listing interfaces")?;
+    info!(
+        "[NET] Detect ethernet interface override={:?}",
+        override_name
+    );
+    for summary in &summaries {
+        debug!(
+            "[NET] iface {} kind={} state={} ip={:?}",
+            summary.name, summary.kind, summary.oper_state, summary.ip
+        );
+    }
 
     // Helper to validate a wired, Ethernet-style name
     let is_eth = |s: &InterfaceSummary| {
         s.kind == "wired" && (s.name.starts_with("eth") || s.name.starts_with("en"))
+    };
+    let select = |summary: &InterfaceSummary, reason: &str| -> Result<InterfaceInfo> {
+        info!(
+            "[NET] Selected ethernet interface {} ({})",
+            summary.name, reason
+        );
+        detect_interface(Some(summary.name.clone()))
     };
 
     if let Some(name) = override_name {
@@ -233,7 +262,7 @@ pub fn detect_ethernet_interface(override_name: Option<String>) -> Result<Interf
             );
         }
 
-        return detect_interface(Some(name));
+        return select(summary, "override");
     }
 
     // Prefer: up + has IP -> has IP -> up -> any eth*/en*
@@ -241,16 +270,16 @@ pub fn detect_ethernet_interface(override_name: Option<String>) -> Result<Interf
         .iter()
         .find(|s| is_eth(s) && s.oper_state == "up" && s.ip.is_some())
     {
-        return detect_interface(Some(summary.name.clone()));
+        return select(summary, "up+ip");
     }
     if let Some(summary) = summaries.iter().find(|s| is_eth(s) && s.ip.is_some()) {
-        return detect_interface(Some(summary.name.clone()));
+        return select(summary, "ip");
     }
     if let Some(summary) = summaries.iter().find(|s| is_eth(s) && s.oper_state == "up") {
-        return detect_interface(Some(summary.name.clone()));
+        return select(summary, "up");
     }
     if let Some(summary) = summaries.iter().find(|s| is_eth(s)) {
-        return detect_interface(Some(summary.name.clone()));
+        return select(summary, "fallback");
     }
 
     bail!("No Ethernet interfaces detected (need eth*/en*)");
@@ -259,8 +288,13 @@ pub fn detect_ethernet_interface(override_name: Option<String>) -> Result<Interf
 pub fn discover_default_interface() -> Result<String> {
     if let Ok(Some(route)) = read_default_route() {
         if let Some(name) = route.interface {
+            info!(
+                "[NET] Default route interface: {} gateway={:?} metric={:?}",
+                name, route.gateway, route.metric
+            );
             return Ok(name);
         }
+        warn!("[NET] Default route found without an interface");
     }
 
     let entries = fs::read_dir("/sys/class/net").context("listing network interfaces")?;
@@ -269,6 +303,7 @@ pub fn discover_default_interface() -> Result<String> {
         let name = entry.file_name();
         let name = name.to_string_lossy();
         if name != "lo" {
+            info!("[NET] Default interface fallback: {}", name);
             return Ok(name.into());
         }
     }
@@ -850,6 +885,10 @@ pub fn read_default_route() -> Result<Option<DefaultRouteInfo>> {
     });
 
     if let Some(route) = route {
+        debug!(
+            "[NET] Default route: iface={:?} gateway={:?} metric={:?}",
+            route.interface_index, route.gateway, route.metric
+        );
         Ok(Some(DefaultRouteInfo {
             interface: route.interface_index.and_then(|idx| iface_map.get(&idx).cloned()),
             gateway: route.gateway.and_then(|gw| match gw {
@@ -859,6 +898,7 @@ pub fn read_default_route() -> Result<Option<DefaultRouteInfo>> {
             metric: route.metric,
         }))
     } else {
+        warn!("[NET] No default route found");
         Ok(None)
     }
 }
@@ -866,7 +906,10 @@ pub fn read_default_route() -> Result<Option<DefaultRouteInfo>> {
 pub fn interface_gateway(interface: &str) -> Result<Option<Ipv4Addr>> {
     let ifindex = match netlink_get_interface_index(interface) {
         Ok(idx) => idx,
-        Err(_) => return Ok(None),
+        Err(err) => {
+            warn!("[NET] Failed to resolve ifindex for {}: {}", interface, err);
+            return Ok(None);
+        }
     };
     let routes = netlink_list_routes().with_context(|| format!("querying routes for {interface}"))?;
 
@@ -891,6 +934,7 @@ pub fn interface_gateway(interface: &str) -> Result<Option<Ipv4Addr>> {
     if let Some(route) = routes.iter().find(|r| r.interface_index == Some(ifindex) && is_default(r))
     {
         if let Some(gateway) = find_gateway(route) {
+            info!("[NET] Gateway for {}: {}", interface, gateway);
             return Ok(Some(gateway));
         }
     }
@@ -900,10 +944,12 @@ pub fn interface_gateway(interface: &str) -> Result<Option<Ipv4Addr>> {
         .find(|r| r.interface_index == Some(ifindex) && r.gateway.is_some())
     {
         if let Some(gateway) = find_gateway(route) {
+            info!("[NET] Gateway for {}: {}", interface, gateway);
             return Ok(Some(gateway));
         }
     }
 
+    warn!("[NET] No gateway found for {}", interface);
     Ok(None)
 }
 
@@ -965,8 +1011,10 @@ pub fn apply_interface_isolation(allowed: &[String]) -> Result<()> {
         .collect();
 
     if allowed_set.is_empty() {
+        warn!("[NET] Interface isolation failed: empty allow list");
         bail!("Cannot enforce isolation: no allowed interfaces provided");
     }
+    debug!("[NET] Interface isolation allow list: {:?}", allowed_set);
 
     let entries = fs::read_dir("/sys/class/net").context("reading /sys/class/net")?;
     let mut interfaces = Vec::new();
@@ -984,6 +1032,10 @@ pub fn apply_interface_isolation(allowed: &[String]) -> Result<()> {
 
     if !interfaces.iter().any(|(iface, _)| allowed_set.contains(iface)) {
         let allowed_list = allowed_set.iter().cloned().collect::<Vec<_>>().join(", ");
+        warn!(
+            "[NET] Interface isolation failed: allowed interfaces missing ({})",
+            allowed_list
+        );
         bail!(
             "Cannot enforce isolation: none of the allowed interfaces exist ({})",
             allowed_list
@@ -992,6 +1044,10 @@ pub fn apply_interface_isolation(allowed: &[String]) -> Result<()> {
 
     for (iface, is_wireless) in interfaces {
         let is_allowed = allowed_set.contains(&iface);
+        debug!(
+            "[NET] Interface isolation {} allowed={} wireless={}",
+            iface, is_allowed, is_wireless
+        );
 
         if is_allowed {
             // For wireless: unblock rfkill BEFORE bringing interface up
@@ -1035,6 +1091,7 @@ pub fn enforce_single_interface(interface: &str) -> Result<()> {
     if interface.is_empty() {
         bail!("Cannot enforce isolation: no interface specified");
     }
+    info!("[NET] Enforcing single interface: {}", interface);
     apply_interface_isolation(&[interface.to_string()])
 }
 
@@ -1088,6 +1145,7 @@ pub fn select_best_interface(root: &Path, prefer_wifi: bool) -> Result<Option<St
 
     if let Some(pref) = read_interface_preference(root, "system_preferred")? {
         if summaries.iter().any(|s| s.name == pref && s.ip.is_some()) {
+            info!("[NET] Selected preferred interface: {}", pref);
             return Ok(Some(pref));
         }
     }
@@ -1097,6 +1155,7 @@ pub fn select_best_interface(root: &Path, prefer_wifi: bool) -> Result<Option<St
             .iter()
             .any(|s| s.name == default_route && s.ip.is_some())
         {
+            info!("[NET] Selected default-route interface: {}", default_route);
             return Ok(Some(default_route));
         }
     }
@@ -1106,6 +1165,7 @@ pub fn select_best_interface(root: &Path, prefer_wifi: bool) -> Result<Option<St
             .iter()
             .find(|s| s.kind == "wireless" && s.ip.is_some())
         {
+            info!("[NET] Selected wireless interface: {}", wireless.name);
             return Ok(Some(wireless.name.clone()));
         }
     }
@@ -1116,6 +1176,7 @@ pub fn select_best_interface(root: &Path, prefer_wifi: bool) -> Result<Option<St
             .iter()
             .any(|s| s.name == candidate && s.ip.is_some())
         {
+            info!("[NET] Selected priority interface: {}", candidate);
             return Ok(Some(candidate.to_string()));
         }
     }
@@ -1126,6 +1187,10 @@ pub fn select_best_interface(root: &Path, prefer_wifi: bool) -> Result<Option<St
         .map(|s| s.name.clone())
         .or_else(|| summaries.first().map(|s| s.name.clone()))
         .ok_or_else(|| anyhow!("No interfaces available"))
+        .map(|name| {
+            info!("[NET] Selected fallback interface: {}", name);
+            name
+        })
         .map(Some)
 }
 
@@ -1381,6 +1446,7 @@ pub fn select_wifi_interface(preferred: Option<String>) -> Result<String> {
         if summary.kind != "wireless" {
             bail!("interface {} is not wireless", name);
         }
+        info!("[NET] Selected WiFi interface override: {}", name);
         return Ok(name);
     }
     let summaries = list_interface_summaries()?;
@@ -1388,9 +1454,11 @@ pub fn select_wifi_interface(preferred: Option<String>) -> Result<String> {
         .iter()
         .find(|s| s.kind == "wireless" && s.ip.is_some())
     {
+        info!("[NET] Selected active WiFi interface: {}", active.name);
         return Ok(active.name.clone());
     }
     if let Some(any_wireless) = summaries.iter().find(|s| s.kind == "wireless") {
+        info!("[NET] Selected available WiFi interface: {}", any_wireless.name);
         return Ok(any_wireless.name.clone());
     }
     Err(anyhow!("No wireless interfaces found"))

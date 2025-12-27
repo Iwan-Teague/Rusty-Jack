@@ -4,10 +4,16 @@
 //! an active network connection (WiFi or Ethernet).
 
 use crate::error::{Result, WirelessError};
+use crate::nl80211::get_ifindex;
+use ipnet::Ipv4Net;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use std::net::{IpAddr, Ipv4Addr};
-use std::process::Command;
+use std::ffi::CStr;
+use std::io;
+use std::mem;
+use std::net::{IpAddr, Ipv4Addr, UdpSocket};
+use std::os::unix::io::RawFd;
+use std::ptr;
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -71,6 +77,8 @@ pub struct DnsQuery {
     pub query_type: String,
     pub source_ip: Ipv4Addr,
 }
+
+const MDNS_MULTICAST: &str = "224.0.0.251:5353";
 
 /// Discover network gateway, DNS servers, and DHCP server
 pub fn discover_gateway(interface: &str) -> Result<GatewayInfo> {
@@ -327,39 +335,87 @@ fn parse_arp_line(line: &str, interface: Option<&str>) -> Option<ArpDevice> {
 }
 
 fn perform_active_arp_scan(subnet: &str, interface: &str) -> Result<()> {
-    let _ = Command::new("arping")
-        .args(["-c", "1", "-w", "1", "-I", interface, "-b", subnet])
-        .output();
+    let network: Ipv4Net = subnet.parse().map_err(|e| {
+        WirelessError::System(format!("Invalid subnet {}: {}", subnet, e))
+    })?;
 
-    let base = subnet.split('/').next().unwrap_or("192.168.1.0");
-    let octets: Vec<&str> = base.split('.').collect();
-    if octets.len() == 4 {
-        let prefix = format!("{}.{}.{}", octets[0], octets[1], octets[2]);
-        for i in 1..255 {
-            let target = format!("{}.{}", prefix, i);
-            let _ = Command::new("ping")
-                .args(["-c", "1", "-W", "1", &target])
-                .output();
-        }
+    let timeout = Duration::from_secs(1);
+    if let Err(err) = rustyjack_ethernet::discover_hosts(network, timeout) {
+        log::warn!("ICMP sweep failed on {}: {}", subnet, err);
+    }
+
+    if let Err(err) = run_arp_discovery(interface, network, timeout) {
+        log::warn!("ARP sweep failed on {} ({}): {}", interface, subnet, err);
     }
 
     Ok(())
 }
 
-fn resolve_hostname(ip: Ipv4Addr) -> Option<String> {
-    let output = Command::new("host").arg(ip.to_string()).output().ok()?;
+fn run_arp_discovery(
+    interface: &str,
+    network: Ipv4Net,
+    timeout: Duration,
+) -> Result<()> {
+    use tokio::runtime::Handle;
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    if stdout.contains("domain name pointer") {
-        let parts: Vec<&str> = stdout.split_whitespace().collect();
-        if let Some(idx) = parts.iter().position(|&p| p == "pointer") {
-            return parts
-                .get(idx + 1)
-                .map(|s| s.trim_end_matches('.').to_string());
-        }
+    let run = |handle: &Handle| {
+        handle.block_on(async {
+            rustyjack_ethernet::discover_hosts_arp(interface, network, None, timeout)
+                .await
+                .map_err(|e| WirelessError::System(format!("ARP discovery failed: {}", e)))
+        })
+        .map(|_| ())
+    };
+
+    match Handle::try_current() {
+        Ok(handle) => run(&handle),
+        Err(_) => tokio::runtime::Runtime::new()
+            .map_err(|e| WirelessError::System(format!("Failed to create runtime: {}", e)))?
+            .block_on(async {
+                rustyjack_ethernet::discover_hosts_arp(interface, network, None, timeout)
+                    .await
+                    .map_err(|e| WirelessError::System(format!("ARP discovery failed: {}", e)))
+            })
+            .map(|_| ()),
+    }
+}
+
+fn resolve_hostname(ip: Ipv4Addr) -> Option<String> {
+    let sockaddr = libc::sockaddr_in {
+        sin_family: libc::AF_INET as u16,
+        sin_port: 0,
+        sin_addr: libc::in_addr {
+            s_addr: u32::from(ip).to_be(),
+        },
+        sin_zero: [0; 8],
+    };
+
+    let mut host = [0u8; libc::NI_MAXHOST as usize];
+    let res = unsafe {
+        libc::getnameinfo(
+            &sockaddr as *const _ as *const libc::sockaddr,
+            mem::size_of::<libc::sockaddr_in>() as u32,
+            host.as_mut_ptr(),
+            host.len() as u32,
+            ptr::null_mut(),
+            0,
+            libc::NI_NAMEREQD,
+        )
+    };
+
+    if res != 0 {
+        return None;
     }
 
-    None
+    let name = unsafe { CStr::from_ptr(host.as_ptr() as *const libc::c_char) }
+        .to_str()
+        .ok()?;
+    let trimmed = name.trim_end_matches('.');
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
 }
 
 fn lookup_mac_vendor(mac: &str) -> Option<String> {
@@ -446,52 +502,219 @@ fn is_port_open(ip: Ipv4Addr, port: u16) -> bool {
 }
 
 /// Discover mDNS/Bonjour devices on the network
-pub fn discover_mdns_devices(_duration_secs: u64) -> Result<Vec<MdnsDevice>> {
+pub fn discover_mdns_devices(duration_secs: u64) -> Result<Vec<MdnsDevice>> {
     let mut devices = Vec::new();
     let mut seen_devices = HashSet::new();
+    let timeout = Duration::from_secs(duration_secs.max(1));
 
-    let output = Command::new("avahi-browse")
-        .args(["-a", "-t", "-r", "-p"])
-        .output();
+    let mut results = query_mdns(timeout)?;
+    results.retain(|_, names| !names.is_empty());
 
-    if let Ok(out) = output {
-        let stdout = String::from_utf8_lossy(&out.stdout);
-        for line in stdout.lines() {
-            if let Some(device) = parse_mdns_line(line) {
-                let key = format!("{}:{}", device.name, device.ip);
-                if !seen_devices.contains(&key) {
-                    seen_devices.insert(key);
-                    devices.push(device);
-                }
-            }
-        }
-    } else {
-        return Err(WirelessError::System(
-            "avahi-browse not found. Install with: apt install avahi-utils".to_string(),
-        ));
-    }
-
-    Ok(devices)
-}
-
-fn parse_mdns_line(line: &str) -> Option<MdnsDevice> {
-    let parts: Vec<&str> = line.split(';').collect();
-    if parts.len() >= 9 && parts[0] == "=" {
-        let name = parts[3].to_string();
-        let service = parts[4].to_string();
-        let ip_str = parts[7];
-
-        if let Ok(ip) = ip_str.parse::<Ipv4Addr>() {
-            return Some(MdnsDevice {
+    for (ip, names) in results {
+        let name = names.first().cloned().unwrap_or_else(|| ip.to_string());
+        let key = format!("{}:{}", name, ip);
+        if seen_devices.insert(key) {
+            devices.push(MdnsDevice {
                 name,
                 ip,
-                services: vec![service],
+                services: names,
                 txt_records: HashMap::new(),
             });
         }
     }
 
-    None
+    Ok(devices)
+}
+
+fn build_dns_query(name: &str, qtype: u16) -> Vec<u8> {
+    let mut packet = Vec::with_capacity(64);
+    let id: u16 = rand::random();
+    packet.extend_from_slice(&id.to_be_bytes());
+    packet.extend_from_slice(&0x0000u16.to_be_bytes()); // flags
+    packet.extend_from_slice(&0x0001u16.to_be_bytes()); // QDCOUNT
+    packet.extend_from_slice(&0x0000u16.to_be_bytes()); // ANCOUNT
+    packet.extend_from_slice(&0x0000u16.to_be_bytes()); // NSCOUNT
+    packet.extend_from_slice(&0x0000u16.to_be_bytes()); // ARCOUNT
+
+    for label in name.split('.') {
+        let bytes = label.as_bytes();
+        packet.push(bytes.len() as u8);
+        packet.extend_from_slice(bytes);
+    }
+    packet.push(0); // terminator
+    packet.extend_from_slice(&qtype.to_be_bytes());
+    packet.extend_from_slice(&0x0001u16.to_be_bytes()); // class IN
+    packet
+}
+
+fn decode_dns_name(data: &[u8], offset: &mut usize) -> Option<String> {
+    let mut labels = Vec::new();
+    let mut jumped = false;
+    let mut pos = *offset;
+    let mut depth = 0;
+
+    loop {
+        if depth > 10 || pos >= data.len() {
+            return None;
+        }
+        let len = data.get(pos).copied()? as usize;
+        if len == 0 {
+            pos += 1;
+            break;
+        }
+        if len & 0xC0 == 0xC0 {
+            if pos + 1 >= data.len() {
+                return None;
+            }
+            let ptr = (((len & 0x3F) as u16) << 8) | data[pos + 1] as u16;
+            pos += 2;
+            if !jumped {
+                *offset = pos;
+            }
+            pos = ptr as usize;
+            jumped = true;
+            depth += 1;
+            continue;
+        }
+        let start = pos + 1;
+        let end = start + len;
+        if end > data.len() {
+            return None;
+        }
+        let label = std::str::from_utf8(&data[start..end]).ok()?.to_string();
+        labels.push(label);
+        pos = end;
+    }
+    if !jumped {
+        *offset = pos;
+    }
+    Some(labels.join("."))
+}
+
+fn parse_dns_records(data: &[u8]) -> Vec<String> {
+    if data.len() < 12 {
+        return Vec::new();
+    }
+    let ancount = u16::from_be_bytes([data[6], data[7]]);
+    let qdcount = u16::from_be_bytes([data[4], data[5]]);
+    let mut offset = 12usize;
+
+    for _ in 0..qdcount {
+        if decode_dns_name(data, &mut offset).is_none() {
+            return Vec::new();
+        }
+        if offset + 4 > data.len() {
+            return Vec::new();
+        }
+        offset += 4;
+    }
+
+    let mut names = Vec::new();
+    for _ in 0..ancount {
+        let _ = decode_dns_name(data, &mut offset);
+        if offset + 10 > data.len() {
+            break;
+        }
+        let rtype = u16::from_be_bytes([data[offset], data[offset + 1]]);
+        let rdlen = u16::from_be_bytes([data[offset + 8], data[offset + 9]]) as usize;
+        offset += 10;
+        if offset + rdlen > data.len() {
+            break;
+        }
+        match rtype {
+            1 => {
+                if rdlen == 4 {
+                    let ip = Ipv4Addr::new(
+                        data[offset],
+                        data[offset + 1],
+                        data[offset + 2],
+                        data[offset + 3],
+                    );
+                    names.push(ip.to_string());
+                }
+            }
+            5 | 12 | 33 => {
+                let mut rptr = offset;
+                if let Some(name) = decode_dns_name(data, &mut rptr) {
+                    names.push(name);
+                }
+            }
+            16 => {
+                if let Ok(txt) = std::str::from_utf8(&data[offset..offset + rdlen]) {
+                    names.push(txt.to_string());
+                }
+            }
+            _ => {}
+        }
+        offset += rdlen;
+    }
+    names
+}
+
+fn query_multicast_dns(
+    multicast: &str,
+    name: &str,
+    qtype: u16,
+    timeout: Duration,
+) -> Result<HashMap<Ipv4Addr, Vec<String>>> {
+    let socket = UdpSocket::bind("0.0.0.0:0")
+        .map_err(|e| WirelessError::System(format!("binding UDP socket: {}", e)))?;
+    socket
+        .set_read_timeout(Some(timeout))
+        .map_err(|e| WirelessError::System(format!("setting read timeout: {}", e)))?;
+    socket
+        .set_write_timeout(Some(timeout))
+        .map_err(|e| WirelessError::System(format!("setting write timeout: {}", e)))?;
+    socket
+        .set_multicast_loop_v4(true)
+        .map_err(|e| WirelessError::System(format!("enabling multicast loop: {}", e)))?;
+
+    let packet = build_dns_query(name, qtype);
+    let _ = socket
+        .send_to(&packet, multicast)
+        .map_err(|e| WirelessError::System(format!("sending mDNS query: {}", e)))?;
+
+    let start = Instant::now();
+    let mut results: HashMap<Ipv4Addr, Vec<String>> = HashMap::new();
+    let mut buf = [0u8; 1500];
+    while start.elapsed() < timeout {
+        match socket.recv_from(&mut buf) {
+            Ok((n, addr)) => {
+                if n == 0 {
+                    continue;
+                }
+                let names = parse_dns_records(&buf[..n]);
+                if names.is_empty() {
+                    continue;
+                }
+                if let Ok(src) = addr.ip().to_string().parse::<Ipv4Addr>() {
+                    results.entry(src).or_default().extend(names);
+                }
+            }
+            Err(e)
+                if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut =>
+            {
+                break;
+            }
+            Err(e) => {
+                return Err(WirelessError::System(format!(
+                    "reading mDNS response: {}",
+                    e
+                )))
+            }
+        }
+    }
+    Ok(results)
+}
+
+fn query_mdns(timeout: Duration) -> Result<HashMap<Ipv4Addr, Vec<String>>> {
+    let mut results =
+        query_multicast_dns(MDNS_MULTICAST, "_services._dns-sd._udp.local", 12, timeout)?;
+    let extra = query_multicast_dns(MDNS_MULTICAST, "local", 255, timeout)?;
+    for (k, v) in extra {
+        results.entry(k).or_default().extend(v);
+    }
+    Ok(results)
 }
 
 /// Monitor bandwidth usage on an interface
@@ -542,42 +765,200 @@ pub fn calculate_bandwidth(before: &TrafficStats, after: &TrafficStats) -> Bandw
     }
 }
 
-/// Capture DNS queries using tcpdump
-pub fn start_dns_capture(interface: &str) -> Result<std::process::Child> {
-    Command::new("tcpdump")
-        .args(["-i", interface, "-n", "-l", "udp port 53"])
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .map_err(|e| WirelessError::System(format!("Failed to start tcpdump: {}", e)))
-}
-
-/// Parse DNS query from tcpdump output line
-pub fn parse_dns_query(line: &str) -> Option<DnsQuery> {
-    if line.contains("A?") || line.contains("AAAA?") {
-        let parts: Vec<&str> = line.split_whitespace().collect();
-
-        let source_ip = parts
-            .iter()
-            .find(|p| p.contains('.') && !p.contains('>'))
-            .and_then(|s| s.split('.').next())
-            .and_then(|s| s.parse::<Ipv4Addr>().ok())?;
-
-        let domain = parts
-            .iter()
-            .position(|&p| p == "A?" || p == "AAAA?")
-            .and_then(|idx| parts.get(idx + 1))
-            .map(|s| s.trim_end_matches('?').to_string())?;
-
-        let query_type = if line.contains("A?") { "A" } else { "AAAA" };
-
-        return Some(DnsQuery {
-            timestamp: Instant::now(),
-            domain,
-            query_type: query_type.to_string(),
-            source_ip,
-        });
+/// Capture DNS queries using a raw socket on the interface.
+pub fn capture_dns_queries(interface: &str, duration: Duration) -> Result<Vec<DnsQuery>> {
+    if !crate::check_privileges() {
+        return Err(WirelessError::Permission(
+            "Root privileges required for DNS capture".to_string(),
+        ));
     }
 
-    None
+    let fd = open_dns_capture_socket(interface)?;
+    let start = Instant::now();
+    let mut buf = vec![0u8; 2048];
+    let mut queries = Vec::new();
+
+    while start.elapsed() < duration {
+        let n = unsafe {
+            libc::recv(
+                fd,
+                buf.as_mut_ptr() as *mut libc::c_void,
+                buf.len(),
+                0,
+            )
+        };
+
+        if n < 0 {
+            let err = io::Error::last_os_error();
+            if err.kind() == io::ErrorKind::WouldBlock || err.kind() == io::ErrorKind::TimedOut {
+                continue;
+            }
+            unsafe {
+                libc::close(fd);
+            }
+            return Err(WirelessError::Socket(format!(
+                "DNS capture recv failed: {}",
+                err
+            )));
+        }
+
+        let packet = &buf[..n as usize];
+        if let Some(query) = parse_dns_packet(packet) {
+            queries.push(query);
+        }
+    }
+
+    unsafe {
+        libc::close(fd);
+    }
+
+    Ok(queries)
+}
+
+fn open_dns_capture_socket(interface: &str) -> Result<RawFd> {
+    let ifindex = get_ifindex(interface)?;
+    let fd = unsafe {
+        libc::socket(
+            libc::AF_PACKET,
+            libc::SOCK_RAW,
+            (libc::ETH_P_ALL as u16).to_be() as i32,
+        )
+    };
+
+    if fd < 0 {
+        return Err(WirelessError::Socket(format!(
+            "Failed to create capture socket: {}",
+            io::Error::last_os_error()
+        )));
+    }
+
+    let mut addr: libc::sockaddr_ll = unsafe { mem::zeroed() };
+    addr.sll_family = libc::AF_PACKET as u16;
+    addr.sll_ifindex = ifindex;
+    addr.sll_protocol = (libc::ETH_P_ALL as u16).to_be();
+
+    let bind_result = unsafe {
+        libc::bind(
+            fd,
+            &addr as *const libc::sockaddr_ll as *const libc::sockaddr,
+            mem::size_of::<libc::sockaddr_ll>() as u32,
+        )
+    };
+
+    if bind_result < 0 {
+        unsafe {
+            libc::close(fd);
+        }
+        return Err(WirelessError::Socket(format!(
+            "Failed to bind capture socket: {}",
+            io::Error::last_os_error()
+        )));
+    }
+
+    let timeout = libc::timeval {
+        tv_sec: 1,
+        tv_usec: 0,
+    };
+
+    unsafe {
+        libc::setsockopt(
+            fd,
+            libc::SOL_SOCKET,
+            libc::SO_RCVTIMEO,
+            &timeout as *const _ as *const libc::c_void,
+            mem::size_of::<libc::timeval>() as u32,
+        );
+    }
+
+    Ok(fd)
+}
+
+fn parse_dns_packet(packet: &[u8]) -> Option<DnsQuery> {
+    let (ethertype, mut offset) = parse_ethertype(packet)?;
+    if ethertype != 0x0800 {
+        return None;
+    }
+
+    if packet.len() < offset + 20 {
+        return None;
+    }
+
+    let version_ihl = packet[offset];
+    if version_ihl >> 4 != 4 {
+        return None;
+    }
+    let ihl = (version_ihl & 0x0F) as usize * 4;
+    if packet.len() < offset + ihl + 8 {
+        return None;
+    }
+
+    let protocol = packet[offset + 9];
+    if protocol != 17 {
+        return None;
+    }
+
+    let source_ip = Ipv4Addr::new(
+        packet[offset + 12],
+        packet[offset + 13],
+        packet[offset + 14],
+        packet[offset + 15],
+    );
+
+    offset += ihl;
+    let dst_port = u16::from_be_bytes([packet[offset + 2], packet[offset + 3]]);
+    if dst_port != 53 {
+        return None;
+    }
+
+    let dns_offset = offset + 8;
+    if packet.len() < dns_offset + 12 {
+        return None;
+    }
+
+    let flags = u16::from_be_bytes([packet[dns_offset + 2], packet[dns_offset + 3]]);
+    if (flags & 0x8000) != 0 {
+        return None;
+    }
+    let qdcount = u16::from_be_bytes([packet[dns_offset + 4], packet[dns_offset + 5]]);
+    if qdcount == 0 {
+        return None;
+    }
+
+    let mut qname_offset = dns_offset + 12;
+    let domain = decode_dns_name(packet, &mut qname_offset)?;
+    if qname_offset + 4 > packet.len() {
+        return None;
+    }
+    let qtype = u16::from_be_bytes([packet[qname_offset], packet[qname_offset + 1]]);
+    let query_type = match qtype {
+        1 => "A".to_string(),
+        28 => "AAAA".to_string(),
+        12 => "PTR".to_string(),
+        other => format!("TYPE{}", other),
+    };
+
+    Some(DnsQuery {
+        timestamp: Instant::now(),
+        domain,
+        query_type,
+        source_ip,
+    })
+}
+
+fn parse_ethertype(packet: &[u8]) -> Option<(u16, usize)> {
+    if packet.len() < 14 {
+        return None;
+    }
+    let mut ethertype = u16::from_be_bytes([packet[12], packet[13]]);
+    let mut offset = 14;
+
+    if ethertype == 0x8100 {
+        if packet.len() < 18 {
+            return None;
+        }
+        ethertype = u16::from_be_bytes([packet[16], packet[17]]);
+        offset = 18;
+    }
+
+    Some((ethertype, offset))
 }

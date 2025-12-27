@@ -16,6 +16,7 @@ pub enum MenuAction {
     ViewDashboards,
     ToggleDiscord,
     ToggleLogs,
+    ExportLogsToUsb,
     TransferToUSB,
     HardwareDetect,
     DeauthAttack,
@@ -470,6 +471,7 @@ fn settings_menu() -> Vec<MenuEntry> {
 fn logs_menu() -> Vec<MenuEntry> {
     vec![
         MenuEntry::new("Logs: ???", MenuAction::ToggleLogs),
+        MenuEntry::new("Export Logs to USB", MenuAction::ExportLogsToUsb),
         MenuEntry::new("Purge Logs", MenuAction::PurgeLogs),
     ]
 }

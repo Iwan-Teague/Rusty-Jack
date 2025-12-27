@@ -19,6 +19,7 @@ path = "src/lib.rs"
 [dependencies]
 # Evasion and obfuscation (shared library)
 rustyjack-evasion = { path = "../rustyjack-evasion" }
+rustyjack-ethernet = { path = "../rustyjack-ethernet" }
 rustyjack-netlink = { path = "../rustyjack-netlink" }
 
 # Low-level system interfaces
@@ -47,6 +48,7 @@ serde_json = "1.0"
 # Byte manipulation
 byteorder = "1.5"
 bytes = "1.5"
+ipnet = "2"
 
 # MAC address parsing
 macaddr = "1.0"

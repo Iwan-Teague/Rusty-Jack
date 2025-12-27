@@ -476,7 +476,7 @@ fi
 
 # 6-b3 Rustyjack replaces core networking binaries with Rust implementations
 info "[OK] Rustyjack provides native Rust implementations for:"
-info "     - netlink interface control (replaces ip/iw/wireless-tools)"
+info "     - netlink interface control (native Rust)"
 info "     - rfkill (radio management via /dev/rfkill)"
 info "     - process management (pgrep/pkill via /proc)"
 info "     - hostapd (software AP via nl80211)"

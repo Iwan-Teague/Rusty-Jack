@@ -5,7 +5,7 @@
 ### ❌ Critical Missing Components
 
 1. **No APT package installation**
-   - Missing: `iproute2`, `isc-dhcp-client`, `network-manager`, `wpasupplicant`, `wireless-tools`, `iw`, `hostapd`, `dnsmasq`, `rfkill`
+   - Missing: `isc-dhcp-client`, `network-manager`, `wpasupplicant`, `hostapd`, `dnsmasq`, `rfkill`
    - Missing: Firmware packages (`firmware-realtek`, `firmware-atheros`, etc.)
    - Impact: Rustyjack won't have required system utilities
 
@@ -34,7 +34,7 @@
 
 6. **Missing health checks**
    - No SPI device verification
-   - No wireless tools check
+   - No Wi‑Fi control check (wpa_cli/nmcli)
    - No service status verification
 
 7. **Service description**
@@ -50,8 +50,8 @@
 1. **APT Package Installation** (Lines 127-216)
    ```bash
    PACKAGES=(
-     wireless-tools wpasupplicant network-manager
-     iproute2 isc-dhcp-client iw hostapd dnsmasq rfkill
+     wpasupplicant network-manager
+     isc-dhcp-client hostapd dnsmasq rfkill
      git i2c-tools curl
    )
    FIRMWARE_PACKAGES=(
@@ -105,9 +105,9 @@
      info "[OK] SPI device found"
    fi
    
-   # Wireless tools check
-   if cmd iwconfig; then
-     info "[OK] Wireless tools found"
+   # Wi-Fi control check
+   if cmd wpa_cli || cmd nmcli; then
+     info "[OK] Wi-Fi control tools found"
    fi
    
    # Service status check
@@ -144,8 +144,8 @@
 - ✅ Detects /boot/firmware/config.txt or /boot/config.txt
 
 ### 2. System Packages
-- ✅ Installs WiFi tools (wireless-tools, wpasupplicant, network-manager)
-- ✅ Installs networking tools (iproute2, iw, hostapd, dnsmasq, rfkill)
+- ✅ Installs Wi‑Fi control tools (wpasupplicant, network-manager)
+- ✅ Installs networking tools (isc-dhcp-client, hostapd, dnsmasq, rfkill)
 - ✅ Installs firmware packages (Realtek, Atheros, Ralink)
 - ✅ Handles missing packages gracefully
 
@@ -185,7 +185,7 @@
 
 ### 9. Health Checks
 - ✅ Verifies SPI device exists
-- ✅ Checks wireless tools installation
+- ✅ Checks Wi‑Fi control tools installation
 - ✅ Confirms wpa_cli/nmcli presence
 - ✅ Validates binary installation
 - ✅ Checks service status

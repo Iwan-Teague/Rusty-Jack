@@ -180,21 +180,22 @@ check_interface_exists() {
 
 check_monitor_mode_support() {
     local iface="$1"
-    
-    if command -v iw &>/dev/null; then
-        if iw "$iface" info 2>/dev/null | grep -q "type managed"; then
-            # Try to check if monitor mode is supported
-            local phy=$(iw "$iface" info 2>/dev/null | grep -oP 'wiphy \K\d+')
-            if [ -n "$phy" ]; then
-                if iw phy "phy${phy}" info 2>/dev/null | grep -q "monitor"; then
-                    log "OK" "Interface $iface supports monitor mode"
-                    return 0
-                fi
+
+    local phy_link="/sys/class/net/$iface/phy80211"
+    if [ -L "$phy_link" ]; then
+        local phy=$(basename "$(readlink -f "$phy_link")")
+        local debug_file="/sys/kernel/debug/ieee80211/$phy/supported_iftypes"
+        if [ -r "$debug_file" ]; then
+            if grep -q "monitor" "$debug_file"; then
+                log "OK" "Interface $iface supports monitor mode"
+                return 0
             fi
+            log "WARN" "Interface $iface does not advertise monitor mode"
+            return 1
         fi
     fi
-    
-    log "WARN" "Could not verify monitor mode support for $iface"
+
+    log "INFO" "Monitor mode verification skipped for $iface (debugfs not available)"
     return 1
 }
 
@@ -420,14 +421,6 @@ verify_wifi_operational() {
                 # Check if it's UP
                 if ip link show "$iface" 2>/dev/null | grep -q "UP"; then
                     log "OK" "Interface $iface is UP and operational"
-                    
-                    # Quick scan test
-                    if command -v iw &>/dev/null; then
-                        if iw "$iface" scan 2>/dev/null | head -1 | grep -q "BSS"; then
-                            log "OK" "Interface $iface can scan for networks"
-                            return 0
-                        fi
-                    fi
                     
                     return 0
                 fi

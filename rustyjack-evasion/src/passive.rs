@@ -241,54 +241,22 @@ impl PassiveManager {
             }
 
             // Create monitor interface using netlink
-            if let Ok(mut mgr) = rustyjack_netlink::WirelessManager::new() {
-                if mgr
-                    .create_interface(
-                        interface,
-                        &mon_name,
-                        rustyjack_netlink::InterfaceMode::Monitor,
-                    )
-                    .is_ok()
-                {
-                    // Bring it up
-                    if let Ok(link_mgr) = rustyjack_netlink::InterfaceManager::new() {
-                        tokio::runtime::Handle::current().block_on(async {
-                            let _ = link_mgr.set_link_up(&mon_name).await;
-                        });
-                    }
+            let mut mgr = rustyjack_netlink::WirelessManager::new().map_err(|e| {
+                EvasionError::InterfaceError(format!("Failed to open nl80211: {}", e))
+            })?;
+            mgr.create_interface(
+                interface,
+                &mon_name,
+                rustyjack_netlink::InterfaceMode::Monitor,
+            )
+            .map_err(|e| {
+                EvasionError::InterfaceError(format!(
+                    "Failed to create monitor interface {}: {}",
+                    mon_name, e
+                ))
+            })?;
 
-                    self.active_monitors.push(mon_name.clone());
-
-                    log::info!("Created monitor interface: {}", mon_name);
-                    return Ok(mon_name);
-                }
-            }
-
-            // Fall back to airmon-ng if netlink fails
-            let airmon = std::process::Command::new("airmon-ng")
-                .args(["start", interface])
-                .output();
-
-            if let Ok(output) = airmon {
-                if !output.status.success() {
-                    let stderr = String::from_utf8_lossy(&output.stderr);
-                    return Err(EvasionError::InterfaceError(format!(
-                        "Failed to create monitor interface: {}",
-                        stderr
-                    )));
-                }
-            } else {
-                return Err(EvasionError::InterfaceError(
-                    "Failed to create monitor interface with airmon-ng".to_string(),
-                ));
-            }
-
-            // Bring up the monitor interface
-            if let Ok(link_mgr) = rustyjack_netlink::InterfaceManager::new() {
-                tokio::runtime::Handle::current().block_on(async {
-                    let _ = link_mgr.set_link_up(&mon_name).await;
-                });
-            }
+            set_link_up(&mon_name)?;
 
             // Set TX power to minimum for passive mode
             if let Err(e) = self.tx_manager.set_power(&mon_name, TxPowerLevel::Stealth) {
@@ -324,14 +292,15 @@ impl PassiveManager {
         #[cfg(target_os = "linux")]
         {
             // Bring down and delete interface
-            if let Ok(mut mgr) = rustyjack_netlink::WirelessManager::new() {
-                if mgr.delete_interface(monitor_interface).is_err() {
-                    // Try airmon-ng stop as fallback
-                    let _ = std::process::Command::new("airmon-ng")
-                        .args(["stop", monitor_interface])
-                        .output();
-                }
-            }
+            let mut mgr = rustyjack_netlink::WirelessManager::new().map_err(|e| {
+                EvasionError::InterfaceError(format!("Failed to open nl80211: {}", e))
+            })?;
+            mgr.delete_interface(monitor_interface).map_err(|e| {
+                EvasionError::InterfaceError(format!(
+                    "Failed to delete monitor interface {}: {}",
+                    monitor_interface, e
+                ))
+            })?;
 
             // Remove from active list
             self.active_monitors.retain(|m| m != monitor_interface);
@@ -410,6 +379,26 @@ impl PassiveManager {
         }
 
         first_error.map_or(Ok(()), Err)
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn set_link_up(interface: &str) -> Result<()> {
+    let mgr = rustyjack_netlink::InterfaceManager::new()
+        .map_err(|e| EvasionError::InterfaceError(format!("Failed to init link manager: {}", e)))?;
+
+    let up = async {
+        mgr.set_link_up(interface)
+            .await
+            .map_err(|e| EvasionError::InterfaceError(format!("Failed to set {} up: {}", interface, e)))
+    };
+
+    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        handle.block_on(up)
+    } else {
+        let rt = tokio::runtime::Runtime::new()
+            .map_err(|e| EvasionError::System(format!("Failed to create tokio runtime: {}", e)))?;
+        rt.block_on(up)
     }
 }
 

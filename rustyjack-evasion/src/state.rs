@@ -271,19 +271,15 @@ impl StateManager {
 
         #[cfg(target_os = "linux")]
         {
-            // Try netlink first
-            if let Ok(mut mgr) = rustyjack_netlink::WirelessManager::new() {
-                if mgr.delete_interface(monitor).is_ok() {
-                    return Ok(());
-                }
-            }
-
-            // Fall back to airmon-ng
-            let _ = std::process::Command::new("airmon-ng")
-                .args(["stop", monitor])
-                .output();
-
-            Ok(())
+            let mut mgr = rustyjack_netlink::WirelessManager::new().map_err(|e| {
+                EvasionError::RestoreError(format!("Failed to open nl80211: {}", e))
+            })?;
+            mgr.delete_interface(monitor).map_err(|e| {
+                EvasionError::RestoreError(format!(
+                    "Failed to delete monitor interface {}: {}",
+                    monitor, e
+                ))
+            })
         }
     }
 

@@ -9,7 +9,7 @@ Hardware specifics drawn from WAVESHARE_PINS.md and WAVESHARE_BUTTONS.md:
 
 Software/runtime expectations:
 - Built and run on Linux (Pi OS) with root privileges via systemd service, so `CAP_NET_ADMIN` is available.
-- Dependencies are installed by `install_rustyjack.sh` and `install_rustyjack_dev.sh`: `iproute2` (`ip`), `isc-dhcp-client` (`dhclient`), `network-manager` (`nmcli`), `wpasupplicant` (`wpa_cli`), `wireless-tools`, `iw`, `hostapd`, `dnsmasq`, `rfkill`, plus build and firmware packages. When adding features that call new system binaries, update both installers accordingly.
+- Dependencies are installed by `install_rustyjack.sh` and `install_rustyjack_dev.sh`: `network-manager` (`nmcli`), `wpasupplicant` (`wpa_cli`), plus build and firmware packages. When adding features that call new system binaries, update both installers accordingly.
 - Installers now:
   - Remount `/` read-write if needed (fresh Pi images can boot `ro`).
   - Claim `/etc/resolv.conf` for Rustyjack (plain root-owned file) and reclaim it after apt installs so route/DNS enforcement can write reliably.

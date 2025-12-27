@@ -19,7 +19,22 @@ echo
 
 echo "3. Wireless Interfaces:"
 echo "----------------------"
-iw dev
+if ls /sys/class/net/*/wireless >/dev/null 2>&1; then
+  for iface in /sys/class/net/*/wireless; do
+    if [ -d "$iface" ]; then
+      ifname=$(basename "$(dirname "$iface")")
+      echo "  $ifname"
+      if [ -f "/sys/class/net/$ifname/operstate" ]; then
+        echo "    state: $(cat "/sys/class/net/$ifname/operstate")"
+      fi
+      if [ -f "/sys/class/net/$ifname/address" ]; then
+        echo "    mac: $(cat "/sys/class/net/$ifname/address")"
+      fi
+    fi
+  done
+else
+  echo "  No wireless interfaces found"
+fi
 echo
 
 echo "4. Running Hotspot Processes:"
@@ -48,7 +63,11 @@ echo
 
 echo "7. Interface IP Addresses:"
 echo "-------------------------"
-ip -4 addr show | grep -E "^[0-9]+:|inet " | sed 's/^[0-9]*: //'
+if command -v ip >/dev/null 2>&1; then
+  ip -4 addr show | grep -E "^[0-9]+:|inet " | sed 's/^[0-9]*: //'
+else
+  hostname -I 2>/dev/null | tr ' ' '\n' | sed '/^$/d; s/^/  /'
+fi
 echo
 
 echo "8. Recent Rustyjack Logs:"
@@ -75,5 +94,5 @@ echo "sudo ip link set wlan1 down"
 echo "sudo ip link set wlan1 up"
 echo
 echo "# Check if interface can do AP mode:"
-echo "iw list | grep -A 10 'Supported interface modes'"
+echo "journalctl -u rustyjack.service -b --no-pager | grep -i \"AP capability\""
 echo

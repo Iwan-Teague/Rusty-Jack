@@ -12,7 +12,6 @@ Deauthentication attack to force clients off an AP, optionally capturing handsha
 ## Dependencies
 - nl80211 monitor/injection via `rustyjack-wireless` (`nl80211` + raw sockets).
 - `rustyjack-netlink` for interface control and rfkill helpers.
-- External fallbacks rarely used (e.g., `airmon-ng` for monitor creation if netlink fails).
 - Root/CAP_NET_ADMIN/RAW required.
 
 ## Loot/outputs

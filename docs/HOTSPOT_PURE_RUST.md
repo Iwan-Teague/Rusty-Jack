@@ -134,7 +134,7 @@ Some **other** Rustyjack features (not the hotspot) still use external binaries:
 | **Hotspot** | NO | None | Pure Rust |
 | Evil Twin | YES | `hostapd`, `dnsmasq` | Legacy implementation |
 | Karma Attack | YES | `hostapd`, `dnsmasq` | Legacy implementation |
-| Some WiFi queries | YES | `iw` | Fallback for nl80211 |
+| Some WiFi queries | NO | None | Rust-only via nl80211 |
 
 ### Why the Difference?
 

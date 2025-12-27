@@ -6,7 +6,7 @@
 # USB-C power, and USB mass storage.
 #
 # Target software assumptions:
-# - Linux kernel with nl80211/hostapd/dnsmasq/iw/iproute2/iptables
+# - Linux kernel with nl80211/netlink/nftables
 # - Runs rustyjack-ui + rustyjack-core as root via systemd (CAP_NET_ADMIN/RAW)
 # - SPI and GPIO exposed for ST7735S 128×128 LCD and button matrix
 # - Udev and hotplug for USB NICs

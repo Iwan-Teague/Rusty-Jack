@@ -24,8 +24,8 @@ Supersedes multiple status/implementation docs:
 - `RUSTYJACK_NETLINK_REFERENCE.md` (API reference preserved in code)
 
 ## Replaced external tools with `rustyjack-netlink`
-- Link/route management → `InterfaceManager` / `RouteManager` (replaces `ip link/addr/route`).
-- Wireless/nl80211 → `WirelessManager` (replaces `iw`), AP capability checks, channel/txpower, iface creation.
+- Link/route management → `InterfaceManager` / `RouteManager` (link state, MAC, MTU, addresses, routes via netlink).
+- Wireless/nl80211 → `WirelessManager` (AP capability checks, channel/txpower, iface creation).
 - WPA control → `wpa.rs` (replaces `wpa_cli` control socket usage).
 - Hostapd/AP → `hostapd.rs` equivalent logic in Rust.
 - DHCP client/server → `dhcp.rs` / `dhcp_server.rs` (replaces `dhclient`/`dnsmasq` DHCP).
@@ -37,7 +37,7 @@ Supersedes multiple status/implementation docs:
 - USB detection, hardware detection, autopilot removal, pipeline fixes consolidated into current codebase.
 
 ## Status
-- All major networking paths are pure Rust; external binaries still required for drivers/firmware and some optional tools (e.g., `airmon-ng` fallback).
+- All major networking paths are pure Rust; external binaries still required for drivers/firmware and some optional tools in specialized pipelines.
 - Linux-only: netlink/D-Bus paths gate on `target_os = "linux"`.
 - Hotspot uses Rust DHCP/DNS + AP; NetworkManager/rfkill handling documented in `hotspot.md`.
 

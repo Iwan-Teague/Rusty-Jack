@@ -24,7 +24,7 @@ Coordinator crate for system operations, pipelines, CLI/autopilot commands, and 
 ## Expectations
 - Root privileges and Linux kernel facilities (netlink, D-Bus, raw sockets).
 - Depends on `rustyjack-netlink`, `rustyjack-wireless`, `rustyjack-ethernet`, `rustyjack-evasion`, `rustyjack-encryption`.
-- Some fallbacks still shell out (`airmon-ng`, etc.) when netlink paths are unavailable; mirror new binary deps in installers if added.
+- Some features still shell out to external tools; mirror new binary deps in installers if added.
 
 ## Contributor notes
 - Keep errors context-rich (interface/BSSID/command) and avoid panics.

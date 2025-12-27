@@ -1003,6 +1003,7 @@ impl App {
                 self.dashboard_view = Some(DashboardView::SystemHealth);
             }
             MenuAction::ToggleDiscord => self.toggle_discord()?,
+            MenuAction::ExportLogsToUsb => self.export_logs_to_usb()?,
             MenuAction::TransferToUSB => self.transfer_to_usb()?,
             MenuAction::HardwareDetect => self.show_hardware_detect()?,
             MenuAction::InstallWifiDrivers => self.install_wifi_drivers()?,
@@ -3445,6 +3446,450 @@ Do not remove power/USB",
         }
         clear_encryption_key();
         Ok(())
+    }
+
+    fn export_logs_to_usb(&mut self) -> Result<()> {
+        let Some((device, mount)) = self.select_usb_device_mount("Export Logs")? else {
+            return Ok(());
+        };
+
+        let status = self.stats.snapshot();
+        self.display.draw_progress_dialog(
+            "Export Logs",
+            "Collecting logs...\nDo not remove USB",
+            15.0,
+            &status,
+        )?;
+
+        let mut contents = String::new();
+        contents.push_str("Rustyjack log export\n");
+        contents.push_str(&format!("timestamp: {}\n", Local::now().to_rfc3339()));
+        contents.push_str(&format!(
+            "usb_device: {} {} {}\n",
+            device.name, device.size, device.model
+        ));
+
+        match self.build_log_export() {
+            Ok(logs) => contents.push_str(&logs),
+            Err(e) => {
+                return self.show_message(
+                    "Export Logs",
+                    [
+                        "Failed to collect logs",
+                        &shorten_for_display(&e.to_string(), 90),
+                    ],
+                );
+            }
+        }
+
+        let dest_dir = mount.join("Rustyjack_Logs");
+        fs::create_dir_all(&dest_dir)?;
+        let ts = Local::now().format("%Y-%m-%d_%H-%M-%S");
+        let filename = format!("rustyjack_logs_{ts}.txt");
+        let dest = dest_dir.join(&filename);
+
+        fs::write(&dest, contents.as_bytes())?;
+
+        self.display.draw_progress_dialog(
+            "Export Logs",
+            "Writing logs...\nDo not remove USB",
+            100.0,
+            &status,
+        )?;
+
+        self.show_message(
+            "Export Logs",
+            [
+                "Saved log bundle",
+                &shorten_for_display(dest.to_string_lossy().as_ref(), 24),
+            ],
+        )?;
+
+        Ok(())
+    }
+
+    fn select_usb_device_mount(&mut self, title: &str) -> Result<Option<(UsbDevice, PathBuf)>> {
+        let devices = match self.list_usb_devices() {
+            Ok(d) => d,
+            Err(e) => {
+                self.show_message(
+                    title,
+                    [
+                        "Failed to list USB devices",
+                        &shorten_for_display(&e.to_string(), 90),
+                    ],
+                )?;
+                return Ok(None);
+            }
+        };
+
+        if devices.is_empty() {
+            self.show_message(
+                title,
+                ["No removable USB devices detected", "Insert USB and retry"],
+            )?;
+            return Ok(None);
+        }
+
+        let labels: Vec<String> = devices
+            .iter()
+            .map(|d| format!("{}  {}  {}", d.name, d.size, d.model))
+            .collect();
+        let Some(choice) = self.choose_from_list("Select USB device", &labels)? else {
+            return Ok(None);
+        };
+
+        let dev = &devices[choice];
+        let mut mount = self.resolve_usb_mount_for_device(&dev.name)?;
+        if mount.is_none() {
+            let dev_name = dev.name.trim_start_matches("/dev/").to_string();
+            mount = self.try_auto_mount_usb(&[dev_name])?;
+        }
+
+        let Some(path) = mount else {
+            self.show_message(
+                title,
+                [
+                    "USB device found but not mounted",
+                    "Check filesystem and retry",
+                ],
+            )?;
+            return Ok(None);
+        };
+
+        Ok(Some((dev.clone(), path)))
+    }
+
+    fn resolve_usb_mount_for_device(&self, device: &str) -> Result<Option<PathBuf>> {
+        let dev_name = device.trim_start_matches("/dev/");
+        let mounts = self.read_mount_points()?;
+        for (dev, mount_point) in mounts {
+            let mounted_name = dev.trim_start_matches("/dev/");
+            if mounted_name.starts_with(dev_name) {
+                let path = PathBuf::from(mount_point);
+                if self.is_writable_mount(&path) {
+                    return Ok(Some(path));
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    fn build_log_export(&self) -> Result<String> {
+        let mut out = String::new();
+
+        Self::append_command_output(
+            &mut out,
+            "journalctl (rustyjack.service)",
+            "journalctl",
+            &[
+                "-u",
+                "rustyjack.service",
+                "-b",
+                "--no-pager",
+                "-o",
+                "short-precise",
+            ],
+        );
+        Self::append_command_output(
+            &mut out,
+            "journalctl (kernel)",
+            "journalctl",
+            &["-k", "-b", "--no-pager", "-o", "short-precise"],
+        );
+        Self::append_command_output(
+            &mut out,
+            "journalctl (system)",
+            "journalctl",
+            &["-b", "--no-pager", "-o", "short-precise"],
+        );
+        Self::append_command_output(
+            &mut out,
+            "journalctl (NetworkManager)",
+            "journalctl",
+            &[
+                "-u",
+                "NetworkManager",
+                "-b",
+                "--no-pager",
+                "-o",
+                "short-precise",
+            ],
+        );
+        Self::append_command_output(
+            &mut out,
+            "journalctl (wpa_supplicant)",
+            "journalctl",
+            &[
+                "-u",
+                "wpa_supplicant",
+                "-b",
+                "--no-pager",
+                "-o",
+                "short-precise",
+            ],
+        );
+
+        self.append_sysfs_network_snapshot(&mut out);
+        self.append_rfkill_status(&mut out);
+        self.append_wpa_supplicant_status(&mut out);
+        self.append_netlink_routes(&mut out);
+        Self::append_file_section(&mut out, "/etc/resolv.conf");
+        Self::append_file_section(&mut out, "/proc/net/route");
+        Self::append_file_section(&mut out, "/proc/net/arp");
+        Self::append_file_section(&mut out, "/proc/net/dev");
+        Self::append_file_section_path(
+            &mut out,
+            &self.root.join("loot").join("logs").join("watchdog.log"),
+        );
+
+        Ok(out)
+    }
+
+    fn append_sysfs_network_snapshot(&self, buf: &mut String) {
+        buf.push_str("\n===== sysfs network interfaces =====\n");
+        let entries = match fs::read_dir("/sys/class/net") {
+            Ok(e) => e,
+            Err(err) => {
+                buf.push_str(&format!("ERROR reading /sys/class/net: {err}\n"));
+                return;
+            }
+        };
+
+        for entry in entries.flatten() {
+            let iface = entry.file_name().to_string_lossy().to_string();
+            if iface == "lo" {
+                continue;
+            }
+            let base = Path::new("/sys/class/net").join(&iface);
+            let read_trim = |path: &Path| -> Option<String> {
+                fs::read_to_string(path).ok().map(|v| v.trim().to_string())
+            };
+            let oper = read_trim(&base.join("operstate")).unwrap_or_else(|| "unknown".to_string());
+            let carrier = read_trim(&base.join("carrier")).unwrap_or_else(|| "unknown".to_string());
+            let mac = read_trim(&base.join("address")).unwrap_or_else(|| "unknown".to_string());
+            let mtu = read_trim(&base.join("mtu")).unwrap_or_else(|| "unknown".to_string());
+            let kind = if base.join("wireless").exists() {
+                "wireless"
+            } else {
+                "wired"
+            };
+            buf.push_str(&format!(
+                "{iface}: kind={kind} operstate={oper} carrier={carrier} mac={mac} mtu={mtu}\n"
+            ));
+        }
+    }
+
+    fn append_rfkill_status(&self, buf: &mut String) {
+        buf.push_str("\n===== rfkill status =====\n");
+        let entries = match fs::read_dir("/sys/class/rfkill") {
+            Ok(entries) => entries,
+            Err(err) => {
+                buf.push_str(&format!("ERROR reading /sys/class/rfkill: {err}\n"));
+                return;
+            }
+        };
+
+        let mut found = false;
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if !name.starts_with("rfkill") {
+                continue;
+            }
+            found = true;
+            let base = entry.path();
+            let read_trim = |path: &Path| -> Option<String> {
+                fs::read_to_string(path).ok().map(|v| v.trim().to_string())
+            };
+            let rf_type = read_trim(&base.join("type")).unwrap_or_else(|| "unknown".to_string());
+            let rf_name = read_trim(&base.join("name")).unwrap_or_else(|| "unknown".to_string());
+            let soft = read_trim(&base.join("soft")).unwrap_or_else(|| "unknown".to_string());
+            let hard = read_trim(&base.join("hard")).unwrap_or_else(|| "unknown".to_string());
+            buf.push_str(&format!(
+                "{}: type={} name={} soft={} hard={}\n",
+                name, rf_type, rf_name, soft, hard
+            ));
+        }
+        if !found {
+            buf.push_str("No rfkill devices found\n");
+        }
+    }
+
+    fn append_wpa_supplicant_status(&self, buf: &mut String) {
+        buf.push_str("\n===== wpa_supplicant status =====\n");
+
+        #[cfg(target_os = "linux")]
+        {
+            let mut found = false;
+            if let Ok(entries) = fs::read_dir("/sys/class/net") {
+                for entry in entries.flatten() {
+                    let iface = entry.file_name().to_string_lossy().to_string();
+                    if iface == "lo" {
+                        continue;
+                    }
+                    if !Path::new("/sys/class/net")
+                        .join(&iface)
+                        .join("wireless")
+                        .exists()
+                    {
+                        continue;
+                    }
+                    found = true;
+                    match rustyjack_netlink::WpaManager::new(&iface) {
+                        Ok(wpa) => match wpa.status() {
+                            Ok(status) => {
+                                buf.push_str(&format!(
+                                    "{}: state={} ssid={:?} bssid={:?} freq={:?} ip={:?}\n",
+                                    iface,
+                                    status.wpa_state,
+                                    status.ssid,
+                                    status.bssid,
+                                    status.freq,
+                                    status.ip_address
+                                ));
+                            }
+                            Err(err) => {
+                                buf.push_str(&format!(
+                                    "{}: ERROR reading status: {}\n",
+                                    iface, err
+                                ));
+                            }
+                        },
+                        Err(err) => {
+                            buf.push_str(&format!(
+                                "{}: ERROR opening control: {}\n",
+                                iface, err
+                            ));
+                        }
+                    }
+                }
+            }
+            if !found {
+                buf.push_str("No wireless interfaces found\n");
+            }
+        }
+
+        #[cfg(not(target_os = "linux"))]
+        {
+            buf.push_str("Not supported on this platform\n");
+        }
+    }
+
+    fn append_netlink_routes(&self, buf: &mut String) {
+        buf.push_str("\n===== netlink routes by interface =====\n");
+
+        #[cfg(target_os = "linux")]
+        {
+            use rustyjack_core::netlink_helpers::{netlink_list_interfaces, netlink_list_routes};
+
+            let interfaces = match netlink_list_interfaces() {
+                Ok(list) => list,
+                Err(err) => {
+                    buf.push_str(&format!("ERROR listing interfaces: {err}\n"));
+                    return;
+                }
+            };
+            let routes = match netlink_list_routes() {
+                Ok(list) => list,
+                Err(err) => {
+                    buf.push_str(&format!("ERROR listing routes: {err}\n"));
+                    return;
+                }
+            };
+
+            let mut iface_map = std::collections::HashMap::new();
+            for iface in &interfaces {
+                iface_map.insert(iface.index, iface.name.clone());
+            }
+
+            let mut routes_by_iface: std::collections::HashMap<String, Vec<String>> =
+                std::collections::HashMap::new();
+            for route in &routes {
+                let iface_name = route
+                    .interface_index
+                    .and_then(|idx| iface_map.get(&idx).cloned())
+                    .unwrap_or_else(|| "unknown".to_string());
+                let dst = route
+                    .destination
+                    .map(|d| d.to_string())
+                    .unwrap_or_else(|| "default".to_string());
+                let gw = route
+                    .gateway
+                    .map(|g| g.to_string())
+                    .unwrap_or_else(|| "-".to_string());
+                let metric = route
+                    .metric
+                    .map(|m| m.to_string())
+                    .unwrap_or_else(|| "-".to_string());
+                let entry = format!(
+                    "dst={}/{} gw={} metric={}",
+                    dst, route.prefix_len, gw, metric
+                );
+                routes_by_iface
+                    .entry(iface_name)
+                    .or_default()
+                    .push(entry);
+            }
+
+            let mut iface_names: Vec<String> = routes_by_iface.keys().cloned().collect();
+            iface_names.sort();
+            if iface_names.is_empty() {
+                buf.push_str("No routes found\n");
+                return;
+            }
+            for name in iface_names {
+                buf.push_str(&format!("{}:\n", name));
+                if let Some(entries) = routes_by_iface.get(&name) {
+                    for entry in entries {
+                        buf.push_str(&format!("  {}\n", entry));
+                    }
+                }
+            }
+        }
+
+        #[cfg(not(target_os = "linux"))]
+        {
+            buf.push_str("Not supported on this platform\n");
+        }
+    }
+
+    fn append_command_output(buf: &mut String, title: &str, program: &str, args: &[&str]) {
+        buf.push_str(&format!("\n===== {title} =====\n"));
+        let output = Command::new(program).args(args).output();
+        match output {
+            Ok(output) => {
+                if !output.status.success() {
+                    buf.push_str(&format!(
+                        "ERROR: command exited with {:?}\n",
+                        output.status.code()
+                    ));
+                }
+                buf.push_str(&String::from_utf8_lossy(&output.stdout));
+                if !output.stderr.is_empty() {
+                    buf.push_str("\n[stderr]\n");
+                    buf.push_str(&String::from_utf8_lossy(&output.stderr));
+                }
+            }
+            Err(err) => {
+                buf.push_str(&format!("ERROR: failed to run {program}: {err}\n"));
+            }
+        }
+    }
+
+    fn append_file_section(buf: &mut String, path: &str) {
+        buf.push_str(&format!("\n===== {path} =====\n"));
+        match fs::read_to_string(path) {
+            Ok(contents) => buf.push_str(&contents),
+            Err(err) => buf.push_str(&format!("ERROR: {err}\n")),
+        }
+    }
+
+    fn append_file_section_path(buf: &mut String, path: &Path) {
+        buf.push_str(&format!("\n===== {} =====\n", path.display()));
+        match fs::read_to_string(path) {
+            Ok(contents) => buf.push_str(&contents),
+            Err(err) => buf.push_str(&format!("ERROR: {err}\n")),
+        }
     }
 
     fn transfer_to_usb(&mut self) -> Result<()> {

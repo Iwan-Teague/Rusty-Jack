@@ -3,8 +3,8 @@
 Pure-Rust networking stack replacing common external binaries on Linux. Provides netlink/D-Bus/raw-socket wrappers for the rest of the project.
 
 ## Responsibilities
-- Link/route: `InterfaceManager`, `RouteManager` (up/down, MAC, MTU, addresses, routes) replacing `ip`.
-- Wireless/nl80211: `WirelessManager` (mode, channel, tx power, iface creation/deletion, capability queries) replacing `iw`.
+- Link/route: `InterfaceManager`, `RouteManager` (up/down, MAC, MTU, addresses, routes) via netlink.
+- Wireless/nl80211: `WirelessManager` (mode, channel, tx power, iface creation/deletion, capability queries) via nl80211.
 - WPA control: `wpa.rs` (control socket client) replacing `wpa_cli` subprocess usage.
 - AP: hostapd-equivalent logic in Rust for starting/stopping APs.
 - DHCP: `dhcp.rs` (client) replacing `dhclient`; `dhcp_server.rs` replacing `dnsmasq` DHCP.
@@ -31,8 +31,8 @@ Pure-Rust networking stack replacing common external binaries on Linux. Provides
 ## File-by-file breakdown
 - `lib.rs`: crate surface exposing modules and re-exports for consumers (`InterfaceManager`, `WirelessManager`, DHCP/DNS types, etc.); Linux guards applied where appropriate.
 - `error.rs`: error enum/types used across modules to provide context-rich failures.
-- `interface.rs`: link-layer manager (up/down, MAC set, MTU, add/del addresses, list interfaces, query info). Replaces `ip link/addr` for common operations.
-- `route.rs`: route manager for adding/deleting default routes and static routes; replaces `ip route`.
+- `interface.rs`: link-layer manager (up/down, MAC set, MTU, add/del addresses, list interfaces, query info).
+- `route.rs`: route manager for adding/deleting default routes and static routes.
 - `wireless.rs`: nl80211 helper functions for wireless interface operations (set type/mode, create/delete VIFs, get interface/phy capabilities, set channel/txpower); core building block for `WirelessManager`.
 - `wpa.rs`: control-socket client for `wpa_supplicant` (status, reconnect, disconnect, scan, connect config management) replacing `wpa_cli` subprocesses.
 - `hostapd.rs`: Rust AP/hostapd-like logic to start/stop AP mode and manage basic AP config.

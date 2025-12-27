@@ -149,9 +149,9 @@ sudo journalctl -u rustyjack.service -f
 
 If you still get ERANGE errors even with NO_HT mode, the adapter might not support AP mode properly. Try:
 
-1. **Check adapter capabilities**:
+1. **Check adapter capabilities (Rustyjack logs)**:
    ```bash
-   iw list | grep -A 10 "Supported interface modes"
+   journalctl -u rustyjack.service -b --no-pager | grep -i "AP capability"
    ```
    
 2. **Try external USB WiFi adapter**:

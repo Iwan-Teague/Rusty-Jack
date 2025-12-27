@@ -10,7 +10,7 @@ MAC/hostname randomization, TX power, passive mode, and interface state manageme
 - **State restore**: tracks original MAC/txpower/monitor IFs to restore on drop or on demand.
 
 ## Dependencies
-- `rustyjack-evasion` for MAC/txpower/passive; `rustyjack-netlink` for iface operations; `airmon-ng` fallback for monitor mode when needed.
+- `rustyjack-evasion` for MAC/txpower/passive; `rustyjack-netlink` for iface operations.
 - `rustyjack-core` bridges these controls to UI/CLI and enforces them in pipelines.
 
 ## Notes

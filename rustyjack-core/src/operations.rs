@@ -21,8 +21,8 @@ use rustyjack_evasion::{
 };
 use rustyjack_wireless::{
     arp_scan, calculate_bandwidth, discover_gateway, discover_mdns_devices, get_traffic_stats,
-    parse_dns_query, scan_network_services, start_dns_capture, start_hotspot, status_hotspot,
-    stop_hotspot, HotspotConfig, HotspotState,
+    capture_dns_queries, scan_network_services, start_hotspot, status_hotspot, stop_hotspot,
+    HotspotConfig, HotspotState,
 };
 use serde_json::{json, Value};
 use walkdir::WalkDir;
@@ -1350,39 +1350,21 @@ fn handle_wifi_recon_bandwidth(args: WifiReconBandwidthArgs) -> Result<HandlerRe
 }
 
 fn handle_wifi_recon_dns_capture(args: WifiReconDnsCaptureArgs) -> Result<HandlerResult> {
-    use std::io::BufRead;
-
     log::info!(
         "Capturing DNS queries on {} for {} seconds",
         args.interface,
         args.duration
     );
 
-    let mut child = start_dns_capture(&args.interface)?;
-    let stdout = child.stdout.take().context("Failed to capture stdout")?;
-    let reader = BufReader::new(stdout);
-
-    let start = std::time::Instant::now();
+    let results = capture_dns_queries(&args.interface, Duration::from_secs(args.duration))?;
     let mut queries = Vec::new();
-
-    for line in reader.lines() {
-        if start.elapsed().as_secs() >= args.duration {
-            break;
-        }
-
-        if let Ok(line_str) = line {
-            if let Some(query) = parse_dns_query(&line_str) {
-                queries.push(json!({
-                    "domain": query.domain,
-                    "type": query.query_type,
-                    "source": query.source_ip.to_string(),
-                }));
-            }
-        }
+    for query in results {
+        queries.push(json!({
+            "domain": query.domain,
+            "type": query.query_type,
+            "source": query.source_ip.to_string(),
+        }));
     }
-
-    let _ = child.kill();
-    let _ = child.wait();
 
     let data = json!({
         "interface": args.interface,
@@ -3502,6 +3484,18 @@ fn handle_hardware_detect() -> Result<HandlerResult> {
     log::info!("Scanning hardware interfaces");
 
     let interfaces = list_interface_summaries()?;
+    for iface in &interfaces {
+        if iface.name == "lo" {
+            continue;
+        }
+        log::info!(
+            "[HW] iface={} kind={} state={} ip={:?}",
+            iface.name,
+            iface.kind,
+            iface.oper_state,
+            iface.ip
+        );
+    }
 
     // Categorize interfaces
     let mut ethernet_ports = Vec::new();

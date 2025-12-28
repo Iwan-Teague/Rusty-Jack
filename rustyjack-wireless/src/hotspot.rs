@@ -900,17 +900,14 @@ fn ensure_upstream_ready(interface: &str) -> Result<()> {
             })
     };
 
-    let get_iface = |interfaces: &[rustyjack_netlink::InterfaceInfo]| {
-        interfaces
-            .iter()
-            .find(|i| i.name == interface)
-            .ok_or_else(|| {
-                WirelessError::Interface(format!("Upstream interface {} not found", interface))
-            })
-    };
-
     let mut interfaces = fetch_interfaces()?;
-    let mut iface_info = get_iface(&interfaces)?.clone();
+    let mut iface_info = interfaces
+        .iter()
+        .find(|i| i.name == interface)
+        .cloned()
+        .ok_or_else(|| {
+            WirelessError::Interface(format!("Upstream interface {} not found", interface))
+        })?;
     let mut has_ipv4 = iface_info
         .addresses
         .iter()
@@ -978,7 +975,16 @@ fn ensure_upstream_ready(interface: &str) -> Result<()> {
 
         if !has_ipv4 {
             interfaces = fetch_interfaces()?;
-            iface_info = get_iface(&interfaces)?.clone();
+            iface_info = interfaces
+                .iter()
+                .find(|i| i.name == interface)
+                .cloned()
+                .ok_or_else(|| {
+                    WirelessError::Interface(format!(
+                        "Upstream interface {} not found",
+                        interface
+                    ))
+                })?;
             has_ipv4 = iface_info
                 .addresses
                 .iter()

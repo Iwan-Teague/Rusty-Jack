@@ -7,7 +7,7 @@ use std::{
     process::{Command, Stdio},
     sync::mpsc::{self, TryRecvError},
     thread,
-    time::{Duration, Instant, SystemTime},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use std::collections::HashMap;
@@ -41,6 +41,8 @@ use rustyjack_wireless::crack::{
     generate_common_passwords, generate_ssid_passwords, CrackProgress, CrackResult, CrackerConfig,
     WpaCracker,
 };
+#[cfg(target_os = "linux")]
+use rustyjack_wireless::{hotspot_disconnect_client, hotspot_leases, hotspot_set_blacklist};
 
 use crate::{
     config::{BlacklistedDevice, GuiConfig},
@@ -12325,7 +12327,6 @@ Do not remove power/USB",
 
     fn show_hotspot_connected_devices(&mut self, ap_iface: &str) -> Result<()> {
         // Get currently connected clients by checking ARP table for active devices
-        let lease_path = "/var/lib/misc/dnsmasq.leases";
         let mut clients = Vec::new();
         let mut active_macs = HashSet::new();
 
@@ -12370,49 +12371,61 @@ Do not remove power/USB",
             }
         }
 
-        if let Ok(content) = std::fs::read_to_string(lease_path) {
-            for line in content.lines() {
-                let parts: Vec<&str> = line.split_whitespace().collect();
-                if parts.len() >= 5 {
-                    // Format: timestamp mac ip hostname client-id
-                    let lease_timestamp = parts[0];
-                    let mac = parts[1].to_lowercase();
-                    let ip = parts[2];
-                    let hostname = if parts[3] == "*" { "Unknown" } else { parts[3] };
+        let leases = hotspot_leases();
+        for lease in leases {
+            let mac = format!(
+                "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+                lease.mac[0],
+                lease.mac[1],
+                lease.mac[2],
+                lease.mac[3],
+                lease.mac[4],
+                lease.mac[5]
+            );
+            let ip = lease.ip.to_string();
+            let mut hostname = lease.hostname.unwrap_or_else(|| "Unknown".to_string());
+            if hostname.is_empty() {
+                hostname = "Unknown".to_string();
+            }
+            let lease_timestamp = if lease.lease_start > 0 {
+                let ts = UNIX_EPOCH + Duration::from_secs(lease.lease_start);
+                let dt: chrono::DateTime<Local> = ts.into();
+                dt.format("%Y-%m-%d %H:%M:%S").to_string()
+            } else {
+                "Unknown".to_string()
+            };
 
-                    // Log to history file only if this MAC hasn't been logged before
-                    if !logged_devices.contains(&mac) {
-                        let now = Local::now().format("%Y-%m-%d %H:%M:%S");
-                        let history_entry = format!(
-                            "{} | MAC: {} | IP: {} | Hostname: {} | Lease Timestamp: {}\n",
-                            now, mac, ip, hostname, lease_timestamp
-                        );
-                        if let Ok(mut file) = fs::OpenOptions::new()
-                            .create(true)
-                            .append(true)
-                            .open(&history_path)
-                        {
-                            let _ = file.write_all(history_entry.as_bytes());
-                        }
-                        logged_devices.insert(mac.clone());
-                    }
-
-                    // Skip blacklisted devices
-                    if self
-                        .config
-                        .settings
-                        .hotspot_blacklist
-                        .iter()
-                        .any(|d| d.mac.to_lowercase() == mac)
-                    {
-                        continue;
-                    }
-
-                    // Only add to display list if currently active
-                    if active_macs.contains(&mac) {
-                        clients.push((mac.to_string(), ip.to_string(), hostname.to_string()));
-                    }
+            // Log to history file only if this MAC hasn't been logged before
+            if !logged_devices.contains(&mac) {
+                let now = Local::now().format("%Y-%m-%d %H:%M:%S");
+                let history_entry = format!(
+                    "{} | MAC: {} | IP: {} | Hostname: {} | Lease Timestamp: {}\n",
+                    now, mac, ip, hostname, lease_timestamp
+                );
+                if let Ok(mut file) = fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&history_path)
+                {
+                    let _ = file.write_all(history_entry.as_bytes());
                 }
+                logged_devices.insert(mac.clone());
+            }
+
+            // Skip blacklisted devices
+            if self
+                .config
+                .settings
+                .hotspot_blacklist
+                .iter()
+                .any(|d| d.mac.to_lowercase() == mac)
+            {
+                continue;
+            }
+
+            // Only add to display list if currently active
+            if active_macs.contains(&mac) {
+                clients.push((mac.to_string(), ip.to_string(), hostname.to_string()));
             }
         }
 
@@ -12639,7 +12652,7 @@ Do not remove power/USB",
         let config_path = self.root.join("gui_conf.json");
         self.config.save(&config_path)?;
 
-        // Update dnsmasq to block this MAC
+        // Update hotspot blacklist in Rust DHCP server
         self.apply_hotspot_blacklist()?;
 
         // Disconnect the device immediately
@@ -12677,7 +12690,7 @@ Do not remove power/USB",
         let config_path = self.root.join("gui_conf.json");
         self.config.save(&config_path)?;
 
-        // Update dnsmasq configuration
+        // Update hotspot blacklist in Rust DHCP server
         self.apply_hotspot_blacklist()?;
 
         self.show_message(
@@ -12692,20 +12705,14 @@ Do not remove power/USB",
         )
     }
 
-    fn disconnect_hotspot_client(&mut self, mac: &str, ip: &str) -> Result<()> {
-        use std::process::Command;
-
-        // Remove DHCP lease
-        if !ip.is_empty() {
-            let _ = Command::new("dhcp_release")
-                .args(["wlan0", ip, mac])
-                .status();
+    fn disconnect_hotspot_client(&mut self, mac: &str, _ip: &str) -> Result<()> {
+        if let Err(err) = hotspot_disconnect_client(mac) {
+            log::warn!("Hotspot disconnect failed for {}: {}", mac, err);
+            return self.show_message(
+                "Disconnect Failed",
+                ["Could not disconnect", "device. Check logs."],
+            );
         }
-
-        // Deauth the client (force disconnect)
-        let _ = Command::new("hostapd_cli")
-            .args(["deauthenticate", mac])
-            .status();
 
         self.show_message(
             "Device Disconnected",
@@ -12714,35 +12721,15 @@ Do not remove power/USB",
     }
 
     fn apply_hotspot_blacklist(&mut self) -> Result<()> {
-        use std::fs;
-        use std::process::Command;
+        let macs: Vec<String> = self
+            .config
+            .settings
+            .hotspot_blacklist
+            .iter()
+            .map(|d| d.mac.clone())
+            .collect();
 
-        let conf_dir = "/tmp/rustyjack_hotspot";
-        let dnsmasq_conf_path = format!("{}/dnsmasq.conf", conf_dir);
-
-        // Read existing config
-        let mut config = if let Ok(content) = fs::read_to_string(&dnsmasq_conf_path) {
-            content
-        } else {
-            return Ok(()); // No hotspot running
-        };
-
-        // Remove old dhcp-host entries
-        config.retain(|c| {
-            let line = c.to_string();
-            !line.contains("dhcp-host=") || !line.contains("ignore")
-        });
-
-        // Add blacklist entries
-        for device in &self.config.settings.hotspot_blacklist {
-            config.push_str(&format!("dhcp-host={},ignore\n", device.mac));
-        }
-
-        // Write updated config
-        fs::write(&dnsmasq_conf_path, config)?;
-
-        // Reload dnsmasq
-        let _ = Command::new("pkill").args(["-HUP", "dnsmasq"]).status();
+        hotspot_set_blacklist(&macs).context("applying hotspot blacklist")?;
 
         Ok(())
     }

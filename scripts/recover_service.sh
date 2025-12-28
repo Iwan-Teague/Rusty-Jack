@@ -14,8 +14,6 @@ sleep 2
 # 2. Kill any remaining processes
 echo "2. Killing any remaining Rustyjack processes..."
 sudo pkill -f rustyjack-ui || echo "  No rustyjack-ui processes found"
-sudo pkill -f hostapd || echo "  No hostapd processes found"
-sudo pkill -f dnsmasq || echo "  No dnsmasq processes found"
 sleep 1
 
 # 3. Reset failed state

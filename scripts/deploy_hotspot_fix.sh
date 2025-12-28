@@ -13,8 +13,6 @@ sudo systemctl stop rustyjack
 # 2. Kill any remaining processes
 echo "2. Cleaning up processes..."
 sudo pkill -f rustyjack-ui
-sudo pkill -f hostapd
-sudo pkill -f dnsmasq
 
 # 3. Ensure RF-kill is unblocked
 echo "3. Unblocking RF-kill..."
@@ -105,4 +103,3 @@ echo "    to prevent NetworkManager from blocking RF-kill"
 echo "  - wlan0 (Pi Zero 2 W built-in) does NOT support AP mode"
 echo "  - You need a USB WiFi adapter (wlan1) for hotspot"
 echo
-

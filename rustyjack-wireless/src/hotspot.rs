@@ -1,19 +1,22 @@
+use std::collections::{HashMap, HashSet};
 use std::fs;
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::net::{IpAddr, Ipv4Addr};
 use std::path::Path;
+use std::str::FromStr;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::JoinHandle;
 use std::time::Instant;
 
 use rand::{distributions::Alphanumeric, rngs::OsRng, Rng};
 use rustyjack_netlink::{
-    AccessPoint, ApConfig, ApSecurity, DhcpConfig, DhcpServer, DnsConfig, DnsRule, DnsServer,
-    InterfaceMode, IptablesManager,
+    AccessPoint, ApConfig, ApSecurity, DhcpConfig, DhcpServer, DhcpServerLease, DnsConfig,
+    DnsRule, DnsServer, InterfaceMode, IptablesManager,
 };
 
 use crate::error::{Result, WirelessError};
+use crate::frames::MacAddress;
 use crate::netlink_helpers::{
     netlink_add_address, netlink_flush_addresses, netlink_set_interface_down,
     netlink_set_interface_up, select_hw_mode,
@@ -31,6 +34,8 @@ static ACCESS_POINT: OnceLock<Mutex<Option<AccessPoint>>> = OnceLock::new();
 struct DhcpRuntime {
     handle: Option<JoinHandle<()>>,
     running: Arc<Mutex<bool>>,
+    leases: Arc<Mutex<HashMap<[u8; 6], DhcpServerLease>>>,
+    denylist: Arc<Mutex<HashSet<[u8; 6]>>>,
 }
 
 /// Configuration for starting an access point hotspot.
@@ -721,6 +726,150 @@ pub fn status_hotspot() -> Option<HotspotState> {
     }
 }
 
+/// Return active hotspot DHCP leases (empty if no server running).
+pub fn hotspot_leases() -> Vec<DhcpServerLease> {
+    let dhcp_mutex = match DHCP_SERVER.get() {
+        Some(mutex) => mutex,
+        None => return Vec::new(),
+    };
+    let guard = match dhcp_mutex.lock() {
+        Ok(guard) => guard,
+        Err(_) => return Vec::new(),
+    };
+    let runtime = match guard.as_ref() {
+        Some(runtime) => runtime,
+        None => return Vec::new(),
+    };
+
+    runtime
+        .leases
+        .lock()
+        .map(|leases| {
+            leases
+                .values()
+                .filter(|lease| !lease.is_expired())
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Disconnect a hotspot client and release its DHCP lease.
+pub fn hotspot_disconnect_client(mac: &str) -> Result<()> {
+    let mac_bytes = parse_mac_bytes(mac)?;
+    let mut did_action = false;
+
+    if let Some(dhcp_mutex) = DHCP_SERVER.get() {
+        if let Ok(guard) = dhcp_mutex.lock() {
+            if let Some(runtime) = guard.as_ref() {
+                if let Ok(mut leases) = runtime.leases.lock() {
+                    leases.remove(&mac_bytes);
+                    did_action = true;
+                }
+            }
+        }
+    }
+
+    if let Some(ap_mutex) = ACCESS_POINT.get() {
+        if let Ok(guard) = ap_mutex.lock() {
+            if let Some(ap) = guard.as_ref() {
+                if let Err(err) = deauth_client(ap, mac_bytes) {
+                    log::warn!("Failed to deauth hotspot client {}: {}", mac, err);
+                } else {
+                    did_action = true;
+                }
+            }
+        }
+    }
+
+    if !did_action {
+        return Err(WirelessError::System(
+            "Hotspot not running; no client action performed".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
+/// Replace the hotspot DHCP denylist with the provided MACs.
+pub fn hotspot_set_blacklist(macs: &[String]) -> Result<()> {
+    let dhcp_mutex = DHCP_SERVER.get().ok_or_else(|| {
+        WirelessError::System("Hotspot DHCP server not running".to_string())
+    })?;
+
+    let mut parsed = HashSet::new();
+    for mac in macs {
+        match parse_mac_bytes(mac) {
+            Ok(bytes) => {
+                parsed.insert(bytes);
+            }
+            Err(err) => {
+                log::warn!("Skipping invalid blacklist MAC {}: {}", mac, err);
+            }
+        }
+    }
+
+    let to_disconnect: Vec<[u8; 6]> = parsed.iter().copied().collect();
+
+    let guard = dhcp_mutex
+        .lock()
+        .map_err(|_| WirelessError::System("DHCP server mutex poisoned".to_string()))?;
+    let runtime = guard.as_ref().ok_or_else(|| {
+        WirelessError::System("Hotspot DHCP server not running".to_string())
+    })?;
+    if let Ok(mut denylist) = runtime.denylist.lock() {
+        denylist.clear();
+        denylist.extend(parsed.iter().copied());
+    }
+    if let Ok(mut leases) = runtime.leases.lock() {
+        for mac in &parsed {
+            leases.remove(mac);
+        }
+    }
+
+    if let Some(ap_mutex) = ACCESS_POINT.get() {
+        if let Ok(guard) = ap_mutex.lock() {
+            if let Some(ap) = guard.as_ref() {
+                for mac in to_disconnect {
+                    if let Err(err) = deauth_client(ap, mac) {
+                        log::warn!(
+                            "Failed to deauth blacklisted client {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}: {}",
+                            mac[0], mac[1], mac[2], mac[3], mac[4], mac[5], err
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn parse_mac_bytes(mac: &str) -> Result<[u8; 6]> {
+    let addr = MacAddress::from_str(mac)?;
+    Ok(addr.0)
+}
+
+fn deauth_client(ap: &AccessPoint, mac: [u8; 6]) -> Result<()> {
+    tokio::runtime::Handle::try_current()
+        .map(|handle| {
+            handle.block_on(async {
+                ap.disconnect_client(&mac)
+                    .await
+                    .map_err(|e| WirelessError::System(format!("AP deauth failed: {}", e)))
+            })
+        })
+        .unwrap_or_else(|_| {
+            let rt = tokio::runtime::Runtime::new()
+                .map_err(|e| WirelessError::System(format!("Failed to create runtime: {}", e)))?;
+            rt.block_on(async {
+                ap.disconnect_client(&mac)
+                    .await
+                    .map_err(|e| WirelessError::System(format!("AP deauth failed: {}", e)))
+            })
+        })
+}
+
 fn persist_state(state: &HotspotState) -> Result<()> {
     fs::create_dir_all(CONF_DIR).map_err(|e| WirelessError::System(format!("mkdir: {e}")))?;
     #[cfg(unix)]
@@ -782,6 +931,8 @@ fn start_dhcp_server(interface: &str, gateway_ip: Ipv4Addr) -> Result<()> {
     let mut server = DhcpServer::new(dhcp_cfg.clone())
         .map_err(|e| WirelessError::System(format!("Failed to create DHCP server: {}", e)))?;
     let running_handle = server.running_handle();
+    let leases_handle = server.leases_handle();
+    let denylist_handle = server.denylist_handle();
     server
         .start()
         .map_err(|e| WirelessError::System(format!("Failed to start DHCP server: {}", e)))?;
@@ -801,6 +952,8 @@ fn start_dhcp_server(interface: &str, gateway_ip: Ipv4Addr) -> Result<()> {
     *guard = Some(DhcpRuntime {
         handle: Some(handle),
         running: running_handle,
+        leases: leases_handle,
+        denylist: denylist_handle,
     });
 
     Ok(())

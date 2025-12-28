@@ -1,5 +1,5 @@
 #[allow(dead_code)]
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -164,6 +164,7 @@ pub struct DhcpServer {
     config: DhcpConfig,
     socket: Option<UdpSocket>,
     leases: Arc<Mutex<HashMap<[u8; 6], DhcpLease>>>,
+    denylist: Arc<Mutex<HashSet<[u8; 6]>>>,
     running: Arc<Mutex<bool>>,
 }
 
@@ -186,6 +187,7 @@ impl DhcpServer {
             config,
             socket: None,
             leases: Arc::new(Mutex::new(HashMap::new())),
+            denylist: Arc::new(Mutex::new(HashSet::new())),
             running: Arc::new(Mutex::new(false)),
         })
     }
@@ -261,6 +263,24 @@ impl DhcpServer {
         Arc::clone(&self.running)
     }
 
+    /// Expose a handle to current DHCP leases (for status/management).
+    pub fn leases_handle(&self) -> Arc<Mutex<HashMap<[u8; 6], DhcpLease>>> {
+        Arc::clone(&self.leases)
+    }
+
+    /// Expose a handle to the denylist.
+    pub fn denylist_handle(&self) -> Arc<Mutex<HashSet<[u8; 6]>>> {
+        Arc::clone(&self.denylist)
+    }
+
+    /// Replace the entire denylist with the provided MACs.
+    pub fn set_denylist(&self, macs: &[[u8; 6]]) {
+        if let Ok(mut denylist) = self.denylist.lock() {
+            denylist.clear();
+            denylist.extend(macs.iter().copied());
+        }
+    }
+
     /// Request server shutdown.
     pub fn stop(&mut self) {
         if let Ok(mut running) = self.running.lock() {
@@ -334,17 +354,35 @@ impl DhcpServer {
                 reason: "Missing message type option".to_string(),
             })?;
 
+        let mut mac_bytes = [0u8; 6];
+        mac_bytes.copy_from_slice(&packet.chaddr[..6]);
+
+        if self.is_denied(&mac_bytes) {
+            if self.config.log_packets {
+                eprintln!(
+                    "[DHCP] Ignoring {} from blocked {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+                    Self::message_type_name(msg_type),
+                    mac_bytes[0],
+                    mac_bytes[1],
+                    mac_bytes[2],
+                    mac_bytes[3],
+                    mac_bytes[4],
+                    mac_bytes[5]
+                );
+            }
+            return Ok(());
+        }
+
         if self.config.log_packets {
-            let mac = &packet.chaddr[..6];
             eprintln!(
                 "[DHCP] Received {} from {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
                 Self::message_type_name(msg_type),
-                mac[0],
-                mac[1],
-                mac[2],
-                mac[3],
-                mac[4],
-                mac[5]
+                mac_bytes[0],
+                mac_bytes[1],
+                mac_bytes[2],
+                mac_bytes[3],
+                mac_bytes[4],
+                mac_bytes[5]
             );
         }
 
@@ -356,6 +394,13 @@ impl DhcpServer {
             DHCPINFORM => Ok(()),
             _ => Ok(()),
         }
+    }
+
+    fn is_denied(&self, mac: &[u8; 6]) -> bool {
+        self.denylist
+            .lock()
+            .map(|denylist| denylist.contains(mac))
+            .unwrap_or(false)
     }
 
     fn handle_discover(&self, packet: &DhcpPacket) -> Result<()> {

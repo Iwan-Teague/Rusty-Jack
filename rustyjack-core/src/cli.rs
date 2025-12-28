@@ -85,7 +85,7 @@ pub enum EthernetCommand {
 
 #[derive(Subcommand, Debug)]
 pub enum HotspotCommand {
-    /// Start a NATed hotspot (hostapd + dnsmasq)
+    /// Start a NATed hotspot (Rust AP + DHCP/DNS)
     Start(HotspotStartArgs),
     /// Stop the hotspot and clean up
     Stop,

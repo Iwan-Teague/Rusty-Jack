@@ -2,6 +2,17 @@
 # Hotspot debugging helper script
 # Run this on the Pi to check RF-kill and NetworkManager status
 
+CORE_BIN=""
+if command -v rustyjack-core >/dev/null 2>&1; then
+  CORE_BIN="$(command -v rustyjack-core)"
+elif [ -x /usr/local/bin/rustyjack-core ]; then
+  CORE_BIN="/usr/local/bin/rustyjack-core"
+elif [ -x /root/Rustyjack/rustyjack-core/target/release/rustyjack-core ]; then
+  CORE_BIN="/root/Rustyjack/rustyjack-core/target/release/rustyjack-core"
+elif [ -x /root/Rustyjack/rustyjack-core/target/debug/rustyjack-core ]; then
+  CORE_BIN="/root/Rustyjack/rustyjack-core/target/debug/rustyjack-core"
+fi
+
 echo "=========================================="
 echo "Rustyjack Hotspot Status Check"
 echo "=========================================="
@@ -37,13 +48,13 @@ else
 fi
 echo
 
-echo "4. Running Hotspot Processes:"
-echo "----------------------------"
-echo "hostapd:"
-ps aux | grep -E '[h]ostapd' || echo "  Not running"
-echo
-echo "dnsmasq:"
-ps aux | grep -E '[d]nsmasq.*rustyjack' || echo "  Not running"
+echo "4. Rustyjack Hotspot Status:"
+echo "---------------------------"
+if [ -n "$CORE_BIN" ]; then
+  sudo "$CORE_BIN" --output text hotspot status || echo "  Hotspot status command failed"
+else
+  echo "  rustyjack-core not found"
+fi
 echo
 
 echo "5. wpa_supplicant Processes:"
@@ -86,8 +97,6 @@ echo "sudo nmcli device set wlan1 managed no"
 echo
 echo "# Kill interfering processes:"
 echo "sudo pkill -f 'wpa_supplicant.*wlan1'"
-echo "sudo pkill -f hostapd"
-echo "sudo pkill -f dnsmasq"
 echo
 echo "# Bring interface down and up:"
 echo "sudo ip link set wlan1 down"

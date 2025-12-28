@@ -1337,20 +1337,53 @@ pub fn ensure_route_no_isolation(interface: &str) -> Result<Option<Ipv4Addr>> {
 
     #[cfg(target_os = "linux")]
     {
+        let iface_path = Path::new("/sys/class/net").join(interface);
+        if !iface_path.exists() {
+            bail!("interface {} not found", interface);
+        }
         let _ = netlink_set_interface_up(interface);
+        let oper_state = fs::read_to_string(iface_path.join("operstate"))
+            .unwrap_or_else(|_| "unknown".to_string())
+            .trim()
+            .to_string();
+        let carrier = fs::read_to_string(iface_path.join("carrier"))
+            .unwrap_or_else(|_| "unknown".to_string())
+            .trim()
+            .to_string();
+        let ipv4_addrs = netlink_get_ipv4_addresses(interface)
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|addr| match addr.address {
+                std::net::IpAddr::V4(v4) => Some(v4.to_string()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        log::info!(
+            "[ROUTE] ensure_route_no_isolation iface={} operstate={} carrier={} ipv4={:?}",
+            interface,
+            oper_state,
+            carrier,
+            ipv4_addrs
+        );
     }
 
     let mut gateway = interface_gateway(interface)?;
     if gateway.is_none() {
+        log::info!(
+            "[ROUTE] No gateway detected for {}; attempting DHCP acquire",
+            interface
+        );
         gateway = dhcp_acquire_gateway(interface)?;
     }
 
     if let Some(gateway) = gateway {
+        log::info!("[ROUTE] Setting default route via {} on {}", gateway, interface);
         set_default_route(interface, gateway)?;
         let _ = rewrite_dns_servers(interface, gateway);
         return Ok(Some(gateway));
     }
 
+    log::warn!("[ROUTE] No gateway found for {} after DHCP", interface);
     Ok(None)
 }
 
@@ -1909,6 +1942,8 @@ pub fn scan_wifi_networks(interface: &str) -> Result<Vec<WifiNetwork>> {
         bail!("interface cannot be empty");
     }
 
+    log_wifi_preflight(interface);
+
     if let Ok(Some(idx)) = rfkill_find_index(interface) {
         if let Err(e) = rfkill_unblock(idx) {
             log::warn!("Failed to unblock rfkill for {interface}: {e}");
@@ -1919,14 +1954,20 @@ pub fn scan_wifi_networks(interface: &str) -> Result<Vec<WifiNetwork>> {
     std::thread::sleep(std::time::Duration::from_millis(750));
 
     if let Err(e) = rustyjack_netlink::start_wpa_supplicant(interface, None) {
-        log::warn!(
-            "[WIFI] wpa_supplicant not started for {}: {}",
-            interface,
-            e
-        );
+        log::warn!("[WIFI] wpa_supplicant not started for {}: {}", interface, e);
     }
 
+    let control_path =
+        rustyjack_netlink::ensure_wpa_control_socket(interface, None).with_context(|| {
+            format!("ensuring wpa_supplicant control socket for {}", interface)
+        })?;
+    log::info!(
+        "[WIFI] Using wpa_supplicant control socket at {}",
+        control_path.display()
+    );
+
     let wpa = rustyjack_netlink::WpaManager::new(interface)
+        .with_control_path(control_path)
         .with_context(|| format!("opening wpa_supplicant control for {}", interface))?;
     wpa.scan()
         .with_context(|| format!("triggering scan on {}", interface))?;
@@ -1974,6 +2015,105 @@ pub fn scan_wifi_networks(interface: &str) -> Result<Vec<WifiNetwork>> {
     }
 
     Ok(networks)
+}
+
+fn log_wifi_preflight(interface: &str) {
+    let base = Path::new("/sys/class/net").join(interface);
+    if !base.exists() {
+        log::warn!("[WIFI] Preflight: interface {} not found in sysfs", interface);
+        return;
+    }
+
+    let read_trim = |path: &Path| -> String {
+        fs::read_to_string(path)
+            .unwrap_or_else(|_| "unknown".to_string())
+            .trim()
+            .to_string()
+    };
+    let oper = read_trim(&base.join("operstate"));
+    let carrier = read_trim(&base.join("carrier"));
+    let mac = read_trim(&base.join("address"));
+    let ipv4 = netlink_get_ipv4_addresses(interface)
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|addr| match addr.address {
+            std::net::IpAddr::V4(v4) => Some(v4.to_string()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    log::info!(
+        "[WIFI] Preflight iface={} operstate={} carrier={} mac={} ipv4={:?}",
+        interface,
+        oper,
+        carrier,
+        mac,
+        ipv4
+    );
+
+    if let Ok(Some(idx)) = rfkill_find_index(interface) {
+        let rf_base = Path::new("/sys/class/rfkill").join(format!("rfkill{idx}"));
+        let soft = read_trim(&rf_base.join("soft"));
+        let hard = read_trim(&rf_base.join("hard"));
+        let name = read_trim(&rf_base.join("name"));
+        log::info!(
+            "[WIFI] Preflight rfkill iface={} idx={} name={} soft={} hard={}",
+            interface,
+            idx,
+            name,
+            soft,
+            hard
+        );
+    } else {
+        log::info!("[WIFI] Preflight rfkill iface={} idx=none", interface);
+    }
+
+    let sockets = rustyjack_netlink::wpa_control_socket_status(interface);
+    if sockets.is_empty() {
+        log::warn!("[WIFI] Preflight ctrl sockets iface={} none", interface);
+    } else {
+        let rendered = sockets
+            .iter()
+            .map(|(path, exists)| {
+                format!("{}={}", path.display(), if *exists { "ok" } else { "missing" })
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        log::info!(
+            "[WIFI] Preflight ctrl sockets iface={} {}",
+            interface,
+            rendered
+        );
+    }
+
+    let pm = rustyjack_netlink::ProcessManager::new();
+    match pm.find_by_pattern("wpa_supplicant") {
+        Ok(list) => {
+            let matches: Vec<String> = list
+                .into_iter()
+                .filter(|p| p.cmdline.contains(interface))
+                .map(|p| format!("pid={} cmd={}", p.pid, p.cmdline))
+                .collect();
+            if matches.is_empty() {
+                log::info!(
+                    "[WIFI] Preflight wpa_supplicant iface={} process=none",
+                    interface
+                );
+            } else {
+                log::info!(
+                    "[WIFI] Preflight wpa_supplicant iface={} process={}",
+                    interface,
+                    matches.join(" | ")
+                );
+            }
+        }
+        Err(err) => {
+            log::warn!(
+                "[WIFI] Preflight wpa_supplicant iface={} process lookup error: {}",
+                interface,
+                err
+            );
+        }
+    }
 }
 
 fn freq_to_channel(freq: u32) -> Option<u8> {
@@ -2487,6 +2627,8 @@ pub fn connect_wifi_network(interface: &str, ssid: &str, password: Option<&str>)
     }
 
     log::info!("Connecting to WiFi: ssid={ssid}, interface={interface}");
+
+    log_wifi_preflight(interface);
 
     let rt = tokio::runtime::Runtime::new()
         .with_context(|| "Failed to create tokio runtime for WiFi connect")?;

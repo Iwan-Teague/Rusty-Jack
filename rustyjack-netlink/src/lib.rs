@@ -118,8 +118,9 @@ pub use wireless::{
 };
 #[cfg(target_os = "linux")]
 pub use wpa::{
-    is_wpa_running, start_wpa_supplicant, stop_wpa_supplicant, WpaManager, WpaNetworkConfig,
-    WpaState as WpaSupplicantState, WpaStatus,
+    ensure_wpa_control_socket, is_wpa_running, start_wpa_supplicant, stop_wpa_supplicant,
+    wpa_control_socket_status, WpaManager, WpaNetworkConfig, WpaState as WpaSupplicantState,
+    WpaStatus,
 };
 
 #[cfg(target_os = "linux")]

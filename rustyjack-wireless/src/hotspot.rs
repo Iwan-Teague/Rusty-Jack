@@ -880,35 +880,111 @@ fn ensure_ap_capability(interface: &str) -> Result<()> {
 }
 
 fn ensure_upstream_ready(interface: &str) -> Result<()> {
-    let interfaces = tokio::runtime::Handle::try_current()
-        .map(|handle| {
-            handle.block_on(async {
-                rustyjack_netlink::list_interfaces()
-                    .await
-                    .map_err(|e| WirelessError::System(format!("Failed to list interfaces: {}", e)))
-            })
-        })
-        .unwrap_or_else(|_| {
-            tokio::runtime::Runtime::new()
-                .map_err(|e| WirelessError::System(format!("Failed to create runtime: {}", e)))?
-                .block_on(async {
+    let fetch_interfaces = || {
+        tokio::runtime::Handle::try_current()
+            .map(|handle| {
+                handle.block_on(async {
                     rustyjack_netlink::list_interfaces().await.map_err(|e| {
                         WirelessError::System(format!("Failed to list interfaces: {}", e))
                     })
                 })
-        })?;
+            })
+            .unwrap_or_else(|_| {
+                tokio::runtime::Runtime::new()
+                    .map_err(|e| WirelessError::System(format!("Failed to create runtime: {}", e)))?
+                    .block_on(async {
+                        rustyjack_netlink::list_interfaces().await.map_err(|e| {
+                            WirelessError::System(format!("Failed to list interfaces: {}", e))
+                        })
+                    })
+            })
+    };
 
-    let iface_info = interfaces
-        .iter()
-        .find(|i| i.name == interface)
-        .ok_or_else(|| {
-            WirelessError::Interface(format!("Upstream interface {} not found", interface))
-        })?;
+    let get_iface = |interfaces: &[rustyjack_netlink::InterfaceInfo]| {
+        interfaces
+            .iter()
+            .find(|i| i.name == interface)
+            .ok_or_else(|| {
+                WirelessError::Interface(format!("Upstream interface {} not found", interface))
+            })
+    };
 
-    let has_ipv4 = iface_info
+    let mut interfaces = fetch_interfaces()?;
+    let mut iface_info = get_iface(&interfaces)?.clone();
+    let mut has_ipv4 = iface_info
         .addresses
         .iter()
         .any(|addr| matches!(addr.address, std::net::IpAddr::V4(_)));
+
+    if !has_ipv4 {
+        if !interface_is_wireless(interface) {
+            if !interface_has_carrier(interface) {
+                eprintln!(
+                    "[HOTSPOT] WARNING: upstream {} has no carrier; DHCP may fail",
+                    interface
+                );
+            }
+
+            eprintln!(
+                "[HOTSPOT] Upstream {} missing IPv4; attempting DHCP",
+                interface
+            );
+
+            let dhcp_result = tokio::runtime::Handle::try_current()
+                .map(|handle| {
+                    handle.block_on(async {
+                        rustyjack_netlink::dhcp_acquire(interface, None).await.map_err(|e| {
+                            WirelessError::System(format!(
+                                "DHCP acquire failed on {}: {}",
+                                interface, e
+                            ))
+                        })
+                    })
+                })
+                .unwrap_or_else(|_| {
+                    tokio::runtime::Runtime::new()
+                        .map_err(|e| {
+                            WirelessError::System(format!(
+                                "Failed to create runtime for DHCP: {}",
+                                e
+                            ))
+                        })?
+                        .block_on(async {
+                            rustyjack_netlink::dhcp_acquire(interface, None).await.map_err(|e| {
+                                WirelessError::System(format!(
+                                    "DHCP acquire failed on {}: {}",
+                                    interface, e
+                                ))
+                            })
+                        })
+                });
+
+            match dhcp_result {
+                Ok(lease) => {
+                    log::info!(
+                        "Upstream {} DHCP lease: {}/{} gateway={:?}",
+                        interface,
+                        lease.address,
+                        lease.prefix_len,
+                        lease.gateway
+                    );
+                    has_ipv4 = true;
+                }
+                Err(err) => {
+                    log::warn!("Upstream DHCP failed for {}: {}", interface, err);
+                }
+            }
+        }
+
+        if !has_ipv4 {
+            interfaces = fetch_interfaces()?;
+            iface_info = get_iface(&interfaces)?.clone();
+            has_ipv4 = iface_info
+                .addresses
+                .iter()
+                .any(|addr| matches!(addr.address, std::net::IpAddr::V4(_)));
+        }
+    }
 
     if !has_ipv4 {
         return Err(WirelessError::Interface(format!(
@@ -917,4 +993,31 @@ fn ensure_upstream_ready(interface: &str) -> Result<()> {
         )));
     }
     Ok(())
+}
+
+fn interface_is_wireless(interface: &str) -> bool {
+    if interface.is_empty() {
+        return false;
+    }
+    Path::new("/sys/class/net")
+        .join(interface)
+        .join("wireless")
+        .exists()
+}
+
+fn interface_has_carrier(interface: &str) -> bool {
+    if interface.is_empty() {
+        return false;
+    }
+    let carrier_path = format!("/sys/class/net/{}/carrier", interface);
+    let oper_path = format!("/sys/class/net/{}/operstate", interface);
+    let oper_state = fs::read_to_string(&oper_path)
+        .unwrap_or_else(|_| "unknown".to_string())
+        .trim()
+        .to_string();
+    let oper_ready = matches!(oper_state.as_str(), "up" | "unknown");
+    match fs::read_to_string(&carrier_path) {
+        Ok(val) => val.trim() == "1" || oper_ready,
+        Err(_) => oper_ready,
+    }
 }

@@ -116,7 +116,10 @@ pub fn get_scan_results(interface: &str) -> Result<Vec<ScanResult>> {
         log::warn!("Failed to start wpa_supplicant for {}: {}", interface, e);
     }
 
+    let control_path = rustyjack_netlink::ensure_wpa_control_socket(interface, None)
+        .map_err(|e| WirelessError::System(format!("Failed to ensure wpa control: {}", e)))?;
     let wpa = rustyjack_netlink::WpaManager::new(interface)
+        .map(|mgr| mgr.with_control_path(control_path))
         .map_err(|e| WirelessError::System(format!("Failed to open wpa control: {}", e)))?;
     wpa.scan()
         .map_err(|e| WirelessError::System(format!("Failed to trigger scan: {}", e)))?;
@@ -159,7 +162,10 @@ pub fn get_scan_results(interface: &str) -> Result<Vec<ScanResult>> {
 
 /// Get link status for a connected interface
 pub fn get_link_status(interface: &str) -> Result<LinkStatus> {
+    let control_path = rustyjack_netlink::ensure_wpa_control_socket(interface, None)
+        .map_err(|e| WirelessError::System(format!("Failed to ensure wpa control: {}", e)))?;
     let wpa = rustyjack_netlink::WpaManager::new(interface)
+        .map(|mgr| mgr.with_control_path(control_path))
         .map_err(|e| WirelessError::System(format!("Failed to open wpa control: {}", e)))?;
     let status = wpa
         .status()

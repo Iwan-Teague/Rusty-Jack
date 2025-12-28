@@ -17,7 +17,9 @@ use chrono::Local;
 use rustyjack_core::cli::{
     HotspotCommand, StatusCommand, WifiCommand, WifiRouteCommand, WifiRouteEnsureArgs,
 };
-use rustyjack_core::{apply_interface_isolation, ensure_route_no_isolation, Commands};
+use rustyjack_core::{
+    apply_interface_isolation, ensure_route_no_isolation, interface_gateway, Commands,
+};
 use serde_json::Value;
 
 use crate::{
@@ -175,7 +177,7 @@ fn enforce_isolation_watchdog(core: &CoreBridge, root: &Path) -> Result<()> {
                 .and_then(|v| v.as_str())
                 .filter(|s| !s.is_empty())
             {
-                maybe_ensure_wired_dhcp(core, up, true)?;
+                maybe_ensure_wired_dhcp(core, root, up, true)?;
             }
             return Ok(());
         }
@@ -214,13 +216,14 @@ fn enforce_isolation_watchdog(core: &CoreBridge, root: &Path) -> Result<()> {
     apply_interface_isolation(&allow_list)?;
     log_isolation_state(root, "single", &allow_list);
     if let Some(primary) = allow_list.first() {
-        maybe_ensure_wired_dhcp(core, primary, false)?;
+        maybe_ensure_wired_dhcp(core, root, primary, false)?;
     }
     Ok(())
 }
 
 fn maybe_ensure_wired_dhcp(
     core: &CoreBridge,
+    root: &Path,
     interface: &str,
     hotspot_mode: bool,
 ) -> Result<()> {
@@ -228,15 +231,34 @@ fn maybe_ensure_wired_dhcp(
         return Ok(());
     }
     if interface_is_wireless(interface) {
+        log_watchdog_event(root, &format!("dhcp: skip {} (wireless)", interface));
         log::debug!("[ROUTE] Skip DHCP ensure on wireless interface {}", interface);
         return Ok(());
     }
     if !interface_has_carrier(interface) {
+        log_watchdog_event(root, &format!("dhcp: skip {} (no carrier)", interface));
         log::debug!("[ROUTE] Skip DHCP ensure on {} (no carrier)", interface);
         return Ok(());
     }
-    if interface_has_ipv4(interface) {
-        log::debug!("[ROUTE] Skip DHCP ensure on {} (IPv4 already assigned)", interface);
+
+    let has_ipv4 = interface_has_ipv4(interface);
+    let gateway = match interface_gateway(interface) {
+        Ok(gw) => gw,
+        Err(err) => {
+            log_watchdog_event(
+                root,
+                &format!("dhcp: gateway check failed for {}: {}", interface, err),
+            );
+            None
+        }
+    };
+
+    if has_ipv4 && gateway.is_some() {
+        log_watchdog_event(root, &format!("dhcp: skip {} (ipv4+gateway)", interface));
+        log::debug!(
+            "[ROUTE] Skip DHCP ensure on {} (IPv4+gateway present)",
+            interface
+        );
         return Ok(());
     }
 
@@ -251,6 +273,14 @@ fn maybe_ensure_wired_dhcp(
     }
     LAST_DHCP_ATTEMPT.store(now, Ordering::Relaxed);
 
+    let reason = if !has_ipv4 { "no_ipv4" } else { "no_gateway" };
+    log_watchdog_event(
+        root,
+        &format!(
+            "dhcp: attempt {} reason={} hotspot={}",
+            interface, reason, hotspot_mode
+        ),
+    );
     log::info!(
         "[ROUTE] Attempting DHCP ensure on {} (hotspot_mode={})",
         interface,
@@ -258,8 +288,20 @@ fn maybe_ensure_wired_dhcp(
     );
 
     if hotspot_mode {
-        if let Err(err) = ensure_route_no_isolation(interface) {
-            eprintln!("[route] hotspot DHCP ensure failed for {}: {}", interface, err);
+        match ensure_route_no_isolation(interface) {
+            Ok(gateway) => {
+                log_watchdog_event(
+                    root,
+                    &format!("dhcp: hotspot ensure {} gateway={:?}", interface, gateway),
+                );
+            }
+            Err(err) => {
+                log_watchdog_event(
+                    root,
+                    &format!("dhcp: hotspot ensure failed for {}: {}", interface, err),
+                );
+                eprintln!("[route] hotspot DHCP ensure failed for {}: {}", interface, err);
+            }
         }
         return Ok(());
     }
@@ -267,10 +309,30 @@ fn maybe_ensure_wired_dhcp(
     let args = WifiRouteEnsureArgs {
         interface: interface.to_string(),
     };
-    if let Err(err) = core.dispatch(Commands::Wifi(WifiCommand::Route(
-        WifiRouteCommand::Ensure(args),
-    ))) {
-        eprintln!("[route] auto ensure failed for {}: {}", interface, err);
+    match core.dispatch(Commands::Wifi(WifiCommand::Route(WifiRouteCommand::Ensure(
+        args,
+    )))) {
+        Ok((msg, data)) => {
+            let route_set = data.get("route_set").and_then(|v| v.as_bool()).unwrap_or(false);
+            let gw = data
+                .get("gateway")
+                .and_then(|v| v.as_str())
+                .unwrap_or("none");
+            log_watchdog_event(
+                root,
+                &format!(
+                    "dhcp: ensure {} route_set={} gateway={} msg={}",
+                    interface, route_set, gw, msg
+                ),
+            );
+        }
+        Err(err) => {
+            log_watchdog_event(
+                root,
+                &format!("dhcp: ensure failed for {}: {}", interface, err),
+            );
+            eprintln!("[route] auto ensure failed for {}: {}", interface, err);
+        }
     }
     Ok(())
 }

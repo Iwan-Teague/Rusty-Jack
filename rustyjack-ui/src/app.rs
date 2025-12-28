@@ -3632,6 +3632,7 @@ Do not remove power/USB",
 
         self.append_sysfs_network_snapshot(&mut out);
         self.append_rfkill_status(&mut out);
+        self.append_wpa_preflight(&mut out);
         self.append_wpa_supplicant_status(&mut out);
         self.append_netlink_routes(&mut out);
         Self::append_file_section(&mut out, "/etc/resolv.conf");
@@ -3759,6 +3760,83 @@ Do not remove power/USB",
                             buf.push_str(&format!(
                                 "{}: ERROR opening control: {}\n",
                                 iface, err
+                            ));
+                        }
+                    }
+                }
+            }
+            if !found {
+                buf.push_str("No wireless interfaces found\n");
+            }
+        }
+
+        #[cfg(not(target_os = "linux"))]
+        {
+            buf.push_str("Not supported on this platform\n");
+        }
+    }
+
+    fn append_wpa_preflight(&self, buf: &mut String) {
+        buf.push_str("\n===== wpa_supplicant preflight =====\n");
+
+        #[cfg(target_os = "linux")]
+        {
+            use rustyjack_netlink::ProcessManager;
+
+            let mut found = false;
+            let pm = ProcessManager::new();
+            if let Ok(entries) = fs::read_dir("/sys/class/net") {
+                for entry in entries.flatten() {
+                    let iface = entry.file_name().to_string_lossy().to_string();
+                    if iface == "lo" {
+                        continue;
+                    }
+                    if !Path::new("/sys/class/net")
+                        .join(&iface)
+                        .join("wireless")
+                        .exists()
+                    {
+                        continue;
+                    }
+                    found = true;
+
+                    let candidates = rustyjack_netlink::wpa_control_socket_status(&iface);
+                    if candidates.is_empty() {
+                        buf.push_str(&format!("{iface}: no control socket candidates\n"));
+                    } else {
+                        let rendered = candidates
+                            .iter()
+                            .map(|(path, exists)| {
+                                format!(
+                                    "{}={}",
+                                    path.display(),
+                                    if *exists { "ok" } else { "missing" }
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        buf.push_str(&format!("{iface}: ctrl_sockets: {rendered}\n"));
+                    }
+
+                    match pm.find_by_pattern("wpa_supplicant") {
+                        Ok(list) => {
+                            let matches: Vec<String> = list
+                                .into_iter()
+                                .filter(|p| p.cmdline.contains(&iface))
+                                .map(|p| format!("pid={} cmd={}", p.pid, p.cmdline))
+                                .collect();
+                            if matches.is_empty() {
+                                buf.push_str(&format!("{iface}: wpa_supplicant process: none\n"));
+                            } else {
+                                buf.push_str(&format!(
+                                    "{iface}: wpa_supplicant process: {}\n",
+                                    matches.join(" | ")
+                                ));
+                            }
+                        }
+                        Err(err) => {
+                            buf.push_str(&format!(
+                                "{iface}: wpa_supplicant process lookup error: {err}\n"
                             ));
                         }
                     }

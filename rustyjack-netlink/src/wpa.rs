@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use crate::error::{NetlinkError, Result};
-use log::info;
+use log::{info, warn};
 use rand::{distributions::Alphanumeric, Rng};
 
 /// WPA supplicant manager
@@ -38,6 +38,43 @@ fn build_local_socket_path(interface: &str) -> PathBuf {
     let iface: String = interface.chars().take(16).collect();
     let filename = format!("rustyjack_wpa_{}_{}", iface, suffix);
     std::env::temp_dir().join(filename)
+}
+
+fn control_socket_candidates(interface: &str) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    let dirs = ["/run/wpa_supplicant", "/var/run/wpa_supplicant"];
+    for dir in dirs {
+        candidates.push(Path::new(dir).join(interface));
+    }
+    candidates
+}
+
+fn find_control_socket(interface: &str) -> Option<PathBuf> {
+    control_socket_candidates(interface)
+        .into_iter()
+        .find(|path| path.exists())
+}
+
+fn default_control_dir() -> PathBuf {
+    let dirs = ["/run/wpa_supplicant", "/var/run/wpa_supplicant"];
+    for dir in dirs {
+        let path = Path::new(dir);
+        if path.exists() {
+            return path.to_path_buf();
+        }
+    }
+    PathBuf::from("/run/wpa_supplicant")
+}
+
+/// Return candidate control socket paths with existence flags.
+pub fn wpa_control_socket_status(interface: &str) -> Vec<(PathBuf, bool)> {
+    control_socket_candidates(interface)
+        .into_iter()
+        .map(|path| {
+            let exists = path.exists();
+            (path, exists)
+        })
+        .collect()
 }
 
 /// WPA supplicant status
@@ -187,8 +224,8 @@ impl WpaManager {
             )));
         }
 
-        // Default control socket paths (most common locations)
-        let control_path = PathBuf::from(format!("/var/run/wpa_supplicant/{}", interface));
+        let control_path = find_control_socket(interface)
+            .unwrap_or_else(|| default_control_dir().join(interface));
 
         Ok(Self {
             interface: interface.to_string(),
@@ -205,9 +242,14 @@ impl WpaManager {
     /// Send command to wpa_supplicant via control socket
     fn send_command(&self, command: &str) -> Result<String> {
         if !self.control_path.exists() {
+            let checked = control_socket_candidates(&self.interface)
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
             return Err(NetlinkError::Wpa(format!(
-                "WPA supplicant control socket not found at {:?}. Is wpa_supplicant running on {}?",
-                self.control_path, self.interface
+                "WPA supplicant control socket not found (checked: {}). Is wpa_supplicant running on {}?",
+                checked, self.interface
             )));
         }
 
@@ -817,8 +859,7 @@ fn parse_hex_bytes(input: &str) -> Result<Vec<u8>> {
 /// # Errors
 /// Returns error if unable to check wpa_supplicant status
 pub fn is_wpa_running(interface: &str) -> Result<bool> {
-    let control_path = format!("/var/run/wpa_supplicant/{}", interface);
-    Ok(Path::new(&control_path).exists())
+    Ok(find_control_socket(interface).is_some())
 }
 
 /// Start wpa_supplicant for an interface
@@ -839,6 +880,20 @@ pub fn start_wpa_supplicant(interface: &str, config_path: Option<&str>) -> Resul
         return Ok(());
     }
 
+    let control_dir = default_control_dir();
+    if let Err(e) = fs::create_dir_all(&control_dir) {
+        return Err(NetlinkError::Wpa(format!(
+            "Failed to create wpa_supplicant control dir {:?}: {}",
+            control_dir, e
+        )));
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(&control_dir, fs::Permissions::from_mode(0o755));
+    }
+
     let conf_path = if let Some(path) = config_path {
         path.to_string()
     } else {
@@ -846,12 +901,20 @@ pub fn start_wpa_supplicant(interface: &str, config_path: Option<&str>) -> Resul
         let default_conf = format!("/tmp/wpa_supplicant_{}.conf", interface);
         fs::write(
             &default_conf,
-            "ctrl_interface=/var/run/wpa_supplicant\nupdate_config=1\n",
+            format!(
+                "ctrl_interface={}\nupdate_config=1\n",
+                control_dir.display()
+            ),
         )
         .map_err(|e| NetlinkError::Wpa(format!("Failed to create wpa_supplicant config: {}", e)))?;
         default_conf
     };
 
+    info!(
+        "Starting wpa_supplicant for {} (ctrl_interface={})",
+        interface,
+        control_dir.display()
+    );
     let output = Command::new("wpa_supplicant")
         .args(["-B", "-i", interface, "-c", &conf_path])
         .output()
@@ -865,9 +928,8 @@ pub fn start_wpa_supplicant(interface: &str, config_path: Option<&str>) -> Resul
     }
 
     // Wait for control socket to appear
-    let control_path = format!("/var/run/wpa_supplicant/{}", interface);
     let start = Instant::now();
-    while !Path::new(&control_path).exists() {
+    while find_control_socket(interface).is_none() {
         if start.elapsed() > Duration::from_secs(5) {
             return Err(NetlinkError::Wpa(
                 "wpa_supplicant control socket did not appear".to_string(),
@@ -895,9 +957,8 @@ pub fn stop_wpa_supplicant(interface: &str) -> Result<()> {
     let _ = mgr.send_command("TERMINATE");
 
     // Wait for socket to disappear
-    let control_path = format!("/var/run/wpa_supplicant/{}", interface);
     let start = Instant::now();
-    while Path::new(&control_path).exists() {
+    while find_control_socket(interface).is_some() {
         if start.elapsed() > Duration::from_secs(5) {
             // Force kill if terminate didn't work
             use crate::process::ProcessManager;
@@ -909,6 +970,72 @@ pub fn stop_wpa_supplicant(interface: &str) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Ensure wpa_supplicant control socket exists; restart when missing.
+pub fn ensure_wpa_control_socket(interface: &str, config_path: Option<&str>) -> Result<PathBuf> {
+    let status = wpa_control_socket_status(interface);
+    if status.is_empty() {
+        warn!(
+            "wpa_supplicant control socket candidates missing for {}",
+            interface
+        );
+    } else {
+        let rendered = status
+            .iter()
+            .map(|(path, exists)| {
+                format!("{}={}", path.display(), if *exists { "ok" } else { "missing" })
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        info!(
+            "wpa_supplicant control socket preflight for {}: {}",
+            interface, rendered
+        );
+    }
+
+    if let Some(path) = find_control_socket(interface) {
+        return Ok(path);
+    }
+
+    warn!(
+        "wpa_supplicant control socket missing for {}; attempting start",
+        interface
+    );
+    let mut started = match start_wpa_supplicant(interface, config_path) {
+        Ok(_) => true,
+        Err(err) => {
+            warn!(
+                "wpa_supplicant start failed for {}: {}",
+                interface, err
+            );
+            false
+        }
+    };
+
+    if !started || find_control_socket(interface).is_none() {
+        warn!(
+            "wpa_supplicant control socket still missing for {}; restarting",
+            interface
+        );
+        use crate::process::ProcessManager;
+        let pm = ProcessManager::new();
+        let _ = pm.kill_pattern(&format!("wpa_supplicant.*{}", interface));
+        std::thread::sleep(Duration::from_millis(200));
+        start_wpa_supplicant(interface, config_path)?;
+        started = true;
+    }
+
+    if started {
+        if let Some(path) = find_control_socket(interface) {
+            return Ok(path);
+        }
+    }
+
+    Err(NetlinkError::Wpa(format!(
+        "wpa_supplicant control socket still missing for {} after restart",
+        interface
+    )))
 }
 
 #[cfg(test)]

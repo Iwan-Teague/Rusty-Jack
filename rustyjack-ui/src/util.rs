@@ -220,22 +220,30 @@ pub fn renew_dhcp_and_reconnect(interface: &str) -> bool {
     };
 
     // Try WPA reconnect via rustyjack-netlink
-    let wpa_success = match rustyjack_netlink::WpaManager::new(interface) {
-        Ok(mgr) => match mgr.reconnect() {
-            Ok(_) => {
-                log::info!("WPA reconnect triggered for {}", interface);
-                true
-            }
+    let wpa_success = match rustyjack_netlink::ensure_wpa_control_socket(interface, None) {
+        Ok(control_path) => match rustyjack_netlink::WpaManager::new(interface)
+            .map(|mgr| mgr.with_control_path(control_path))
+        {
+            Ok(mgr) => match mgr.reconnect() {
+                Ok(_) => {
+                    log::info!("WPA reconnect triggered for {}", interface);
+                    true
+                }
+                Err(e) => {
+                    log::debug!(
+                        "WPA reconnect failed (may not be using wpa_supplicant): {}",
+                        e
+                    );
+                    false
+                }
+            },
             Err(e) => {
-                log::debug!(
-                    "WPA reconnect failed (may not be using wpa_supplicant): {}",
-                    e
-                );
+                log::debug!("WPA manager creation failed: {}", e);
                 false
             }
         },
         Err(e) => {
-            log::debug!("WPA manager creation failed: {}", e);
+            log::debug!("WPA control socket unavailable: {}", e);
             false
         }
     };

@@ -4,7 +4,9 @@ use std::time::{Duration, Instant};
 use log::{debug, info, warn};
 
 use crate::error::{NetlinkError, Result};
-use crate::wpa::{BssInfo, WpaManager, WpaNetworkConfig, WpaState, WpaStatus};
+use crate::wpa::{
+    ensure_wpa_control_socket, BssInfo, WpaManager, WpaNetworkConfig, WpaState, WpaStatus,
+};
 
 // Station connect flow modeled after wpa_supplicant SME/scan logic (sme.c, scan.c, bss.c, wpa_ie.c).
 const RSN_OUI: [u8; 3] = [0x00, 0x0f, 0xac];
@@ -87,7 +89,8 @@ pub struct StationManager {
 
 impl StationManager {
     pub fn new(interface: &str) -> Result<Self> {
-        let wpa = WpaManager::new(interface)?;
+        let control_path = ensure_wpa_control_socket(interface, None)?;
+        let wpa = WpaManager::new(interface)?.with_control_path(control_path);
         Ok(Self {
             interface: interface.to_string(),
             wpa,

@@ -705,101 +705,24 @@ fn send_start_ap(
     wpa_enabled: bool,
     basic_rates: &[u32],
 ) -> Result<()> {
-    struct FrameAttempt {
-        include_basic_rates: bool,
-        include_probe_resp: bool,
-        include_beacon_tail: bool,
-        label: &'static str,
-    }
     struct StartApAttempt {
         include_channel_type: bool,
         include_channel_width: bool,
-        include_basic_rates: bool,
-        include_probe_resp: bool,
-        include_beacon_tail: bool,
         label: String,
     }
 
     let channel_attempts = [
         (true, false, "chandef (channel_width + center_freq1)"),
         (false, true, "legacy channel_type"),
-        (false, false, "no channel attrs"),
     ];
-
-    let frame_attempts: Vec<FrameAttempt> = if wpa_enabled {
-        vec![
-            FrameAttempt {
-                include_basic_rates: true,
-                include_probe_resp: true,
-                include_beacon_tail: true,
-                label: "full frames",
-            },
-            FrameAttempt {
-                include_basic_rates: false,
-                include_probe_resp: true,
-                include_beacon_tail: true,
-                label: "no basic rates attr",
-            },
-            FrameAttempt {
-                include_basic_rates: true,
-                include_probe_resp: false,
-                include_beacon_tail: true,
-                label: "no probe resp",
-            },
-            FrameAttempt {
-                include_basic_rates: false,
-                include_probe_resp: false,
-                include_beacon_tail: true,
-                label: "no probe resp + no basic rates",
-            },
-        ]
-    } else {
-        vec![
-            FrameAttempt {
-                include_basic_rates: true,
-                include_probe_resp: true,
-                include_beacon_tail: true,
-                label: "full frames",
-            },
-            FrameAttempt {
-                include_basic_rates: false,
-                include_probe_resp: true,
-                include_beacon_tail: true,
-                label: "no basic rates attr",
-            },
-            FrameAttempt {
-                include_basic_rates: true,
-                include_probe_resp: false,
-                include_beacon_tail: true,
-                label: "no probe resp",
-            },
-            FrameAttempt {
-                include_basic_rates: false,
-                include_probe_resp: false,
-                include_beacon_tail: true,
-                label: "no probe resp + no basic rates",
-            },
-            FrameAttempt {
-                include_basic_rates: false,
-                include_probe_resp: false,
-                include_beacon_tail: false,
-                label: "minimal beacon (no tail/probe/basics)",
-            },
-        ]
-    };
 
     let mut attempts: Vec<StartApAttempt> = Vec::new();
     for (include_channel_width, include_channel_type, channel_label) in channel_attempts.iter() {
-        for frame in frame_attempts.iter() {
-            attempts.push(StartApAttempt {
-                include_channel_type: *include_channel_type,
-                include_channel_width: *include_channel_width,
-                include_basic_rates: frame.include_basic_rates,
-                include_probe_resp: frame.include_probe_resp,
-                include_beacon_tail: frame.include_beacon_tail,
-                label: format!("{} + {}", channel_label, frame.label),
-            });
-        }
+        attempts.push(StartApAttempt {
+            include_channel_type: *include_channel_type,
+            include_channel_width: *include_channel_width,
+            label: format!("{} + full frames", channel_label),
+        });
     }
     let mut last_err: Option<NetlinkError> = None;
     for attempt in attempts.iter() {
@@ -817,9 +740,9 @@ fn send_start_ap(
             hidden_ssid,
             attempt.include_channel_type,
             attempt.include_channel_width,
-            attempt.include_basic_rates,
-            attempt.include_probe_resp,
-            attempt.include_beacon_tail,
+            true,
+            true,
+            true,
             wpa_enabled,
             basic_rates,
         ) {
@@ -968,27 +891,34 @@ fn send_start_ap_inner(
         );
     }
     if include_basic_rates && !basic_rates.is_empty() {
-        let basic_rates_bytes = u32_list_bytes(basic_rates);
-        let basic_rates_len = basic_rates_bytes.len();
-        attrs.push(
-            neli::genl::Nlattr::new(
-                false,
-                false,
-                NL80211_ATTR_BSS_BASIC_RATES,
-                basic_rates_bytes,
-            )
+        let basic_rates_bytes = basic_rates_to_bytes(basic_rates);
+        if basic_rates_bytes.is_empty() {
+            log::warn!(
+                "START_AP basic rates list empty after conversion (input={:?})",
+                basic_rates
+            );
+        } else {
+            let basic_rates_len = basic_rates_bytes.len();
+            attrs.push(
+                neli::genl::Nlattr::new(
+                    false,
+                    false,
+                    NL80211_ATTR_BSS_BASIC_RATES,
+                    basic_rates_bytes,
+                )
                 .map_err(|e| {
                     NetlinkError::OperationFailed(format!(
                         "Failed to build basic rates attr: {}",
                         e
                     ))
                 })?,
-        );
-        log_attr(
-            "BSS_BASIC_RATES",
-            basic_rates_len,
-            Some(format!("rates={:?}", basic_rates)),
-        );
+            );
+            log_attr(
+                "BSS_BASIC_RATES",
+                basic_rates_len,
+                Some(format!("rates_100kbps={:?}", basic_rates)),
+            );
+        }
     }
     if wpa_enabled {
         attrs.push(
@@ -1127,6 +1057,23 @@ fn send_start_ap_inner(
         log::debug!("START_AP attrs: {}", attr_log.join(", "));
     }
 
+    let log_failure_details = || {
+        if !attr_log.is_empty() {
+            log::error!("START_AP attrs: {}", attr_log.join(", "));
+        }
+        log_ie_summary("BEACON_HEAD", beacon_head, 36);
+        if !beacon_tail.is_empty() {
+            log_ie_summary("BEACON_TAIL", beacon_tail, 0);
+        } else {
+            log::error!("START_AP BEACON_TAIL len=0");
+        }
+        if !probe_resp.is_empty() {
+            log_ie_summary("PROBE_RESP", probe_resp, 36);
+        } else {
+            log::error!("START_AP PROBE_RESP len=0");
+        }
+    };
+
     let genlhdr = Genlmsghdr::new(NL80211_CMD_START_AP, NL80211_GENL_VERSION, attrs);
     let nlhdr = Nlmsghdr::new(
         None,
@@ -1137,15 +1084,19 @@ fn send_start_ap_inner(
         NlPayload::Payload(genlhdr),
     );
 
-    sock.send(nlhdr)
-        .map_err(|e| NetlinkError::OperationFailed(format!("Failed to send START_AP: {}", e)))?;
+    sock.send(nlhdr).map_err(|e| {
+        log_failure_details();
+        NetlinkError::OperationFailed(format!("Failed to send START_AP: {}", e))
+    })?;
 
     // Consume replies until ACK or ERR
     let resp: Option<Nlmsghdr<u16, Genlmsghdr<u8, u16>>> = sock.recv().map_err(|e| {
+        log_failure_details();
         NetlinkError::OperationFailed(format!("Failed to receive START_AP response: {}", e))
     })?;
 
     let resp = resp.ok_or_else(|| {
+        log_failure_details();
         NetlinkError::OperationFailed("No START_AP response received from kernel".to_string())
     })?;
 
@@ -1168,9 +1119,7 @@ fn send_start_ap_inner(
                     io_err,
                     err
                 );
-                if !attr_log.is_empty() {
-                    log::error!("START_AP attrs: {}", attr_log.join(", "));
-                }
+                log_failure_details();
                 let hint = if errno == 34 {
                     // ERANGE - common with incompatible channel/bandwidth settings
                     " (ERANGE: channel/bandwidth not supported by driver - try different channel or NO_HT mode)"
@@ -1191,9 +1140,7 @@ fn send_start_ap_inner(
                     io_err,
                     ack
                 );
-                if !attr_log.is_empty() {
-                    log::error!("START_AP attrs: {}", attr_log.join(", "));
-                }
+                log_failure_details();
                 return Err(NetlinkError::OperationFailed(format!(
                     "Kernel rejected START_AP (ack err): {} (errno {})",
                     io_err, errno
@@ -1201,9 +1148,7 @@ fn send_start_ap_inner(
             }
             other => {
                 log::error!("START_AP rejected: unexpected payload {:?}", other);
-                if !attr_log.is_empty() {
-                    log::error!("START_AP attrs: {}", attr_log.join(", "));
-                }
+                log_failure_details();
                 return Err(NetlinkError::OperationFailed(format!(
                     "Kernel rejected START_AP (unexpected payload {:?})",
                     other
@@ -2094,6 +2039,83 @@ fn build_tim_ie(dtim_period: u8) -> [u8; 6] {
 fn build_erp_ie() -> [u8; 3] {
     // ERP IE: ID, length, value (no protection)
     [42, 1, 0x00]
+}
+
+fn basic_rates_to_bytes(basic_rates_100kbps: &[u32]) -> Vec<u8> {
+    let mut rates: Vec<u8> = basic_rates_100kbps
+        .iter()
+        .filter_map(|rate| {
+            if *rate == 0 || rate % 5 != 0 {
+                return None;
+            }
+            let val = rate / 5;
+            if val == 0 || val > u32::from(u8::MAX) {
+                return None;
+            }
+            Some(val as u8)
+        })
+        .collect();
+    rates.sort_unstable();
+    rates.dedup();
+    rates
+}
+
+fn log_ie_summary(label: &str, frame: &[u8], offset: usize) {
+    let ies = parse_ie_list(frame, offset);
+    if ies.is_empty() {
+        log::error!("START_AP {} IEs: none (len={})", label, frame.len());
+        return;
+    }
+    log::error!(
+        "START_AP {} IEs (len={}): {}",
+        label,
+        frame.len(),
+        format_ie_list(&ies)
+    );
+}
+
+fn parse_ie_list(frame: &[u8], offset: usize) -> Vec<(u8, u8)> {
+    if frame.len() <= offset {
+        return Vec::new();
+    }
+    let mut ies = Vec::new();
+    let mut idx = offset;
+    while idx + 2 <= frame.len() {
+        let id = frame[idx];
+        let len = frame[idx + 1] as usize;
+        idx += 2;
+        if idx + len > frame.len() {
+            break;
+        }
+        ies.push((id, len as u8));
+        idx += len;
+    }
+    ies
+}
+
+fn format_ie_list(ies: &[(u8, u8)]) -> String {
+    let mut parts = Vec::new();
+    for (id, len) in ies {
+        parts.push(format!("{}(len={})", ie_name(*id), len));
+    }
+    parts.join(", ")
+}
+
+fn ie_name(id: u8) -> &'static str {
+    match id {
+        0 => "SSID",
+        1 => "SUPPORTED_RATES",
+        3 => "DS_PARAM",
+        5 => "TIM",
+        7 => "COUNTRY",
+        42 => "ERP",
+        45 => "HT_CAP",
+        48 => "RSN",
+        50 => "EXT_SUPPORTED_RATES",
+        61 => "HT_OPERATION",
+        221 => "VENDOR",
+        _ => "IE",
+    }
 }
 
 fn u32_list_bytes(values: &[u32]) -> Vec<u8> {

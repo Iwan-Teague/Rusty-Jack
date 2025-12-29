@@ -321,10 +321,6 @@ disable_conflicting_services() {
   fi
 }
 
-step "Removing conflicting network managers..."
-purge_network_manager
-disable_conflicting_services
-
 # ---- 3: enable I2C / SPI & kernel modules -------------------
 step "Enabling I2C and SPI..."
 add_dtparam dtparam=i2c_arm=on
@@ -561,6 +557,11 @@ UNIT
 sudo systemctl daemon-reload
 sudo systemctl enable rustyjack.service
 info "Rustyjack service enabled"
+
+# Finalize network ownership after installs/builds are complete
+step "Finalizing network ownership..."
+purge_network_manager
+disable_conflicting_services
 
 # Start the service now
 sudo systemctl start rustyjack.service && info "Rustyjack service started successfully" || warn "Failed to start service - check 'systemctl status rustyjack'"

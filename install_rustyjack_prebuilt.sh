@@ -79,7 +79,7 @@ validate_network_status() {
   local output=""
   local tries=60
   for _ in $(seq 1 "$tries"); do
-    output=$(rustyjack status network --output json 2>/dev/null || true)
+    output=$(RUSTYJACK_ROOT="$PROJECT_ROOT" rustyjack status network --output json 2>/dev/null || true)
     if [ -n "$output" ]; then
       if cmd python3; then
         if echo "$output" | python3 - <<'PY'
@@ -127,6 +127,64 @@ PY
   fi
   journalctl -u rustyjack.service -n 120 --no-pager 2>/dev/null || true
   return 1
+}
+
+preserve_default_route_interface() {
+  local iface
+  iface=$(awk '$2=="00000000" {print $1; exit}' /proc/net/route 2>/dev/null || true)
+  if [ -z "$iface" ]; then
+    warn "No default route interface detected; skipping preferred interface update"
+    return 0
+  fi
+  if [ ! -d "/sys/class/net/$iface" ]; then
+    warn "Default route interface $iface not found; skipping preferred interface update"
+    return 0
+  fi
+
+  local pref_dir="$PROJECT_ROOT/wifi"
+  local pref_path="$pref_dir/interface_preferences.json"
+  local mac=""
+  if [ -r "/sys/class/net/$iface/address" ]; then
+    mac=$(cat "/sys/class/net/$iface/address" 2>/dev/null || true)
+    mac="${mac//$'\n'/}"
+  fi
+  local ts
+  ts=$(date -Iseconds 2>/dev/null || date)
+
+  info "Preserving default route interface: $iface"
+  if cmd python3; then
+    PREF_PATH="$pref_path" PREF_IFACE="$iface" PREF_MAC="$mac" PREF_TS="$ts" python3 - <<'PY'
+import json, os, datetime
+path = os.environ.get("PREF_PATH")
+iface = os.environ.get("PREF_IFACE")
+mac = os.environ.get("PREF_MAC") or None
+ts = os.environ.get("PREF_TS") or datetime.datetime.now().isoformat()
+data = {}
+try:
+    if path and os.path.exists(path):
+        with open(path) as f:
+            data = json.load(f)
+except Exception:
+    data = {}
+if not isinstance(data, dict):
+    data = {}
+data["system_preferred"] = {"interface": iface, "mac": mac, "timestamp": ts}
+os.makedirs(os.path.dirname(path), exist_ok=True)
+with open(path, "w") as f:
+    json.dump(data, f, indent=2)
+PY
+  else
+    mkdir -p "$pref_dir"
+    cat > "$pref_path" <<EOF
+{
+  "system_preferred": {
+    "interface": "$iface",
+    "mac": "${mac}",
+    "timestamp": "$ts"
+  }
+}
+EOF
+  fi
 }
 
 claim_resolv_conf() {
@@ -444,6 +502,7 @@ info "Rustyjack service enabled"
 
 # Finalize network ownership after installs/builds are complete
 step "Finalizing network ownership..."
+preserve_default_route_interface
 purge_network_manager
 disable_conflicting_services
 

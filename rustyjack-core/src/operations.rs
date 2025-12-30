@@ -557,6 +557,7 @@ fn handle_hotspot_start(root: &Path, args: HotspotStartArgs) -> Result<HandlerRe
         ssid: args.ssid,
         password: args.password,
         channel: args.channel,
+        restore_nm_on_stop: args.restore_nm_on_stop,
     };
 
     // Start hotspot FIRST (it handles interface configuration and rfkill)
@@ -597,6 +598,9 @@ fn handle_hotspot_start(root: &Path, args: HotspotStartArgs) -> Result<HandlerRe
         "upstream_interface": state.upstream_interface,
         "channel": state.channel,
         "upstream_ready": state.upstream_ready,
+        "nm_unmanaged": state.nm_unmanaged,
+        "nm_error": state.nm_error,
+        "restore_nm_on_stop": state.restore_nm_on_stop,
         "isolation_enforced": true,
         "interfaces_allowed": allowed_interfaces,
     });
@@ -620,6 +624,9 @@ fn handle_hotspot_status() -> Result<HandlerResult> {
         upstream_interface,
         channel,
         upstream_ready,
+        nm_unmanaged,
+        nm_error,
+        restore_nm_on_stop,
         ..
     }) = status_hotspot()
     {
@@ -636,6 +643,9 @@ fn handle_hotspot_status() -> Result<HandlerResult> {
             "upstream_interface": upstream_interface,
             "channel": channel,
             "upstream_ready": upstream_ready,
+            "nm_unmanaged": nm_unmanaged,
+            "nm_error": nm_error,
+            "restore_nm_on_stop": restore_nm_on_stop,
         });
         Ok(("Hotspot running".to_string(), data))
     } else {

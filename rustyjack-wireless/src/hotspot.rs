@@ -30,6 +30,7 @@ static HOTSPOT_LOCK: Mutex<()> = Mutex::new(());
 static DHCP_SERVER: OnceLock<Mutex<Option<DhcpRuntime>>> = OnceLock::new();
 static DNS_SERVER: OnceLock<Mutex<Option<DnsServer>>> = OnceLock::new();
 static ACCESS_POINT: OnceLock<Mutex<Option<AccessPoint>>> = OnceLock::new();
+static LAST_HOTSPOT_WARNING: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 
 struct DhcpRuntime {
     handle: Option<JoinHandle<()>>,
@@ -51,6 +52,8 @@ pub struct HotspotConfig {
     pub password: String,
     /// Channel to use (2.4 GHz)
     pub channel: u8,
+    /// Restore NetworkManager management on stop
+    pub restore_nm_on_stop: bool,
 }
 
 impl Default for HotspotConfig {
@@ -61,6 +64,7 @@ impl Default for HotspotConfig {
             ssid: "rustyjack".to_string(),
             password: "rustyjack".to_string(),
             channel: 6,
+            restore_nm_on_stop: false,
         }
     }
 }
@@ -75,6 +79,12 @@ pub struct HotspotState {
     pub channel: u8,
     #[serde(default = "default_true")]
     pub upstream_ready: bool,
+    #[serde(default)]
+    pub nm_unmanaged: bool,
+    #[serde(default)]
+    pub nm_error: Option<String>,
+    #[serde(default)]
+    pub restore_nm_on_stop: bool,
     // No longer tracking external PIDs - managed by Rust
     #[serde(skip)]
     pub ap_running: bool,
@@ -87,6 +97,12 @@ fn default_true() -> bool {
 const STATE_PATH: &str = "/tmp/rustyjack_hotspot/state.json";
 const CONF_DIR: &str = "/tmp/rustyjack_hotspot";
 const AP_GATEWAY: &str = "10.20.30.1";
+
+#[derive(Debug, Clone)]
+pub struct RegdomInfo {
+    pub raw: Option<String>,
+    pub valid: bool,
+}
 
 /// Generate a random SSID suffix (user-friendly).
 pub fn random_ssid() -> String {
@@ -107,11 +123,163 @@ pub fn random_password() -> String {
         .collect()
 }
 
+pub fn take_last_hotspot_warning() -> Option<String> {
+    let lock = LAST_HOTSPOT_WARNING.get_or_init(|| Mutex::new(None));
+    let mut guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+    guard.take()
+}
+
+pub fn read_regdom_info() -> RegdomInfo {
+    let raw = fs::read_to_string("/sys/module/cfg80211/parameters/ieee80211_regdom")
+        .ok()
+        .map(|s| s.trim().to_uppercase())
+        .filter(|s| !s.is_empty());
+    let valid = match raw.as_deref() {
+        Some(code) if code.len() == 2 && code != "00" && code != "99" => true,
+        _ => false,
+    };
+
+    RegdomInfo { raw, valid }
+}
+
 fn stop_ap_best_effort(ap: &mut AccessPoint) {
     if let Ok(handle) = tokio::runtime::Handle::try_current() {
         let _ = handle.block_on(async { ap.stop().await });
     } else if let Ok(rt) = tokio::runtime::Runtime::new() {
         let _ = rt.block_on(async { ap.stop().await });
+    }
+}
+
+fn record_hotspot_warning(msg: impl Into<String>) {
+    let lock = LAST_HOTSPOT_WARNING.get_or_init(|| Mutex::new(None));
+    let mut guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+    *guard = Some(msg.into());
+}
+
+fn stop_access_point_global() {
+    if let Some(ap_mutex) = ACCESS_POINT.get() {
+        if let Ok(mut guard) = ap_mutex.lock() {
+            if let Some(mut ap) = guard.take() {
+                stop_ap_best_effort(&mut ap);
+                log::info!("Access Point stopped");
+            }
+        }
+    }
+}
+
+fn stop_dns_server_global() {
+    if let Some(dns_mutex) = DNS_SERVER.get() {
+        if let Ok(mut guard) = dns_mutex.lock() {
+            if let Some(mut server) = guard.take() {
+                let _ = server.stop();
+                log::info!("DNS server stopped");
+            }
+        }
+    }
+}
+
+fn stop_dhcp_server_global() {
+    if let Some(dhcp_mutex) = DHCP_SERVER.get() {
+        if let Ok(mut guard) = dhcp_mutex.lock() {
+            if let Some(mut dhcp) = guard.take() {
+                if let Ok(mut running) = dhcp.running.lock() {
+                    *running = false;
+                }
+                if let Some(handle) = dhcp.handle.take() {
+                    let _ = handle.join();
+                }
+                log::info!("DHCP server stopped");
+            }
+        }
+    }
+}
+
+struct HotspotCleanup {
+    ap_interface: String,
+    upstream_interface: String,
+    upstream_ready: bool,
+    restore_nm_on_stop: bool,
+    nm_unmanaged: bool,
+    nat_configured: bool,
+    interface_configured: bool,
+    ap_started: bool,
+    ap: Option<AccessPoint>,
+    active: bool,
+}
+
+impl HotspotCleanup {
+    fn new(config: &HotspotConfig) -> Self {
+        Self {
+            ap_interface: config.ap_interface.clone(),
+            upstream_interface: config.upstream_interface.clone(),
+            upstream_ready: false,
+            restore_nm_on_stop: config.restore_nm_on_stop,
+            nm_unmanaged: false,
+            nat_configured: false,
+            interface_configured: false,
+            ap_started: false,
+            ap: None,
+            active: true,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.active = false;
+    }
+
+    fn take_ap(&mut self) -> Option<AccessPoint> {
+        self.ap.take()
+    }
+}
+
+impl Drop for HotspotCleanup {
+    fn drop(&mut self) {
+        if !self.active {
+            return;
+        }
+
+        if let Some(ap) = self.ap.as_mut() {
+            if self.ap_started {
+                stop_ap_best_effort(ap);
+            }
+        }
+
+        stop_dns_server_global();
+        stop_dhcp_server_global();
+
+        if self.nat_configured && self.upstream_ready && !self.upstream_interface.is_empty() {
+            if let Ok(ipt) = IptablesManager::new() {
+                let _ =
+                    ipt.teardown_nat_forwarding(&self.ap_interface, &self.upstream_interface);
+            }
+        }
+
+        if self.interface_configured {
+            let _ = netlink_set_interface_down(&self.ap_interface);
+            let _ = netlink_flush_addresses(&self.ap_interface);
+        }
+
+        if self.restore_nm_on_stop && self.nm_unmanaged {
+            if let Ok(rt) = tokio::runtime::Runtime::new() {
+                if let Err(err) = rt.block_on(async {
+                    rustyjack_netlink::networkmanager::set_device_managed(
+                        &self.ap_interface,
+                        true,
+                    )
+                    .await
+                }) {
+                    log::warn!(
+                        "Failed to restore NetworkManager management on {}: {}",
+                        self.ap_interface,
+                        err
+                    );
+                    record_hotspot_warning(format!(
+                        "Failed to restore NetworkManager management on {}: {}",
+                        self.ap_interface, err
+                    ));
+                }
+            }
+        }
     }
 }
 
@@ -192,6 +360,9 @@ pub fn start_hotspot(config: HotspotConfig) -> Result<HotspotState> {
         log::info!("No upstream interface specified; running in local-only mode");
     }
 
+    let mut cleanup = HotspotCleanup::new(&config);
+    cleanup.upstream_ready = upstream_ready;
+
     eprintln!("[HOTSPOT] Creating config directory...");
     fs::create_dir_all(CONF_DIR).map_err(|e| WirelessError::System(format!("mkdir: {e}")))?;
     #[cfg(unix)]
@@ -246,6 +417,7 @@ pub fn start_hotspot(config: HotspotConfig) -> Result<HotspotState> {
             "Failed to create tokio runtime for NetworkManager unmanaged: {e}"
         ))
     })?;
+    let mut nm_error: Option<String> = None;
     let nm_result = rt.block_on(async {
         rustyjack_netlink::networkmanager::set_device_managed(&config.ap_interface, false).await
     });
@@ -254,6 +426,7 @@ pub fn start_hotspot(config: HotspotConfig) -> Result<HotspotState> {
         Ok(()) => {
             eprintln!("[HOTSPOT] Interface set to unmanaged successfully");
             log::info!("Set {} to unmanaged by NetworkManager", config.ap_interface);
+            cleanup.nm_unmanaged = true;
         }
         Err(e) => {
             eprintln!(
@@ -264,6 +437,12 @@ pub fn start_hotspot(config: HotspotConfig) -> Result<HotspotState> {
                 "Could not set {} unmanaged: may not have NetworkManager or D-Bus unavailable",
                 config.ap_interface
             );
+            let warning = format!(
+                "NetworkManager unmanaged failed on {}: {}",
+                config.ap_interface, e
+            );
+            nm_error = Some(warning.clone());
+            record_hotspot_warning(warning);
         }
     }
 
@@ -350,6 +529,17 @@ pub fn start_hotspot(config: HotspotConfig) -> Result<HotspotState> {
         }
     }
 
+    let regdom = read_regdom_info();
+    if !regdom.valid {
+        let note = match regdom.raw.as_deref() {
+            Some(raw) => format!("Regdom unset/invalid ({}); set a country code", raw),
+            None => "Regdom unset/invalid; set a country code".to_string(),
+        };
+        eprintln!("[HOTSPOT] WARNING: {}", note);
+        log::warn!("{}", note);
+        record_hotspot_warning(note);
+    }
+
     // Now configure AP interface with static IP
     eprintln!(
         "[HOTSPOT] Configuring AP interface {} with IP {}",
@@ -368,6 +558,7 @@ pub fn start_hotspot(config: HotspotConfig) -> Result<HotspotState> {
     eprintln!("[HOTSPOT] Bringing interface down via netlink...");
     netlink_set_interface_down(&config.ap_interface)?;
     log::info!("Hotspot: {} set down via netlink", config.ap_interface);
+    cleanup.interface_configured = true;
 
     eprintln!("[HOTSPOT] Flushing addresses via netlink...");
     netlink_flush_addresses(&config.ap_interface)?;
@@ -412,6 +603,7 @@ pub fn start_hotspot(config: HotspotConfig) -> Result<HotspotState> {
     eprintln!("[HOTSPOT] Bringing interface up via netlink...");
     netlink_set_interface_up(&config.ap_interface)?;
     log::info!("Hotspot: {} brought up via netlink", config.ap_interface);
+    cleanup.interface_configured = true;
 
     eprintln!("[HOTSPOT] AP interface {} is up", config.ap_interface);
     log::debug!("AP interface {} is up", config.ap_interface);
@@ -442,6 +634,7 @@ pub fn start_hotspot(config: HotspotConfig) -> Result<HotspotState> {
                     eprintln!("[HOTSPOT] Warning: NAT setup failed: {}", e);
                 } else {
                     log::debug!("NAT rules configured successfully");
+                    cleanup.nat_configured = true;
                 }
             }
             Err(e) => {
@@ -500,15 +693,21 @@ pub fn start_hotspot(config: HotspotConfig) -> Result<HotspotState> {
 
     // Create and start the Access Point in a blocking context
     eprintln!("[HOTSPOT] Starting Rust Access Point...");
-    let mut ap = AccessPoint::new(ap_config).map_err(|e| {
+    let ap = AccessPoint::new(ap_config).map_err(|e| {
         eprintln!("[HOTSPOT] ERROR: Failed to create Access Point: {}", e);
         WirelessError::System(format!("Failed to create AP: {}", e))
     })?;
+    cleanup.ap = Some(ap);
 
     // Start AP using tokio runtime
     let ap_start_result = tokio::runtime::Handle::try_current()
         .map(|handle| {
             handle.block_on(async {
+                cleanup.ap_started = true;
+                let ap = cleanup
+                    .ap
+                    .as_mut()
+                    .ok_or_else(|| WirelessError::System("AP not initialized".to_string()))?;
                 ap.start()
                     .await
                     .map_err(|e| WirelessError::System(format!("AP start failed: {}", e)))
@@ -521,6 +720,11 @@ pub fn start_hotspot(config: HotspotConfig) -> Result<HotspotState> {
                 })
                 .and_then(|rt| {
                     rt.block_on(async {
+                        cleanup.ap_started = true;
+                        let ap = cleanup
+                            .ap
+                            .as_mut()
+                            .ok_or_else(|| WirelessError::System("AP not initialized".to_string()))?;
                         ap.start()
                             .await
                             .map_err(|e| WirelessError::System(format!("AP start failed: {}", e)))
@@ -551,7 +755,6 @@ pub fn start_hotspot(config: HotspotConfig) -> Result<HotspotState> {
         config.ap_interface
     );
     start_dhcp_server(&config.ap_interface, gateway_ip).map_err(|e| {
-        stop_ap_best_effort(&mut ap);
         log::error!("[HOTSPOT] DHCP server failed to start: {}", e);
         e
     })?;
@@ -564,7 +767,6 @@ pub fn start_hotspot(config: HotspotConfig) -> Result<HotspotState> {
         config.ap_interface
     );
     start_dns_server(&config.ap_interface, gateway_ip).map_err(|e| {
-        stop_ap_best_effort(&mut ap);
         log::error!("[HOTSPOT] DNS server failed to start: {}", e);
         e
     })?;
@@ -585,6 +787,9 @@ pub fn start_hotspot(config: HotspotConfig) -> Result<HotspotState> {
         upstream_interface: config.upstream_interface,
         channel: config.channel,
         upstream_ready,
+        nm_unmanaged: cleanup.nm_unmanaged,
+        nm_error,
+        restore_nm_on_stop: cleanup.restore_nm_on_stop,
         ap_running: true,
     };
     persist_state(&state)?;
@@ -595,11 +800,18 @@ pub fn start_hotspot(config: HotspotConfig) -> Result<HotspotState> {
         .map_err(|e| WirelessError::System(format!("write server marker: {e}")))?;
 
     // Store AP in global so it can be stopped later
+    let mut ap = cleanup
+        .take_ap()
+        .ok_or_else(|| WirelessError::System("AP missing after start".to_string()))?;
     let ap_lock = ACCESS_POINT.get_or_init(|| Mutex::new(None));
     let mut guard = ap_lock
         .lock()
-        .map_err(|_| WirelessError::System("AP mutex poisoned".to_string()))?;
+        .map_err(|_| {
+            stop_ap_best_effort(&mut ap);
+            WirelessError::System("AP mutex poisoned".to_string())
+        })?;
     *guard = Some(ap);
+    cleanup.disarm();
 
     Ok(state)
 }
@@ -611,55 +823,14 @@ pub fn stop_hotspot() -> Result<()> {
 
     let state = status_hotspot();
 
-    // Best-effort cleanup
+    eprintln!("[HOTSPOT] Stopping hotspot services...");
+    stop_access_point_global();
+    stop_dns_server_global();
+    stop_dhcp_server_global();
+    eprintln!("[HOTSPOT] Rust AP/DHCP/DNS servers cleaned up");
+    log::info!("Rust AP/DHCP/DNS servers stopped");
+
     if let Some(s) = state {
-        eprintln!("[HOTSPOT] Stopping hotspot services...");
-
-        // Stop Access Point first
-        if let Some(ap_mutex) = ACCESS_POINT.get() {
-            if let Ok(mut guard) = ap_mutex.lock() {
-                if let Some(mut ap) = guard.take() {
-                    eprintln!("[HOTSPOT] Stopping Access Point...");
-                    // Need to run in tokio context
-                    let rt = tokio::runtime::Runtime::new()
-                        .map_err(|e| WirelessError::System(format!("Failed to create runtime: {}", e)))?;
-                    if let Err(e) = rt.block_on(async { ap.stop().await }) {
-                        log::warn!("Failed to stop AP cleanly: {}", e);
-                    } else {
-                        log::info!("Access Point stopped");
-                    }
-                }
-            }
-        }
-
-        // Stop DNS server
-        if let Some(dns_mutex) = DNS_SERVER.get() {
-            if let Ok(mut guard) = dns_mutex.lock() {
-                if let Some(mut server) = guard.take() {
-                    let _ = server.stop();
-                    log::info!("DNS server stopped");
-                }
-            }
-        }
-
-        // Stop DHCP server
-        if let Some(dhcp_mutex) = DHCP_SERVER.get() {
-            if let Ok(mut guard) = dhcp_mutex.lock() {
-                if let Some(mut dhcp) = guard.take() {
-                    if let Ok(mut running) = dhcp.running.lock() {
-                        *running = false;
-                    }
-                    if let Some(handle) = dhcp.handle.take() {
-                        let _ = handle.join();
-                    }
-                    log::info!("DHCP server stopped");
-                }
-            }
-        }
-
-        eprintln!("[HOTSPOT] Rust AP/DHCP/DNS servers cleaned up");
-        log::info!("Rust AP/DHCP/DNS servers stopped");
-
         std::thread::sleep(std::time::Duration::from_millis(500));
 
         // Remove iptables rules (ignore errors if not present)
@@ -670,11 +841,8 @@ pub fn stop_hotspot() -> Result<()> {
             }
         }
 
-        // DO NOT restore NetworkManager management immediately
-        // NetworkManager re-blocks RF-kill when it takes control, which breaks subsequent hotspot starts
-        // Instead, leave interface unmanaged but ensure it's in a clean state
         eprintln!(
-            "[HOTSPOT] Cleaning up interface {} (leaving unmanaged to prevent RF-kill issues)...",
+            "[HOTSPOT] Cleaning up interface {}...",
             s.ap_interface
         );
         log::info!(
@@ -688,19 +856,38 @@ pub fn stop_hotspot() -> Result<()> {
         // Flush any remaining IPs
         let _ = netlink_flush_addresses(&s.ap_interface);
 
+        if s.restore_nm_on_stop {
+            eprintln!(
+                "[HOTSPOT] Restoring NetworkManager management on {}...",
+                s.ap_interface
+            );
+            if let Ok(rt) = tokio::runtime::Runtime::new() {
+                if let Err(err) = rt.block_on(async {
+                    rustyjack_netlink::networkmanager::set_device_managed(&s.ap_interface, true)
+                        .await
+                }) {
+                    log::warn!(
+                        "Failed to restore NetworkManager management on {}: {}",
+                        s.ap_interface,
+                        err
+                    );
+                    record_hotspot_warning(format!(
+                        "Failed to restore NetworkManager management on {}: {}",
+                        s.ap_interface, err
+                    ));
+                }
+            }
+        } else {
+            eprintln!(
+                "[HOTSPOT] Leaving {} unmanaged to prevent RF-kill issues...",
+                s.ap_interface
+            );
+        }
+
         // Ensure RF-kill stays unblocked
         eprintln!("[HOTSPOT] Ensuring RF-kill stays unblocked...");
         let _ = rfkill_unblock_all();
         std::thread::sleep(std::time::Duration::from_millis(500));
-
-        eprintln!(
-            "[HOTSPOT] NOTE: Interface {} left unmanaged to prevent RF-kill blocking",
-            s.ap_interface
-        );
-        log::info!(
-            "Interface {} left unmanaged to prevent RF-kill issues",
-            s.ap_interface
-        );
     } else {
         eprintln!("[HOTSPOT] No hotspot state found, performing general cleanup...");
         log::info!("No hotspot state found during stop");

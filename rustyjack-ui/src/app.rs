@@ -35,14 +35,20 @@ use zeroize::Zeroize;
 use zip::{write::FileOptions, CompressionMethod, ZipWriter};
 
 #[cfg(target_os = "linux")]
-use rustyjack_netlink::take_last_ap_error;
+use rustyjack_netlink::{
+    allowed_ap_channels, peek_last_start_ap_error, take_last_ap_error, take_last_start_ap_error,
+    RfkillManager, WirelessManager,
+};
 #[cfg(target_os = "linux")]
 use rustyjack_wireless::crack::{
     generate_common_passwords, generate_ssid_passwords, CrackProgress, CrackResult, CrackerConfig,
     WpaCracker,
 };
 #[cfg(target_os = "linux")]
-use rustyjack_wireless::{hotspot_disconnect_client, hotspot_leases, hotspot_set_blacklist};
+use rustyjack_wireless::{
+    hotspot_disconnect_client, hotspot_leases, hotspot_set_blacklist, read_regdom_info,
+    take_last_hotspot_warning,
+};
 
 use crate::{
     config::{BlacklistedDevice, GuiConfig},
@@ -11902,6 +11908,15 @@ Do not remove power/USB",
                         ],
                     )?;
                 }
+                if let Some(warn) = take_last_hotspot_warning() {
+                    self.show_message(
+                        "Hotspot warning",
+                        [
+                            "Hotspot reported a warning:",
+                            &shorten_for_display(&warn, 90),
+                        ],
+                    )?;
+                }
 
                 let running = data
                     .get("running")
@@ -11931,6 +11946,19 @@ Do not remove power/USB",
                     .and_then(|v| v.as_str())
                     .unwrap_or(&self.config.settings.hotspot_password)
                     .to_string();
+                let current_channel = data
+                    .get("channel")
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v as u8)
+                    .unwrap_or(self.config.settings.hotspot_channel);
+                let nm_error = data
+                    .get("nm_error")
+                    .and_then(|v| v.as_str())
+                    .map(|v| v.to_string());
+                let restore_nm_on_stop = data
+                    .get("restore_nm_on_stop")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(self.config.settings.hotspot_restore_nm);
 
                 // Note: Interface isolation is handled by the core operations when starting/stopping
                 // the hotspot. We don't need to apply it in the status loop as it causes race conditions.
@@ -11938,6 +11966,7 @@ Do not remove power/USB",
                 let mut lines = vec![
                     format!("SSID: {}", current_ssid),
                     format!("Password: {}", current_password),
+                    format!("Channel: {}", current_channel),
                     "".to_string(),
                     format!("Status: {}", if running { "ON" } else { "OFF" }),
                 ];
@@ -11952,6 +11981,12 @@ Do not remove power/USB",
                     };
                     lines.push(upstream_line);
                 }
+                if let Some(err) = nm_error {
+                    lines.push(format!(
+                        "NM warn: {}",
+                        shorten_for_display(&err, 24)
+                    ));
+                }
 
                 let options = if running {
                     vec![
@@ -11959,13 +11994,20 @@ Do not remove power/USB",
                         "Connected Devices".to_string(),
                         "Device Blacklist".to_string(),
                         "Network Speed".to_string(),
+                        "Diagnostics".to_string(),
                         "Turn off hotspot".to_string(),
                     ]
                 } else {
                     vec![
                         "Start hotspot".to_string(),
+                        format!("Channel: {}", self.config.settings.hotspot_channel),
+                        format!(
+                            "Restore NM on stop: {}",
+                            if restore_nm_on_stop { "On" } else { "Off" }
+                        ),
                         "Randomize name".to_string(),
                         "Randomize password".to_string(),
+                        "Diagnostics".to_string(),
                         "Back".to_string(),
                     ]
                 };
@@ -11994,6 +12036,10 @@ Do not remove power/USB",
                         self.show_hotspot_network_speed(&upstream_iface)?;
                     }
                     (true, Some(4)) => {
+                        // Diagnostics
+                        self.show_hotspot_diagnostics(&ap_iface)?;
+                    }
+                    (true, Some(5)) => {
                         // Turn off hotspot
                         let _ = self.core.dispatch(Commands::Hotspot(HotspotCommand::Stop));
                     }
@@ -12137,7 +12183,8 @@ Do not remove power/USB",
                             upstream_interface: upstream_iface.clone(),
                             ssid: self.config.settings.hotspot_ssid.clone(),
                             password: self.config.settings.hotspot_password.clone(),
-                            channel: 6,
+                            channel: self.config.settings.hotspot_channel,
+                            restore_nm_on_stop: self.config.settings.hotspot_restore_nm,
                         };
                         match self
                             .core
@@ -12198,21 +12245,27 @@ Do not remove power/USB",
                                     "Failed to start hotspot".to_string(),
                                     shorten_for_display(&err, 90),
                                 ];
-                                if err.contains("AP mode") {
-                                    lines.push(
-                                        "Selected AP interface may not support AP mode."
-                                            .to_string(),
-                                    );
-                                }
-                                if err.contains("Interface") {
-                                    lines.push("Check interface selection/cabling or pick a different adapter.".to_string());
-                                }
                                 #[cfg(target_os = "linux")]
-                                if let Some(ap_err) = rustyjack_netlink::take_last_ap_error() {
-                                    lines.push(shorten_for_display(
-                                        &format!("AP detail: {}", ap_err),
-                                        90,
-                                    ));
+                                {
+                                    if let Some(start_err) = take_last_start_ap_error() {
+                                        lines.push(shorten_for_display(
+                                            &format!("START_AP: {}", start_err),
+                                            90,
+                                        ));
+                                        if let Some(hint) = classify_start_ap_error(&start_err) {
+                                            lines.push(format!("Cause: {}", hint.category));
+                                            lines.push(format!("Hint: {}", hint.hint));
+                                        }
+                                    } else if let Some(hint) = classify_start_ap_error(&err) {
+                                        lines.push(format!("Cause: {}", hint.category));
+                                        lines.push(format!("Hint: {}", hint.hint));
+                                    }
+                                    if let Some(ap_err) = take_last_ap_error() {
+                                        lines.push(shorten_for_display(
+                                            &format!("AP detail: {}", ap_err),
+                                            90,
+                                        ));
+                                    }
                                 }
                                 lines.push(
                                     "See journalctl -u rustyjack.service for full logs."
@@ -12225,6 +12278,42 @@ Do not remove power/USB",
                     (false, Some(1)) => {
                         #[cfg(target_os = "linux")]
                         {
+                            if let Some(channel) = self.select_hotspot_channel(None)? {
+                                self.config.settings.hotspot_channel = channel;
+                                let config_path = self.root.join("gui_conf.json");
+                                let _ = self.config.save(&config_path);
+                                self.show_message(
+                                    "Hotspot",
+                                    [format!("Channel set to {}", channel)],
+                                )?;
+                            }
+                        }
+                    }
+                    (false, Some(2)) => {
+                        #[cfg(target_os = "linux")]
+                        {
+                            self.config.settings.hotspot_restore_nm =
+                                !self.config.settings.hotspot_restore_nm;
+                            let config_path = self.root.join("gui_conf.json");
+                            let _ = self.config.save(&config_path);
+                            self.show_message(
+                                "Hotspot",
+                                [
+                                    format!(
+                                        "Restore NM: {}",
+                                        if self.config.settings.hotspot_restore_nm {
+                                            "On"
+                                        } else {
+                                            "Off"
+                                        }
+                                    ),
+                                ],
+                            )?;
+                        }
+                    }
+                    (false, Some(3)) => {
+                        #[cfg(target_os = "linux")]
+                        {
                             let ssid = rustyjack_wireless::random_ssid();
                             self.config.settings.hotspot_ssid = ssid.clone();
                             let config_path = self.root.join("gui_conf.json");
@@ -12232,7 +12321,7 @@ Do not remove power/USB",
                             self.show_message("Hotspot", ["SSID updated", &ssid])?;
                         }
                     }
-                    (false, Some(2)) => {
+                    (false, Some(4)) => {
                         #[cfg(target_os = "linux")]
                         {
                             let pw = rustyjack_wireless::random_password();
@@ -12242,11 +12331,219 @@ Do not remove power/USB",
                             self.show_message("Hotspot", ["Password updated", &pw])?;
                         }
                     }
-                    (false, Some(3)) | (false, None) => return Ok(()),
+                    (false, Some(5)) => {
+                        // Diagnostics
+                        self.show_hotspot_diagnostics("")?;
+                    }
+                    (false, Some(6)) | (false, None) => return Ok(()),
                     _ => return Ok(()),
                 }
             }
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn list_wifi_interfaces(&mut self) -> Result<Vec<String>> {
+        let (_msg, detect) = self
+            .core
+            .dispatch(Commands::Hardware(HardwareCommand::Detect))?;
+        let mut wifi = Vec::new();
+        if let Some(arr) = detect.get("wifi_modules").and_then(|v| v.as_array()) {
+            for item in arr {
+                if let Ok(info) = serde_json::from_value::<InterfaceSummary>(item.clone()) {
+                    wifi.push(info.name);
+                }
+            }
+        }
+        Ok(wifi)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn resolve_hotspot_interface(&mut self, ap_iface_hint: &str) -> Result<Option<String>> {
+        if !ap_iface_hint.is_empty() {
+            return Ok(Some(ap_iface_hint.to_string()));
+        }
+
+        let wifi = self.list_wifi_interfaces()?;
+        if wifi.is_empty() {
+            self.show_message(
+                "Hotspot",
+                [
+                    "No WiFi interface found",
+                    "",
+                    "Plug in or enable a",
+                    "WiFi adapter to host",
+                    "the hotspot.",
+                ],
+            )?;
+            return Ok(None);
+        }
+
+        self.choose_interface_name("Hotspot WiFi (AP)", &wifi)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn select_hotspot_channel(&mut self, ap_iface_hint: Option<&str>) -> Result<Option<u8>> {
+        let ap_iface = match self.resolve_hotspot_interface(ap_iface_hint.unwrap_or(""))? {
+            Some(iface) => iface,
+            None => return Ok(None),
+        };
+
+        let mut channels = match allowed_ap_channels(&ap_iface) {
+            Ok(list) => list,
+            Err(err) => {
+                self.show_message(
+                    "Hotspot",
+                    [
+                        "Channel list unavailable",
+                        &shorten_for_display(&err.to_string(), 90),
+                    ],
+                )?;
+                Vec::new()
+            }
+        };
+
+        if channels.is_empty() {
+            channels = (1u8..=11u8).collect();
+        }
+
+        channels.sort_unstable();
+        channels.dedup();
+
+        let current = self.config.settings.hotspot_channel;
+        if !channels.contains(&current) {
+            channels.insert(0, current);
+        }
+
+        let labels: Vec<String> = channels
+            .iter()
+            .map(|ch| {
+                if *ch == current {
+                    format!("Channel {} (current)", ch)
+                } else {
+                    format!("Channel {}", ch)
+                }
+            })
+            .collect();
+
+        let choice = self.choose_from_menu("Hotspot channel", &labels)?;
+        Ok(choice.map(|idx| channels[idx]))
+    }
+
+    #[cfg(target_os = "linux")]
+    fn show_hotspot_diagnostics(&mut self, ap_iface_hint: &str) -> Result<()> {
+        let ap_iface = match self.resolve_hotspot_interface(ap_iface_hint)? {
+            Some(iface) => iface,
+            None => return Ok(()),
+        };
+
+        let mut lines = Vec::new();
+        lines.push(format!("Interface: {}", ap_iface));
+
+        let regdom = read_regdom_info();
+        match regdom.raw.as_deref() {
+            Some(raw) if regdom.valid => {
+                lines.push(format!("Regdom: {}", raw));
+            }
+            Some(raw) => {
+                lines.push(format!("Regdom: {} (unset)", raw));
+                lines.push("Set country/regdom for channels".to_string());
+            }
+            None => {
+                lines.push("Regdom: unknown".to_string());
+                lines.push("Set country/regdom for channels".to_string());
+            }
+        }
+
+        let rfkill = RfkillManager::new();
+        match rfkill.list() {
+            Ok(devices) => {
+                if devices.is_empty() {
+                    lines.push("RF-kill: none".to_string());
+                } else {
+                    lines.push("RF-kill:".to_string());
+                    for dev in devices {
+                        lines.push(format!(
+                            "rfkill{}: {} {}",
+                            dev.idx,
+                            dev.type_.name(),
+                            dev.state_string()
+                        ));
+                    }
+                }
+            }
+            Err(err) => {
+                lines.push(format!(
+                    "RF-kill error: {}",
+                    shorten_for_display(&err.to_string(), 60)
+                ));
+            }
+        }
+
+        match WirelessManager::new() {
+            Ok(mut mgr) => match mgr.get_phy_capabilities(&ap_iface) {
+                Ok(caps) => {
+                    lines.push(format!(
+                        "AP support: {}",
+                        if caps.supports_ap { "yes" } else { "no" }
+                    ));
+                    if !caps.supported_modes.is_empty() {
+                        let modes = caps
+                            .supported_modes
+                            .iter()
+                            .map(|m| m.to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        lines.push(format!("Modes: {}", modes));
+                    }
+                    if !caps.supported_bands.is_empty() {
+                        lines.push(format!("Bands: {}", caps.supported_bands.join(", ")));
+                    }
+                }
+                Err(err) => {
+                    lines.push(format!(
+                        "AP caps: {}",
+                        shorten_for_display(&err.to_string(), 70)
+                    ));
+                }
+            },
+            Err(err) => {
+                lines.push(format!(
+                    "NL80211: {}",
+                    shorten_for_display(&err.to_string(), 70)
+                ));
+            }
+        }
+
+        match allowed_ap_channels(&ap_iface) {
+            Ok(channels) if !channels.is_empty() => {
+                let list = channels
+                    .iter()
+                    .map(|ch| ch.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                lines.push(format!("Channels: {}", list));
+            }
+            Ok(_) => lines.push("Channels: none".to_string()),
+            Err(err) => {
+                lines.push(format!(
+                    "Channels: {}",
+                    shorten_for_display(&err.to_string(), 70)
+                ));
+            }
+        }
+
+        if let Some(err) = peek_last_start_ap_error() {
+            lines.push(shorten_for_display(&format!("Last START_AP: {}", err), 90));
+            if let Some(hint) = classify_start_ap_error(&err) {
+                lines.push(format!("Cause: {}", hint.category));
+                lines.push(format!("Hint: {}", hint.hint));
+            }
+        } else {
+            lines.push("Last START_AP: none".to_string());
+        }
+
+        self.show_message("Hotspot diag", lines.iter().map(|s| s.as_str()))
     }
 
     fn show_hotspot_network_info(
@@ -12703,5 +13000,84 @@ fn format_bytes_per_sec(bytes: u64) -> String {
         format!("{:.1} MB/s", bytes as f64 / (1024.0 * 1024.0))
     } else {
         format!("{:.1} GB/s", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
+    }
+}
+
+struct StartApErrorHint {
+    category: &'static str,
+    hint: &'static str,
+}
+
+fn extract_errno(err: &str) -> Option<i32> {
+    let lower = err.to_ascii_lowercase();
+    for key in ["errno", "os error"] {
+        if let Some(pos) = lower.find(key) {
+            let rest = &lower[pos + key.len()..];
+            let digits: String = rest
+                .chars()
+                .skip_while(|c| !c.is_ascii_digit())
+                .take_while(|c| c.is_ascii_digit())
+                .collect();
+            if !digits.is_empty() {
+                if let Ok(num) = digits.parse::<i32>() {
+                    return Some(num);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn classify_start_ap_error(err: &str) -> Option<StartApErrorHint> {
+    let lower = err.to_ascii_lowercase();
+    if lower.contains("rfkill") {
+        return Some(StartApErrorHint {
+            category: "RF-kill blocked",
+            hint: "Unblock wireless and retry.",
+        });
+    }
+    if lower.contains("does not support ap")
+        || (lower.contains("ap mode") && lower.contains("not support"))
+    {
+        return Some(StartApErrorHint {
+            category: "Adapter lacks AP mode",
+            hint: "Use an AP-capable adapter.",
+        });
+    }
+    if lower.contains("interface busy") || lower.contains("device busy") {
+        return Some(StartApErrorHint {
+            category: "Interface busy",
+            hint: "Stop wpa_supplicant/NetworkManager on the AP interface.",
+        });
+    }
+    if lower.contains("no valid channels") || lower.contains("regdom") {
+        return Some(StartApErrorHint {
+            category: "Regdom/channel invalid",
+            hint: "Set a country code and select a valid channel.",
+        });
+    }
+
+    match extract_errno(err) {
+        Some(16) => Some(StartApErrorHint {
+            category: "Interface busy",
+            hint: "Stop wpa_supplicant/NetworkManager on the AP interface.",
+        }),
+        Some(19) => Some(StartApErrorHint {
+            category: "Interface missing",
+            hint: "Check the interface name and adapter.",
+        }),
+        Some(22) | Some(34) => Some(StartApErrorHint {
+            category: "Regdom/channel invalid",
+            hint: "Set a country code and select a valid channel.",
+        }),
+        Some(95) => Some(StartApErrorHint {
+            category: "Adapter lacks AP mode",
+            hint: "Use an AP-capable adapter.",
+        }),
+        Some(1) | Some(13) => Some(StartApErrorHint {
+            category: "Permission denied",
+            hint: "Run as root with CAP_NET_ADMIN.",
+        }),
+        _ => None,
     }
 }

@@ -284,6 +284,12 @@ pub struct SettingsConfig {
     /// Hotspot password
     #[serde(default = "SettingsConfig::default_hotspot_password")]
     pub hotspot_password: String,
+    /// Hotspot channel (2.4 GHz)
+    #[serde(default = "SettingsConfig::default_hotspot_channel")]
+    pub hotspot_channel: u8,
+    /// Restore NetworkManager management on hotspot stop
+    #[serde(default)]
+    pub hotspot_restore_nm: bool,
     /// Hotspot device blacklist (MAC addresses with metadata)
     #[serde(default)]
     pub hotspot_blacklist: Vec<BlacklistedDevice>,
@@ -316,6 +322,8 @@ impl Default for SettingsConfig {
             passive_mode_enabled: false,
             hotspot_ssid: Self::default_hotspot_ssid(),
             hotspot_password: Self::default_hotspot_password(),
+            hotspot_channel: Self::default_hotspot_channel(),
+            hotspot_restore_nm: false,
             hotspot_blacklist: Vec::new(),
         }
     }
@@ -358,6 +366,10 @@ impl SettingsConfig {
 
     fn default_hotspot_password() -> String {
         "rustyjack".to_string()
+    }
+
+    fn default_hotspot_channel() -> u8 {
+        6
     }
 }
 

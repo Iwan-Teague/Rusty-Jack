@@ -73,7 +73,8 @@ mod rfkill_helpers;
 // Re-export evasion crate for convenience (stealth functionality now in separate crate)
 pub use hotspot::{
     hotspot_disconnect_client, hotspot_leases, hotspot_set_blacklist, random_password, random_ssid,
-    start_hotspot, status_hotspot, stop_hotspot, HotspotConfig, HotspotState,
+    read_regdom_info, start_hotspot, status_hotspot, stop_hotspot, take_last_hotspot_warning,
+    HotspotConfig, HotspotState, RegdomInfo,
 };
 pub use rustyjack_evasion as evasion;
 pub use rustyjack_evasion::{

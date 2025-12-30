@@ -95,7 +95,8 @@ pub use dhcp_server::{DhcpConfig, DhcpError, DhcpLease as DhcpServerLease, DhcpS
 pub use dns_server::{DnsConfig, DnsError, DnsRule, DnsServer};
 #[cfg(target_os = "linux")]
 pub use hostapd::{
-    generate_pmk, AccessPoint, ApClient, ApConfig, ApSecurity, ApStats, HardwareMode, WpaState,
+    allowed_ap_channels, generate_pmk, peek_last_start_ap_error, take_last_start_ap_error,
+    AccessPoint, ApClient, ApConfig, ApSecurity, ApStats, HardwareMode, WpaState,
 };
 #[cfg(target_os = "linux")]
 pub use interface::{AddressInfo, InterfaceInfo, InterfaceManager};

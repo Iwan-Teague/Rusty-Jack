@@ -318,9 +318,16 @@ struct StaHandshake {
 
 static LAST_AP_ERROR: Lazy<std::sync::Mutex<Option<String>>> =
     Lazy::new(|| std::sync::Mutex::new(None));
+static LAST_START_AP_ERROR: Lazy<std::sync::Mutex<Option<String>>> =
+    Lazy::new(|| std::sync::Mutex::new(None));
 
 fn record_ap_error(msg: impl Into<String>) {
     let mut guard = LAST_AP_ERROR.lock().unwrap_or_else(|e| e.into_inner());
+    *guard = Some(msg.into());
+}
+
+fn record_start_ap_error(msg: impl Into<String>) {
+    let mut guard = LAST_START_AP_ERROR.lock().unwrap_or_else(|e| e.into_inner());
     *guard = Some(msg.into());
 }
 
@@ -328,6 +335,18 @@ fn record_ap_error(msg: impl Into<String>) {
 pub fn take_last_ap_error() -> Option<String> {
     let mut guard = LAST_AP_ERROR.lock().unwrap_or_else(|e| e.into_inner());
     guard.take()
+}
+
+/// Retrieve and clear the last START_AP error.
+pub fn take_last_start_ap_error() -> Option<String> {
+    let mut guard = LAST_START_AP_ERROR.lock().unwrap_or_else(|e| e.into_inner());
+    guard.take()
+}
+
+/// Retrieve the last START_AP error without clearing it.
+pub fn peek_last_start_ap_error() -> Option<String> {
+    let guard = LAST_START_AP_ERROR.lock().unwrap_or_else(|e| e.into_inner());
+    guard.clone()
 }
 
 impl AccessPoint {
@@ -396,10 +415,12 @@ impl AccessPoint {
         );
 
         if !ap_supported {
-            return Err(NetlinkError::OperationNotSupported(format!(
+            let msg = format!(
                 "Interface {} does not support AP mode. Supported modes: {:?}",
                 self.config.interface, phy_caps.supported_modes
-            )));
+            );
+            record_start_ap_error(&msg);
+            return Err(NetlinkError::OperationNotSupported(msg));
         }
 
         // Force interface into AP mode via nl80211
@@ -490,6 +511,7 @@ impl AccessPoint {
             };
             log::error!("{}", msg);
             record_ap_error(&msg);
+            record_start_ap_error(&msg);
             return Err(NetlinkError::OperationFailed(msg));
         }
 
@@ -607,6 +629,7 @@ impl AccessPoint {
 
         if let Some(err) = last_err {
             record_ap_error(&err);
+            record_start_ap_error(&err);
             return Err(NetlinkError::OperationFailed(err));
         }
 
@@ -1897,6 +1920,12 @@ fn allowed_channels_from_phy(phy_caps: &PhyCapabilities) -> Vec<u8> {
     channels.sort_unstable();
     channels.dedup();
     channels
+}
+
+pub fn allowed_ap_channels(interface: &str) -> Result<Vec<u8>> {
+    let mut mgr = WirelessManager::new()?;
+    let phy_caps = mgr.get_phy_capabilities(interface)?;
+    Ok(allowed_channels_from_phy(&phy_caps))
 }
 
 fn rates_from_wiphy(

@@ -186,6 +186,9 @@ pub struct HotspotStartArgs {
     /// Wi-Fi channel (2.4 GHz)
     #[arg(long, default_value_t = 6)]
     pub channel: u8,
+    /// Restore NetworkManager management on stop (may re-block RF-kill)
+    #[arg(long, default_value_t = false)]
+    pub restore_nm_on_stop: bool,
 }
 
 #[derive(Args, Debug)]

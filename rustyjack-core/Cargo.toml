@@ -19,6 +19,7 @@ walkdir = "2.4"
 ipnet = "2.9"
 rustyjack-ethernet = { path = "../rustyjack-ethernet" }
 rustyjack-evasion = { path = "../rustyjack-evasion" }
+rustyjack-portal = { path = "../rustyjack-portal" }
 rand = "0.8"
 zeroize = "1.7"
 rustyjack-encryption = { path = "../rustyjack-encryption" }

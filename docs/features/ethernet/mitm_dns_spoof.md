@@ -6,12 +6,12 @@ Middle-in-the-man flows for Ethernet targets with optional captive portals. Orch
 1. Core enforces interface isolation and sets active Ethernet iface.
 2. ARP poison victims (pair or subset); enable NAT/forwarding via `rustyjack-netlink::iptables`.
 3. Start Rust PCAP capture and Rust DNS spoof add-on.
-4. Optional PHP captive portal served from `DNSSpoof/sites/<site>`; visits/credentials logged.
+4. Optional Rust captive portal served from `DNSSpoof/sites/<site>`; visits/credentials logged.
 5. Stop tears down ARP spoof, DNS spoof, capture, and NAT rules.
 
 ## Dependencies
 - ARP spoof helpers (core/system) and `rustyjack-netlink` iptables/NAT.
-- External tools: PHP server for sites.
+- External tools: none required for the portal server.
 - Loot paths under `loot/Ethernet/<label>/` with PCAP, visit/credential logs, DNS spoof logs.
 
 ## Notes

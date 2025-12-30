@@ -1,0 +1,594 @@
+Rustyjack (Pi Zero 2 W) — Final plan to replace the PHP portal server with Rust-only code (Axum)
+Senior Computer Scientist Report
+Date: 2025-12-30
+
+================================================================================
+0) What this report is (and what it is not)
+================================================================================
+
+This is the final, consolidated implementation plan for replacing Rustyjack’s
+current “portal” HTTP server (which is started by spawning the external `php`
+binary) with an HTTP server implemented purely in Rust code and compiled into the
+Rustyjack project.
+
+Key constraint (explicit): NO third-party web-server binaries (php/uhttpd/nginx/etc).
+Crates from crates.io are fine; they compile into the Rustyjack binary and can
+be vendored/forked if needed.
+
+This report focuses on the “portal server” used by DNSSpoof + Ethernet Site-Cred
+capture. It also notes an optional follow-on improvement: reuse the same portal
+server for Evil Twin “open network” captive portal mode.
+
+================================================================================
+1) Current behavior (verified in source)
+================================================================================
+
+1.1 Where the PHP server is started
+
+A) rustyjack-core/src/system.rs
+  - start_php_server(site_dir, loot_dir) spawns:
+        php -S 0.0.0.0:80
+    with current_dir = site_dir and optional env var:
+        RUSTYJACK_DNSSPOOF_LOOT=<capture_dir>
+
+B) rustyjack-core/src/operations.rs
+  - handle_eth_site_cred_capture(...) calls:
+        start_php_server(&site_dir, Some(&dns_capture_dir))?
+        start_dns_spoof(...)
+
+  - handle_dnsspoof_start(...) calls:
+        start_php_server(&site_dir, Some(&capture_dir))?
+        start_dns_spoof(...)
+
+Stops today (DNSSpoof Stop):
+  - handle_dnsspoof_stop() kills PHP by pattern and stops DNS spoof:
+        kill_process_pattern("php -S 0.0.0.0:80")
+        kill_process_pattern("php")
+        stop_dns_spoof()
+
+1.2 What the portal “does” today (DNSSpoof/sites/portal/index.php)
+
+The portal is a credential-harvester template that:
+  - Logs a “view” visit on every request
+  - On POST, logs credentials and logs a “post” visit
+
+Log file locations:
+  - capture_dir is either:
+      (a) env var RUSTYJACK_DNSSPOOF_LOOT (set by core), or
+      (b) DNSSpoof/captures/<site_name> (fallback)
+  - credentials.log path:
+      <capture_dir>/credentials.log
+  - visits.log path:
+      <capture_dir>/visits.log
+
+Log line formats (must be preserved for UI compatibility):
+
+credentials.log:
+  "[{timestamp_rfc3339}] ip={ip} ua=\"{ua}\" user=\"{user}\" pass=\"{pass}\"\n"
+
+visits.log:
+  "[{timestamp_rfc3339}] ip={ip} ua=\"{ua}\" uri=\"{uri}\" status={view|post}\n"
+
+Important nuance: index.php logs “view” for POST requests too (because it logs
+the view before checking method). That means a POST produces TWO visits.log lines:
+  - status=view
+  - status=post
+The Rust server should reproduce that behavior to avoid changing UI counts.
+
+1.3 How “stop” currently works from the UI (rustyjack-ui)
+
+In the TUI, “Stop Ethernet MITM” calls:
+  - DnsSpoof stop (which currently kills php + stops DNS spoof)
+  - then Mitm stop (stops ARP spoofer + PCAP capture, disables ip forwarding)
+
+Therefore: if Ethernet SiteCredCapture was running (ARP + PCAP + portal + DNS),
+the current stop path depends on DNSSpoof stop to kill the portal server.
+Our Rust portal must integrate into DNSSpoof stop accordingly.
+
+================================================================================
+2) Design goals for the Rust portal replacement
+================================================================================
+
+Functional goals (must preserve):
+  - Serve static portal assets (the old PHP template becomes static HTML + JS)
+  - Handle POST form capture with the same form field names (username/password)
+  - Write visits.log and credentials.log in the exact same directory and format
+  - Start and stop cleanly without process-kill hacks
+
+Operational goals (Pi Zero 2 W):
+  - Very small footprint and predictable runtime behavior
+  - Minimal allocations and minimal middleware
+  - Safe defaults; avoid complex moving parts
+
+Security goals:
+  - Bind listener to the selected interface IP (NOT 0.0.0.0)
+  - Put “safety nets” in the request pipeline:
+      * request body limit
+      * request timeout
+      * concurrency limit
+  - Ensure log writes don’t block the async reactor (use a mutex or blocking task)
+
+Hard constraint:
+  - No third-party web-server binaries; Rust code only.
+
+================================================================================
+3) Proposed architecture (Rust-only) — new crate: rustyjack-portal
+================================================================================
+
+3.1 Why a new crate
+
+Recommended: add a workspace crate `rustyjack-portal` that contains the Axum
+server implementation and exposes a small start/stop API.
+
+Reasons:
+  - Keeps web-server dependencies out of rustyjack-core (or at least isolated)
+  - Allows reuse by rustyjack-wireless (Evil Twin open_network mode) later
+  - Avoids dependency cycles (core orchestrates, portal serves)
+
+Workspace change (Rustyjack/Cargo.toml):
+  - Add "rustyjack-portal" to [workspace].members
+
+Core dependency (rustyjack-core/Cargo.toml):
+  - Add a path dependency to rustyjack-portal (Linux only if desired)
+
+3.2 Crates used (compile-time dependencies, not binaries)
+
+At minimum:
+  - axum (router + handlers)
+  - tower-http (ServeDir, RequestBodyLimit, TimeoutLayer, optional Trace)
+  - tower (ConcurrencyLimitLayer)
+  - tokio (runtime + net)
+  - chrono (timestamps like PHP date('c'))
+  - anyhow/thiserror (consistent errors)
+
+Important: Tokio “net” feature
+  - Rustyjack currently enables tokio features like rt/macros, but not net.
+  - Axum/hyper server requires tokio net, so the new crate MUST enable it:
+        tokio = { version = "1", features = ["rt", "rt-multi-thread", "net", "time", "sync", "signal"] }
+
+This remains Rust-only; it just ensures the async runtime has networking enabled.
+
+================================================================================
+4) Binding strategy (default bind to :80; optional DNAT mode)
+================================================================================
+
+Because the target is a dedicated Pi and may run with full privilege, the
+default strategy should be the simplest and most robust:
+
+4.1 Default (recommended): bind directly to interface_ip:80
+  - The portal server binds to:
+        (InterfaceInfo.address, 80)
+  - No portal-specific NAT rules are required.
+  - Clients hit the portal via DNS spoof mapping domains -> portal_ip and port 80.
+
+Pros:
+  - Fewer failure modes (no DNAT rules to add/remove)
+  - Easier debugging (netstat shows :80 bound on the correct IP)
+  - No interaction with “flush tables” helpers
+
+Cons:
+  - Requires privilege to bind port 80 (acceptable on this appliance)
+
+4.2 Optional (defense-in-depth / future non-root): bind to :8080 + DNAT 80->8080
+  - Portal binds to:
+        (listen_ip, 8080)
+  - Add iptables/nftables DNAT rule on the selected interface:
+        in_iface=<iface>, dst_port=80 -> to_addr=<listen_ip>, to_port=8080
+
+IMPORTANT:
+  - Do NOT call setup_captive_portal() from this flow because it flushes entire tables.
+  - Use existing IptablesManager add_dnat/delete_dnat (additive rule changes only).
+  - Add “rule reconciliation” on start:
+      * attempt delete_dnat first (ignore errors)
+      * then add_dnat
+    This mirrors production captive-portal daemons that ensure stale rules don’t survive crashes.
+
+Note about port 443:
+  - Redirecting 443 to 80 does not produce real TLS; it can produce errors.
+  - Keep “redirect 443” OFF by default in the DNSSpoof portal path.
+  - (Evil Twin open_network may choose differently, but should be explicit.)
+
+================================================================================
+5) Portal server request pipeline (Axum + Tower “safety nets”)
+================================================================================
+
+The portal server should remain intentionally tiny. The main risk isn’t “fancy
+auth” — it’s that hostile clients can send huge bodies, keep connections open,
+or try to hammer the server.
+
+Recommended layers (in this order, conceptually):
+  1) RequestBodyLimitLayer: cap POST size (e.g. 16 KiB)
+  2) TimeoutLayer: cap total request processing time (e.g. 3–5 seconds)
+  3) ConcurrencyLimitLayer: cap concurrent requests (e.g. 32)
+
+These are “boring but effective” safety nets typical of hardened embedded servers:
+  - body limit prevents memory blowups
+  - timeout prevents slowloris-ish behaviour and hung handlers
+  - concurrency limit prevents resource starvation on a small CPU
+
+Implementation shape (illustrative):
+
+```rust
+use std::time::Duration;
+use axum::{Router, routing::{get, post}};
+use tower::ServiceBuilder;
+use tower::limit::ConcurrencyLimitLayer;
+use tower_http::limit::RequestBodyLimitLayer;
+use tower_http::timeout::TimeoutLayer;
+use tower_http::services::ServeDir;
+
+let middleware = ServiceBuilder::new()
+    .layer(RequestBodyLimitLayer::new(cfg.max_body_bytes))
+    .layer(TimeoutLayer::with_status_code(cfg.request_timeout, axum::http::StatusCode::REQUEST_TIMEOUT))
+    .layer(ConcurrencyLimitLayer::new(cfg.max_concurrency));
+
+let app = Router::new()
+    .route("/", get(get_index).post(post_capture))
+    .fallback_service(ServeDir::new(&cfg.site_dir).append_index_html_on_directories(true))
+    .layer(middleware);
+```
+
+Note:
+  - Keep middleware minimal; tracing is optional and must avoid leaking creds.
+
+================================================================================
+6) Logging (must match PHP semantics and UI expectations)
+================================================================================
+
+6.1 Directory and files
+
+The server receives capture_dir from core (already computed there).
+On start:
+  - create capture_dir if missing (0755)
+  - open credentials.log and visits.log in append mode
+
+6.2 Format fidelity
+
+Emit the exact line formats shown in §1.2.
+Prefer chrono’s RFC3339 format with seconds + timezone offset, matching PHP date('c').
+Example:
+  2025-12-30T12:34:56+00:00
+
+6.3 Concurrency and atomicity
+
+PHP used FILE_APPEND | LOCK_EX. Rust should provide the equivalent “don’t interleave lines”.
+
+Recommended:
+  - Keep opened File handles in an Arc
+  - Protect writes with a tokio::sync::Mutex (or parking_lot::Mutex) so each line
+    write is serialized
+  - Because writes are small, this is fast enough; concurrency limit reduces load.
+
+Avoid:
+  - Doing blocking std::fs writes directly in the request handler without any
+    mutex (risk interleaving, risk blocking reactor).
+
+6.4 Sensitive logging caution
+
+The server must NEVER log request bodies, username, or password to stdout/stderr.
+If you add HTTP tracing middleware, configure it to exclude bodies and redact headers.
+
+================================================================================
+7) Site template conversion (PHP -> static assets)
+================================================================================
+
+Because the goal is Rust-only with no PHP runtime, DNSSpoof/sites/portal must be updated:
+
+7.1 Convert index.php -> index.html
+
+Approach:
+  - Keep the same HTML form fields:
+      name="username"
+      name="password"
+  - Add minimal JS to display an error message when redirected to /?err=1
+  - Remove PHP logic entirely
+
+7.2 POST handler behavior
+
+To match PHP behavior:
+  - On POST:
+      a) log visits status=view (same as PHP does before method check)
+      b) log creds to credentials.log
+      c) log visits status=post
+      d) respond with 303 redirect to "/?err=1" (or return HTML directly)
+  - On GET:
+      a) log visits status=view
+      b) serve index.html (or ServeDir fallback)
+
+This preserves the “Invalid credentials...” user experience without templating engines.
+
+================================================================================
+8) Lifecycle management (start/stop) — match existing DNS spoof handle style
+================================================================================
+
+Rustyjack already manages a long-lived server via a stored handle:
+  - start_dns_spoof() creates DnsServer, installs redirects, stores DnsSpoofHandle
+  - stop_dns_spoof() removes redirects and stops server
+
+Portal should follow the same pattern to eliminate “kill processes by name”.
+
+8.1 Public API (rustyjack-portal)
+
+```rust
+pub struct PortalConfig {
+    pub interface: String,
+    pub listen_ip: std::net::Ipv4Addr,
+    pub listen_port: u16,              // default 80; optional 8080 in DNAT mode
+    pub site_dir: std::path::PathBuf,
+    pub capture_dir: std::path::PathBuf,
+    pub max_body_bytes: usize,         // e.g., 16*1024
+    pub max_concurrency: usize,        // e.g., 32
+    pub request_timeout: std::time::Duration, // e.g., 5s
+    pub dnat_mode: bool,               // false by default
+    pub bind_to_device: bool,          // optional SO_BINDTODEVICE
+}
+
+pub fn start_portal(cfg: PortalConfig) -> anyhow::Result<()>;
+pub fn stop_portal() -> anyhow::Result<()>;
+pub fn portal_running() -> bool;
+```
+
+8.2 Internal state
+
+Use a global OnceLock + Mutex<Option<PortalHandle>> similar to core’s DNS handle.
+
+PortalHandle should include:
+  - interface, listen_ip, listen_port
+  - (optional) “rules installed” metadata (DNAT mode)
+  - shutdown sender (oneshot)
+  - join handle for the server thread
+
+8.3 Runtime model
+
+Because rustyjack-core is mostly synchronous, the cleanest model is:
+  - start_portal spawns one dedicated OS thread
+  - that thread constructs a Tokio runtime and runs axum::serve(listener, app)
+  - stop_portal signals shutdown and joins the thread
+
+This avoids entangling the portal with any other async tasks in the process and
+keeps start/stop behavior deterministic.
+
+8.4 Binding to the correct interface
+
+Default requirement: use the interface selected by hardware detect.
+
+Implementation:
+  - detect_interface / detect_ethernet_interface returns InterfaceInfo:
+        { name, address, prefix }
+  - pass name/address into PortalConfig
+  - bind listener to SocketAddr { ip=address, port=80 }
+
+Optional hardening: SO_BINDTODEVICE
+  - If you want to guarantee the socket only accepts traffic on the chosen iface,
+    use socket2 to set SO_BINDTODEVICE before binding.
+  - This requires root (acceptable on the appliance).
+
+================================================================================
+9) Integration points in Rustyjack (core + UI behavior)
+================================================================================
+
+9.1 Core changes (rustyjack-core)
+
+A) rustyjack-core/src/system.rs
+  - Remove start_php_server() or gate it behind a legacy feature flag.
+  - Add portal helpers or call into rustyjack-portal directly from operations.rs.
+
+B) rustyjack-core/src/operations.rs
+
+1) handle_dnsspoof_start(...)
+   Replace:
+     kill_process_pattern("php -S 0.0.0.0:80")
+     start_php_server(...)
+   With:
+     stop_portal()  (best-effort; ignore if not running)
+     start_portal(PortalConfig { interface=name, listen_ip=address, listen_port=80, ... })
+
+   Then keep:
+     start_dns_spoof(&iface, address, address)
+
+   Ordering recommendation:
+     start_portal first, then start_dns_spoof
+
+2) handle_dnsspoof_stop()
+   Replace:
+     kill_process_pattern("php -S 0.0.0.0:80")
+     kill_process_pattern("php")
+   With:
+     stop_portal()
+
+   Then:
+     stop_dns_spoof()
+
+3) handle_eth_site_cred_capture(...)
+   Replace:
+     kill_process_pattern("php...")
+     start_php_server(...)
+   With:
+     stop_portal()
+     start_portal(cfg using interface_info.address and dns_capture_dir)
+
+   Keep existing:
+     - enable_ip_forwarding(true)
+     - arpspoof + pcap capture
+     - start_dns_spoof
+
+9.2 UI compatibility (rustyjack-ui)
+
+The UI already stops DNSSpoof before stopping MITM in “Stop Ethernet MITM”.
+Once DNSSpoof stop calls stop_portal, the stop flow continues to shut down the
+portal reliably.
+
+9.3 “No third-party binaries” guarantee
+
+After this change, the portal server path no longer spawns:
+  - php
+  - any external HTTP daemon
+
+The entire server is compiled Rust code.
+
+(NOTE: Rustyjack still interacts with the Linux kernel for routing/firewall/etc.
+via its existing netlink/NF tables code. That is not a “third-party binary” and
+remains fully within Rustyjack’s code control.)
+
+================================================================================
+10) Optional follow-on: reuse the portal for Evil Twin open_network mode
+================================================================================
+
+rustyjack-wireless/src/evil_twin.rs currently:
+  - sets up captive portal iptables rules (including flush_table) when open_network=true
+  - does NOT start an HTTP server
+
+If you want open_network to have an actual portal page:
+  - call start_portal with:
+      interface = ap_interface
+      listen_ip = 192.168.4.1
+      listen_port = 80
+      site_dir = DNSSpoof/sites/portal
+      capture_dir = an appropriate loot dir under DNSSpoof/captures/<timestamp>/...
+
+Caveat:
+  - ipt.setup_captive_portal() flushes NAT and Filter tables.
+    That may be acceptable in dedicated Evil Twin mode, but it should remain
+    isolated from DNSSpoof/MITM modes.
+
+================================================================================
+11) Breaking changes / risks and concrete mitigations
+================================================================================
+
+11.1 Template migration errors
+Risk:
+  - If index.html doesn’t match the old form field names, POST handler won’t capture.
+Mitigation:
+  - Keep name="username" and name="password"
+  - Add a small integration test that POSTs form data and asserts creds logged.
+
+11.2 Port 80 bind failures
+Risk:
+  - Another process is listening on :80, or running without privilege.
+Mitigation:
+  - On appliance: run as root and ensure no other webserver is installed.
+  - Provide optional DNAT mode (bind 8080) for future non-root deployments.
+
+11.3 Missing Tokio features
+Risk:
+  - Build errors because tokio “net” isn’t enabled.
+Mitigation:
+  - Ensure rustyjack-portal enables tokio features: rt, net, time, sync, signal.
+
+11.4 Request pipeline “stalls” from file I/O
+Risk:
+  - Slow SD card writes block the reactor.
+Mitigation:
+  - Serialize writes with a mutex and, if needed, move them into spawn_blocking.
+  - Keep timeout layer so requests don’t hang forever.
+
+11.5 DNAT mode rule drift / stale rules
+Risk:
+  - If Rustyjack crashes after adding rules, they may persist.
+Mitigation:
+  - Rule reconciliation on start (delete first, then add).
+  - Store rule metadata in PortalHandle and delete on stop.
+
+11.6 Directory traversal / dependency vulnerabilities (ServeDir)
+Risk:
+  - Static file servers occasionally have path-handling vulnerabilities (usually OS-specific).
+Mitigation:
+  - Pin a modern tower-http version and enforce “security maintenance” (see §12).
+
+================================================================================
+12) Security maintenance (supply chain + patch discipline)
+================================================================================
+
+Because this solution depends on public crates (Axum/Tower/Tokio), the “battle
+tested” part is not only the crates — it’s also how you keep them maintained.
+
+Recommended minimum:
+  - Keep Cargo.lock committed (already done)
+  - Add CI job(s):
+      * cargo audit (RustSec) and/or cargo deny
+      * cargo fmt / clippy
+  - Enable Dependabot (or similar) to propose lockfile updates
+  - Regularly bump tower-http / tokio when advisories appear
+
+Operationally for an appliance:
+  - Prefer fewer dependencies and fewer features enabled.
+  - Vendor dependencies for long-lived deployments if you want maximum control.
+
+================================================================================
+13) Step-by-step implementation plan (practical roadmap)
+================================================================================
+
+Phase 1 — Add the portal crate
+  1) Create rustyjack-portal/ with lib.rs + modules:
+        - config.rs
+        - server.rs (Axum router + middleware stack)
+        - logging.rs (visits/credentials formatting and file append)
+        - state.rs (OnceLock handle)
+  2) Add it to workspace members.
+  3) Add dependencies (axum, tower-http, tower limit, tokio net).
+
+Phase 2 — Implement portal server
+  4) Implement start_portal/stop_portal/portal_running.
+  5) Implement binding to listen_ip:80 by default.
+  6) Implement request pipeline layers:
+        - RequestBodyLimitLayer
+        - TimeoutLayer
+        - ConcurrencyLimitLayer
+  7) Implement GET / and POST / with PHP-compatible logging semantics.
+  8) Serve static site_dir via ServeDir fallback.
+
+Phase 3 — Convert portal assets
+  9) Replace DNSSpoof/sites/portal/index.php with index.html + JS.
+ 10) Verify form fields match.
+
+Phase 4 — Integrate into core operations
+ 11) Replace start_php_server calls in:
+        - handle_dnsspoof_start
+        - handle_eth_site_cred_capture
+ 12) Replace php kill patterns in handle_dnsspoof_stop with stop_portal.
+ 13) Remove now-dead php kill patterns from other call sites as appropriate.
+
+Phase 5 — Optional: DNAT mode + reconciliation
+ 14) Add config option to bind 8080 and install DNAT 80->8080 rules via IptablesManager.
+ 15) Implement rule reconciliation (delete first, then add).
+
+Phase 6 — Cleanups
+ 16) Remove PHP from installer scripts/docs if currently installed.
+ 17) Document new portal architecture and maintenance plan.
+
+================================================================================
+14) Test plan (what to test before calling this “done”)
+================================================================================
+
+Unit-style tests (host):
+  - Log formatting test: confirm exact string shape matches PHP.
+  - POST body limit: send oversized body, expect 413.
+  - Timeout: simulated handler delay, expect 408/timeout response.
+  - Concurrency limit: flood with N+ requests and verify stable behavior.
+
+Integration tests (Pi):
+  - Start dnsspoof:
+      * confirm :80 is listening on interface_info.address
+      * confirm DNS server listening on :53 and redirect rules installed
+  - From a client on the LAN:
+      * browse to any http://domain -> confirm portal page served
+      * submit credentials -> confirm credentials.log and visits.log updated
+  - Stop path via UI:
+      * DNSSpoof stop stops portal and DNS server
+      * MITM stop stops ARP spoof + PCAP and disables forwarding
+      * ensure no lingering listeners or DNAT rules (if used)
+
+================================================================================
+15) Final recommendation (concise)
+================================================================================
+
+Implement `rustyjack-portal` as a Rust-only Axum server with a small middleware
+stack (body limit, timeout, concurrency limit), bind by default to the selected
+interface IP on port 80, and integrate start/stop into the existing DNSSpoof
+handlers so the UI stop flow continues to work.
+
+Keep DNAT mode as an optional configuration for future non-root operation, but
+do not make it the default (it adds rule-lifecycle complexity that is unnecessary
+on a privileged appliance).
+
+End of report.

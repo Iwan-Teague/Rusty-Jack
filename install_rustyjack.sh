@@ -261,8 +261,6 @@ PACKAGES=(
   build-essential pkg-config libssl-dev
   # DKMS for WiFi driver compilation (kernel headers added separately, best-effort)
   dkms bc libelf-dev
-  # network / offensive tools (used for advanced operations)
-  php
   # WiFi interface tools
   # - wpasupplicant: provides wpa_supplicant daemon and wpa_cli for WPA auth fallback
   wpasupplicant

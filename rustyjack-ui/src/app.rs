@@ -9971,7 +9971,7 @@ Do not remove power/USB",
                         "No site templates found.",
                         "Add folders under",
                         "DNSSpoof/sites/<name>",
-                        "with an index.php or HTML.",
+                        "with an index.html.",
                     ],
                 );
             }

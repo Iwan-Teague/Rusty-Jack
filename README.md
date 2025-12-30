@@ -165,7 +165,7 @@ DNS spoof start/stop, reverse shell launcher, and transparent bridge start/stop 
 2. SSH to the Pi, become root: `sudo su -`.
 3. Clone the project: `git clone https://github.com/Iwan-Teague/Rusty-Jack.git Rustyjack && cd Rustyjack`.
 4. Run the installer: `chmod +x install_rustyjack.sh && ./install_rustyjack.sh`
-   - Installs packages: build-essential, pkg-config, libssl-dev, DKMS toolchain, `php`, `procps`, `network-manager`, `wireless-tools`, `wpa_supplicant`, firmware for Realtek/Atheros/Ralink, git, i2c-tools, curl.
+   - Installs packages: build-essential, pkg-config, libssl-dev, DKMS toolchain, `procps`, `network-manager`, `wireless-tools`, `wpa_supplicant`, firmware for Realtek/Atheros/Ralink, git, i2c-tools, curl.
    - Enables I2C/SPI overlays, `dtoverlay=spi0-2cs`, and GPIO pull-ups for all buttons.
    - Ensures ~2 GB swap for compilation, builds `rustyjack-ui` (release), installs to `/usr/local/bin/`.
    - Creates `loot/{Wireless,Ethernet,reports}`, `wifi/profiles/sample.json`, and keeps WLAN interfaces up.

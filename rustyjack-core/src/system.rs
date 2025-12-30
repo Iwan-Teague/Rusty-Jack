@@ -1194,21 +1194,6 @@ pub fn stop_dns_spoof() -> Result<()> {
     Ok(())
 }
 
-pub fn start_php_server(site_dir: &Path, loot_dir: Option<&Path>) -> Result<()> {
-    let mut cmd = Command::new("php");
-    cmd.args(["-S", "0.0.0.0:80"])
-        .current_dir(site_dir)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .stdin(Stdio::null());
-    if let Some(dir) = loot_dir {
-        cmd.env("RUSTYJACK_DNSSPOOF_LOOT", dir);
-    }
-    cmd.spawn()
-        .with_context(|| format!("launching PHP server in {}", site_dir.display()))?;
-    Ok(())
-}
-
 pub fn ping_host(host: &str, timeout: Duration) -> Result<bool> {
     let seconds = timeout.as_secs().clamp(1, 30).to_string();
     let status = Command::new("ping")

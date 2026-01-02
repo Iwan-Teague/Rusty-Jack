@@ -1,7 +1,13 @@
+mod hotspot_start;
+mod mount_start;
 mod noop;
+mod portal_start;
 mod scan;
 mod sleep;
+mod unmount_start;
 mod update;
+mod wifi_connect;
+mod wifi_scan;
 
 use std::future::Future;
 
@@ -23,5 +29,11 @@ where
         JobKind::Sleep { seconds } => sleep::run(*seconds, cancel).await,
         JobKind::ScanRun { req } => scan::run(req.clone(), cancel, &mut progress).await,
         JobKind::SystemUpdate { req } => update::run(req.clone(), cancel, &mut progress).await,
+        JobKind::WifiScan { req } => wifi_scan::run(req.clone(), cancel, &mut progress).await,
+        JobKind::WifiConnect { req } => wifi_connect::run(req.clone(), cancel, &mut progress).await,
+        JobKind::HotspotStart { req } => hotspot_start::run(req.clone(), cancel, &mut progress).await,
+        JobKind::PortalStart { req } => portal_start::run(req.clone(), cancel, &mut progress).await,
+        JobKind::MountStart { req } => mount_start::run(req.clone(), cancel, &mut progress).await,
+        JobKind::UnmountStart { req } => unmount_start::run(req.clone(), cancel, &mut progress).await,
     }
 }

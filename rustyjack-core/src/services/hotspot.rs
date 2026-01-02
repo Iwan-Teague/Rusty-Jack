@@ -128,3 +128,76 @@ fn format_mac(mac: &[u8; 6]) -> String {
         mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
     )
 }
+
+pub struct HotspotStartRequest {
+    pub interface: String,
+    pub ssid: String,
+    pub passphrase: Option<String>,
+    pub channel: Option<u8>,
+}
+
+pub fn start<F>(req: HotspotStartRequest, mut on_progress: F) -> Result<serde_json::Value, ServiceError>
+where
+    F: FnMut(u8, &str),
+{
+    if req.interface.trim().is_empty() {
+        return Err(ServiceError::InvalidInput("interface".to_string()));
+    }
+    if req.ssid.trim().is_empty() {
+        return Err(ServiceError::InvalidInput("ssid".to_string()));
+    }
+    
+    on_progress(10, "Starting hotspot");
+    
+    #[cfg(target_os = "linux")]
+    {
+        use rustyjack_wireless::start_hotspot;
+        
+        on_progress(50, "Configuring access point");
+        
+        // Create config for hotspot
+        let config = rustyjack_wireless::HotspotConfig {
+            ap_interface: req.interface.clone(),
+            upstream_interface: "eth0".to_string(), // Default to eth0, should be configurable
+            ssid: req.ssid.clone(),
+            password: req.passphrase.clone().unwrap_or_default(),
+            channel: req.channel.unwrap_or(6),
+            restore_nm_on_stop: true,
+        };
+        
+        match start_hotspot(config) {
+            Ok(_) => {
+                on_progress(100, "Hotspot started");
+                Ok(serde_json::json!({
+                    "interface": req.interface,
+                    "ssid": req.ssid,
+                    "started": true
+                }))
+            }
+            Err(e) => Err(ServiceError::OperationFailed(format!("Hotspot start failed: {}", e))),
+        }
+    }
+    
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (req, on_progress);
+        Err(ServiceError::External("Hotspot not supported on this platform".to_string()))
+    }
+}
+
+pub fn stop() -> Result<bool, ServiceError> {
+    #[cfg(target_os = "linux")]
+    {
+        use rustyjack_wireless::stop_hotspot;
+        
+        match stop_hotspot() {
+            Ok(_) => Ok(true),
+            Err(e) => Err(ServiceError::OperationFailed(format!("Hotspot stop failed: {}", e))),
+        }
+    }
+    
+    #[cfg(not(target_os = "linux"))]
+    {
+        Err(ServiceError::NotSupported)
+    }
+}

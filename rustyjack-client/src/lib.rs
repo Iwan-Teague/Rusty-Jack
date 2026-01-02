@@ -1,3 +1,3 @@
 mod client;
 
-pub use client::{DaemonClient, DaemonClientInfo};
+pub use client::{ClientConfig, DaemonClient, DaemonClientInfo};

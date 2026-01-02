@@ -11,6 +11,7 @@ pub struct DaemonConfig {
     pub socket_path: PathBuf,
     pub max_frame: u32,
     pub dangerous_ops_enabled: bool,
+    pub allow_core_dispatch: bool,
     pub job_retention: usize,
     pub socket_group: Option<String>,
 }
@@ -28,6 +29,9 @@ impl DaemonConfig {
         let dangerous_ops_enabled = env::var("RUSTYJACKD_DANGEROUS_OPS")
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(false);
+        let allow_core_dispatch = env::var("RUSTYJACKD_ALLOW_CORE_DISPATCH")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
         let job_retention = env::var("RUSTYJACKD_JOB_RETENTION")
             .ok()
             .and_then(|v| v.parse::<usize>().ok())
@@ -38,6 +42,7 @@ impl DaemonConfig {
             socket_path,
             max_frame,
             dangerous_ops_enabled,
+            allow_core_dispatch,
             job_retention,
             socket_group,
         }

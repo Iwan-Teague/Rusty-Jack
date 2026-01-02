@@ -1,13 +1,8 @@
-use std::fs;
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
-
-use log::{info, warn};
 
 use crate::error::{NetlinkError, Result};
-use crate::process::ProcessManager;
 
-use super::ctrl::{control_socket_candidates, default_control_dir, find_control_socket, WpaManager};
+use super::ctrl::find_control_socket;
 
 #[cfg(feature = "station_external")]
 pub fn is_wpa_running(interface: &str) -> Result<bool> {

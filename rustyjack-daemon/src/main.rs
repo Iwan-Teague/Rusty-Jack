@@ -13,6 +13,7 @@ mod server;
 mod state;
 mod systemd;
 mod telemetry;
+mod validation;
 
 use config::DaemonConfig;
 use state::DaemonState;

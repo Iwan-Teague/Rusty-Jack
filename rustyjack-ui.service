@@ -16,6 +16,14 @@ Group=rustyjack-ui
 SupplementaryGroups=rustyjack gpio spi
 NoNewPrivileges=true
 PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+RestrictRealtime=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+LockPersonality=true
+ReadWritePaths=/var/lib/rustyjack
+ReadOnlyPaths=/run/rustyjack
 
 [Install]
 WantedBy=multi-user.target

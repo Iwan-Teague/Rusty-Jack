@@ -9,6 +9,7 @@ pub enum ServiceError {
     Netlink(String),
     External(String),
     Internal(String),
+    OperationFailed(String),
 }
 
 impl fmt::Display for ServiceError {
@@ -19,6 +20,7 @@ impl fmt::Display for ServiceError {
             ServiceError::Netlink(msg) => write!(f, "netlink error: {msg}"),
             ServiceError::External(msg) => write!(f, "external error: {msg}"),
             ServiceError::Internal(msg) => write!(f, "internal error: {msg}"),
+            ServiceError::OperationFailed(msg) => write!(f, "operation failed: {msg}"),
         }
     }
 }
@@ -41,6 +43,7 @@ impl ServiceError {
             ServiceError::Netlink(msg) => DaemonError::new(ErrorCode::Netlink, msg, false),
             ServiceError::External(msg) => DaemonError::new(ErrorCode::Internal, msg, false),
             ServiceError::Internal(msg) => DaemonError::new(ErrorCode::Internal, msg, false),
+            ServiceError::OperationFailed(msg) => DaemonError::new(ErrorCode::Internal, msg, true),
         }
     }
 }

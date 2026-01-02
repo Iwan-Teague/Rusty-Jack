@@ -3,10 +3,10 @@ use std::time::Instant;
 
 use rustyjack_ipc::{
     is_dangerous_job, BlockDeviceInfo, BlockDevicesResponse, CoreDispatchRequest,
-    CoreDispatchResponse, DaemonError, DiskUsageRequest, DiskUsageResponse, ErrorCode,
+    DaemonError, DiskUsageRequest, DiskUsageResponse, ErrorCode,
     GpioDiagnosticsResponse, HealthResponse, HostnameResponse, HotspotClientsResponse,
     HotspotDiagnosticsRequest, HotspotDiagnosticsResponse, HotspotWarningsResponse,
-    JobCancelRequest, JobCancelResponse, JobStartRequest, JobStarted, JobStatusRequest,
+    JobCancelRequest, JobCancelResponse, JobSpec, JobStarted, JobStartRequest, JobStatusRequest,
     JobStatusResponse, RequestBody, RequestEnvelope, ResponseBody, ResponseEnvelope, ResponseOk,
     StatusResponse, SystemActionResponse, SystemLogsResponse, SystemStatusResponse,
     VersionResponse, WifiCapabilitiesRequest, WifiCapabilitiesResponse, PROTOCOL_VERSION,
@@ -16,6 +16,7 @@ use tokio::task;
 use crate::auth::PeerCred;
 use crate::state::DaemonState;
 use crate::telemetry::log_request;
+use crate::validation;
 
 pub async fn handle_request(
     state: &Arc<DaemonState>,
@@ -210,54 +211,363 @@ pub async fn handle_request(
                 ),
             }
         }
-        RequestBody::CoreDispatch(CoreDispatchRequest { command }) => {
-            let command = match serde_json::from_value::<rustyjack_core::Commands>(command) {
-                Ok(command) => command,
-                Err(err) => {
-                    return ResponseEnvelope {
-                        v: PROTOCOL_VERSION,
-                        request_id: request.request_id,
-                        body: ResponseBody::Err(
-                            DaemonError::new(ErrorCode::BadRequest, "invalid command", false)
-                                .with_detail(err.to_string()),
-                        ),
-                    }
-                }
-            };
-
-            let root = match rustyjack_core::resolve_root(None) {
-                Ok(root) => root,
-                Err(err) => {
-                    return ResponseEnvelope {
-                        v: PROTOCOL_VERSION,
-                        request_id: request.request_id,
-                        body: ResponseBody::Err(
-                            DaemonError::new(ErrorCode::Internal, "resolve root failed", false)
-                                .with_detail(err.to_string()),
-                        ),
-                    }
-                }
-            };
-
-            let result = task::spawn_blocking(move || rustyjack_core::dispatch_command(&root, command))
-                .await;
-
-            match result {
-                Ok(Ok((message, data))) => {
-                    ResponseBody::Ok(ResponseOk::CoreDispatch(CoreDispatchResponse {
-                        message,
-                        data,
-                    }))
-                }
-                Ok(Err(err)) => ResponseBody::Err(
-                    DaemonError::new(ErrorCode::Internal, "core dispatch failed", false)
-                        .with_detail(err.to_string()),
-                ),
-                Err(err) => ResponseBody::Err(
-                    DaemonError::new(ErrorCode::Internal, "core dispatch panicked", false)
-                        .with_detail(err.to_string()),
-                ),
+        RequestBody::WifiInterfacesList => {
+            match rustyjack_core::services::wifi::list_interfaces() {
+                Ok(interfaces) => ResponseBody::Ok(ResponseOk::WifiInterfaces(
+                    rustyjack_ipc::WifiInterfacesResponse { interfaces },
+                )),
+                Err(err) => ResponseBody::Err(err.to_daemon_error()),
             }
+        }
+        RequestBody::WifiDisconnect(rustyjack_ipc::WifiDisconnectRequest { interface }) => {
+            if let Err(err) = validation::validate_interface_name(&interface) {
+                return ResponseEnvelope {
+                    v: PROTOCOL_VERSION,
+                    request_id: request.request_id,
+                    body: ResponseBody::Err(err),
+                };
+            }
+            match rustyjack_core::services::wifi::disconnect(&interface) {
+                Ok(disconnected) => ResponseBody::Ok(ResponseOk::WifiDisconnect(
+                    rustyjack_ipc::WifiDisconnectResponse {
+                        interface,
+                        disconnected,
+                    },
+                )),
+                Err(err) => ResponseBody::Err(err.to_daemon_error()),
+            }
+        }
+        RequestBody::WifiScanStart(rustyjack_ipc::WifiScanStartRequest {
+            interface,
+            timeout_ms,
+        }) => {
+            if let Err(err) = validation::validate_interface_name(&interface) {
+                return ResponseEnvelope {
+                    v: PROTOCOL_VERSION,
+                    request_id: request.request_id,
+                    body: ResponseBody::Err(err),
+                };
+            }
+            if let Err(err) = validation::validate_timeout_ms(timeout_ms) {
+                return ResponseEnvelope {
+                    v: PROTOCOL_VERSION,
+                    request_id: request.request_id,
+                    body: ResponseBody::Err(err),
+                };
+            }
+            let job = JobSpec {
+                kind: rustyjack_ipc::JobKind::WifiScan {
+                    req: rustyjack_ipc::WifiScanRequestIpc {
+                        interface,
+                        timeout_ms,
+                    },
+                },
+                requested_by: Some(format!("uid={}", peer.uid)),
+            };
+            if !state.config.dangerous_ops_enabled && is_dangerous_job(&job.kind) {
+                ResponseBody::Err(DaemonError::new(
+                    ErrorCode::Forbidden,
+                    "dangerous operations disabled",
+                    false,
+                ))
+            } else {
+                let job_id = state.jobs.start_job(job, Arc::clone(state)).await;
+                ResponseBody::Ok(ResponseOk::JobStarted(JobStarted {
+                    job_id,
+                    accepted_at_ms: DaemonState::now_ms(),
+                }))
+            }
+        }
+        RequestBody::WifiConnectStart(rustyjack_ipc::WifiConnectStartRequest {
+            interface,
+            ssid,
+            psk,
+            timeout_ms,
+        }) => {
+            if let Err(err) = validation::validate_interface_name(&interface) {
+                return ResponseEnvelope {
+                    v: PROTOCOL_VERSION,
+                    request_id: request.request_id,
+                    body: ResponseBody::Err(err),
+                };
+            }
+            if let Err(err) = validation::validate_ssid(&ssid) {
+                return ResponseEnvelope {
+                    v: PROTOCOL_VERSION,
+                    request_id: request.request_id,
+                    body: ResponseBody::Err(err),
+                };
+            }
+            if let Err(err) = validation::validate_psk(&psk) {
+                return ResponseEnvelope {
+                    v: PROTOCOL_VERSION,
+                    request_id: request.request_id,
+                    body: ResponseBody::Err(err),
+                };
+            }
+            if let Err(err) = validation::validate_timeout_ms(timeout_ms) {
+                return ResponseEnvelope {
+                    v: PROTOCOL_VERSION,
+                    request_id: request.request_id,
+                    body: ResponseBody::Err(err),
+                };
+            }
+            let job = JobSpec {
+                kind: rustyjack_ipc::JobKind::WifiConnect {
+                    req: rustyjack_ipc::WifiConnectRequestIpc {
+                        interface,
+                        ssid,
+                        psk,
+                        timeout_ms,
+                    },
+                },
+                requested_by: Some(format!("uid={}", peer.uid)),
+            };
+            if !state.config.dangerous_ops_enabled && is_dangerous_job(&job.kind) {
+                ResponseBody::Err(DaemonError::new(
+                    ErrorCode::Forbidden,
+                    "dangerous operations disabled",
+                    false,
+                ))
+            } else {
+                let job_id = state.jobs.start_job(job, Arc::clone(state)).await;
+                ResponseBody::Ok(ResponseOk::JobStarted(JobStarted {
+                    job_id,
+                    accepted_at_ms: DaemonState::now_ms(),
+                }))
+            }
+        }
+        RequestBody::HotspotStart(rustyjack_ipc::HotspotStartRequest {
+            interface,
+            ssid,
+            passphrase,
+            channel,
+        }) => {
+            if let Err(err) = validation::validate_interface_name(&interface) {
+                return ResponseEnvelope {
+                    v: PROTOCOL_VERSION,
+                    request_id: request.request_id,
+                    body: ResponseBody::Err(err),
+                };
+            }
+            if let Err(err) = validation::validate_ssid(&ssid) {
+                return ResponseEnvelope {
+                    v: PROTOCOL_VERSION,
+                    request_id: request.request_id,
+                    body: ResponseBody::Err(err),
+                };
+            }
+            if let Err(err) = validation::validate_psk(&passphrase) {
+                return ResponseEnvelope {
+                    v: PROTOCOL_VERSION,
+                    request_id: request.request_id,
+                    body: ResponseBody::Err(err),
+                };
+            }
+            if let Err(err) = validation::validate_channel(&channel) {
+                return ResponseEnvelope {
+                    v: PROTOCOL_VERSION,
+                    request_id: request.request_id,
+                    body: ResponseBody::Err(err),
+                };
+            }
+            let job = JobSpec {
+                kind: rustyjack_ipc::JobKind::HotspotStart {
+                    req: rustyjack_ipc::HotspotStartRequestIpc {
+                        interface,
+                        ssid,
+                        passphrase,
+                        channel,
+                    },
+                },
+                requested_by: Some(format!("uid={}", peer.uid)),
+            };
+            if !state.config.dangerous_ops_enabled && is_dangerous_job(&job.kind) {
+                ResponseBody::Err(DaemonError::new(
+                    ErrorCode::Forbidden,
+                    "dangerous operations disabled",
+                    false,
+                ))
+            } else {
+                let job_id = state.jobs.start_job(job, Arc::clone(state)).await;
+                ResponseBody::Ok(ResponseOk::JobStarted(JobStarted {
+                    job_id,
+                    accepted_at_ms: DaemonState::now_ms(),
+                }))
+            }
+        }
+        RequestBody::HotspotStop => match rustyjack_core::services::hotspot::stop() {
+            Ok(success) => ResponseBody::Ok(ResponseOk::HotspotAction(
+                rustyjack_ipc::HotspotActionResponse {
+                    action: "stop".to_string(),
+                    success,
+                },
+            )),
+            Err(err) => ResponseBody::Err(err.to_daemon_error()),
+        },
+        RequestBody::PortalStart(rustyjack_ipc::PortalStartRequest { interface, port }) => {
+            if let Err(err) = validation::validate_interface_name(&interface) {
+                return ResponseEnvelope {
+                    v: PROTOCOL_VERSION,
+                    request_id: request.request_id,
+                    body: ResponseBody::Err(err),
+                };
+            }
+            if let Err(err) = validation::validate_port(port) {
+                return ResponseEnvelope {
+                    v: PROTOCOL_VERSION,
+                    request_id: request.request_id,
+                    body: ResponseBody::Err(err),
+                };
+            }
+            let job = JobSpec {
+                kind: rustyjack_ipc::JobKind::PortalStart {
+                    req: rustyjack_ipc::PortalStartRequestIpc { interface, port },
+                },
+                requested_by: Some(format!("uid={}", peer.uid)),
+            };
+            if !state.config.dangerous_ops_enabled && is_dangerous_job(&job.kind) {
+                ResponseBody::Err(DaemonError::new(
+                    ErrorCode::Forbidden,
+                    "dangerous operations disabled",
+                    false,
+                ))
+            } else {
+                let job_id = state.jobs.start_job(job, Arc::clone(state)).await;
+                ResponseBody::Ok(ResponseOk::JobStarted(JobStarted {
+                    job_id,
+                    accepted_at_ms: DaemonState::now_ms(),
+                }))
+            }
+        }
+        RequestBody::PortalStop => match rustyjack_core::services::portal::stop() {
+            Ok(success) => ResponseBody::Ok(ResponseOk::PortalAction(
+                rustyjack_ipc::PortalActionResponse {
+                    action: "stop".to_string(),
+                    success,
+                },
+            )),
+            Err(err) => ResponseBody::Err(err.to_daemon_error()),
+        },
+        RequestBody::PortalStatus => match rustyjack_core::services::portal::status() {
+            Ok(status) => {
+                let running = status.get("running").and_then(|v| v.as_bool()).unwrap_or(false);
+                let interface = status
+                    .get("interface")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                let port = status.get("port").and_then(|v| v.as_u64()).map(|p| p as u16);
+                ResponseBody::Ok(ResponseOk::PortalStatus(
+                    rustyjack_ipc::PortalStatusResponse {
+                        running,
+                        interface,
+                        port,
+                    },
+                ))
+            }
+            Err(err) => ResponseBody::Err(err.to_daemon_error()),
+        },
+        RequestBody::MountList => match rustyjack_core::services::mount::list_mounts() {
+            Ok(mounts) => {
+                let mapped = mounts
+                    .into_iter()
+                    .map(|m| rustyjack_ipc::MountInfo {
+                        device: m.device,
+                        mountpoint: m.mountpoint,
+                        filesystem: m.filesystem,
+                        size: m.size,
+                    })
+                    .collect();
+                ResponseBody::Ok(ResponseOk::MountList(rustyjack_ipc::MountListResponse {
+                    mounts: mapped,
+                }))
+            }
+            Err(err) => ResponseBody::Err(err.to_daemon_error()),
+        },
+        RequestBody::MountStart(rustyjack_ipc::MountStartRequest { device, filesystem }) => {
+            if let Err(err) = validation::validate_device_path(&device) {
+                return ResponseEnvelope {
+                    v: PROTOCOL_VERSION,
+                    request_id: request.request_id,
+                    body: ResponseBody::Err(err),
+                };
+            }
+            if let Err(err) = validation::validate_filesystem(&filesystem) {
+                return ResponseEnvelope {
+                    v: PROTOCOL_VERSION,
+                    request_id: request.request_id,
+                    body: ResponseBody::Err(err),
+                };
+            }
+            let job = JobSpec {
+                kind: rustyjack_ipc::JobKind::MountStart {
+                    req: rustyjack_ipc::MountStartRequestIpc { device, filesystem },
+                },
+                requested_by: Some(format!("uid={}", peer.uid)),
+            };
+            if !state.config.dangerous_ops_enabled && is_dangerous_job(&job.kind) {
+                ResponseBody::Err(DaemonError::new(
+                    ErrorCode::Forbidden,
+                    "dangerous operations disabled",
+                    false,
+                ))
+            } else {
+                let job_id = state.jobs.start_job(job, Arc::clone(state)).await;
+                ResponseBody::Ok(ResponseOk::JobStarted(JobStarted {
+                    job_id,
+                    accepted_at_ms: DaemonState::now_ms(),
+                }))
+            }
+        }
+        RequestBody::UnmountStart(rustyjack_ipc::UnmountStartRequest { device }) => {
+            if let Err(err) = validation::validate_device_path(&device) {
+                return ResponseEnvelope {
+                    v: PROTOCOL_VERSION,
+                    request_id: request.request_id,
+                    body: ResponseBody::Err(err),
+                };
+            }
+            let job = JobSpec {
+                kind: rustyjack_ipc::JobKind::UnmountStart {
+                    req: rustyjack_ipc::UnmountStartRequestIpc { device },
+                },
+                requested_by: Some(format!("uid={}", peer.uid)),
+            };
+            if !state.config.dangerous_ops_enabled && is_dangerous_job(&job.kind) {
+                ResponseBody::Err(DaemonError::new(
+                    ErrorCode::Forbidden,
+                    "dangerous operations disabled",
+                    false,
+                ))
+            } else {
+                let job_id = state.jobs.start_job(job, Arc::clone(state)).await;
+                ResponseBody::Ok(ResponseOk::JobStarted(JobStarted {
+                    job_id,
+                    accepted_at_ms: DaemonState::now_ms(),
+                }))
+            }
+        }
+        RequestBody::CoreDispatch(CoreDispatchRequest { legacy, args }) => {
+            if !state.config.allow_core_dispatch {
+                return ResponseEnvelope {
+                    v: PROTOCOL_VERSION,
+                    request_id: request.request_id,
+                    body: ResponseBody::Err(DaemonError::new(
+                        ErrorCode::NotImplemented,
+                        "CoreDispatch is disabled",
+                        false,
+                    )),
+                };
+            }
+
+            let command_str = format!("{:?}", legacy);
+            let _ = args;
+            
+            ResponseBody::Err(DaemonError::new(
+                ErrorCode::NotImplemented,
+                &format!("Legacy command {} should be migrated to explicit endpoint", command_str),
+                false,
+            ))
         }
         RequestBody::JobStart(JobStartRequest { job }) => {
             if !state.config.dangerous_ops_enabled && is_dangerous_job(&job.kind) {

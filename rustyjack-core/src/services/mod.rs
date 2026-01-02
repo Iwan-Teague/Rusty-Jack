@@ -2,6 +2,7 @@ pub mod error;
 pub mod hotspot;
 pub mod logs;
 pub mod mount;
+pub mod portal;
 pub mod scan;
 pub mod stats;
 pub mod system;

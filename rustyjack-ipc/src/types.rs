@@ -50,6 +50,18 @@ pub enum Endpoint {
     HotspotDiagnosticsGet,
     HotspotClientsList,
     GpioDiagnosticsGet,
+    WifiInterfacesList,
+    WifiDisconnect,
+    WifiScanStart,
+    WifiConnectStart,
+    HotspotStart,
+    HotspotStop,
+    PortalStart,
+    PortalStop,
+    PortalStatus,
+    MountList,
+    MountStart,
+    UnmountStart,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -90,6 +102,18 @@ pub enum RequestBody {
     HotspotDiagnosticsGet(HotspotDiagnosticsRequest),
     HotspotClientsList,
     GpioDiagnosticsGet,
+    WifiInterfacesList,
+    WifiDisconnect(WifiDisconnectRequest),
+    WifiScanStart(WifiScanStartRequest),
+    WifiConnectStart(WifiConnectStartRequest),
+    HotspotStart(HotspotStartRequest),
+    HotspotStop,
+    PortalStart(PortalStartRequest),
+    PortalStop,
+    PortalStatus,
+    MountList,
+    MountStart(MountStartRequest),
+    UnmountStart(UnmountStartRequest),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -121,6 +145,12 @@ pub enum ResponseOk {
     HotspotDiagnostics(HotspotDiagnosticsResponse),
     HotspotClients(HotspotClientsResponse),
     GpioDiagnostics(GpioDiagnosticsResponse),
+    WifiInterfaces(WifiInterfacesResponse),
+    WifiDisconnect(WifiDisconnectResponse),
+    HotspotAction(HotspotActionResponse),
+    PortalAction(PortalActionResponse),
+    PortalStatus(PortalStatusResponse),
+    MountList(MountListResponse),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -263,8 +293,110 @@ pub struct GpioDiagnosticsResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WifiInterfacesResponse {
+    pub interfaces: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WifiDisconnectRequest {
+    pub interface: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WifiDisconnectResponse {
+    pub interface: String,
+    pub disconnected: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WifiScanStartRequest {
+    pub interface: String,
+    pub timeout_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WifiConnectStartRequest {
+    pub interface: String,
+    pub ssid: String,
+    pub psk: Option<String>,
+    pub timeout_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HotspotStartRequest {
+    pub interface: String,
+    pub ssid: String,
+    pub passphrase: Option<String>,
+    pub channel: Option<u8>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HotspotActionResponse {
+    pub action: String,
+    pub success: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PortalStartRequest {
+    pub interface: String,
+    pub port: u16,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PortalActionResponse {
+    pub action: String,
+    pub success: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PortalStatusResponse {
+    pub running: bool,
+    pub interface: Option<String>,
+    pub port: Option<u16>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MountInfo {
+    pub device: String,
+    pub mountpoint: String,
+    pub filesystem: String,
+    pub size: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MountListResponse {
+    pub mounts: Vec<MountInfo>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MountStartRequest {
+    pub device: String,
+    pub filesystem: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UnmountStartRequest {
+    pub device: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LegacyCommand {
+    WifiScan,
+    WifiConnect,
+    WifiDisconnect,
+    HotspotStart,
+    HotspotStop,
+    PortalStart,
+    PortalStop,
+    MountStart,
+    MountStop,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CoreDispatchRequest {
-    pub command: Value,
+    pub legacy: LegacyCommand,
+    pub args: Value,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -327,12 +459,24 @@ pub fn endpoint_for_body(body: &RequestBody) -> Endpoint {
         RequestBody::HotspotDiagnosticsGet(_) => Endpoint::HotspotDiagnosticsGet,
         RequestBody::HotspotClientsList => Endpoint::HotspotClientsList,
         RequestBody::GpioDiagnosticsGet => Endpoint::GpioDiagnosticsGet,
+        RequestBody::WifiInterfacesList => Endpoint::WifiInterfacesList,
+        RequestBody::WifiDisconnect(_) => Endpoint::WifiDisconnect,
+        RequestBody::WifiScanStart(_) => Endpoint::WifiScanStart,
+        RequestBody::WifiConnectStart(_) => Endpoint::WifiConnectStart,
+        RequestBody::HotspotStart(_) => Endpoint::HotspotStart,
+        RequestBody::HotspotStop => Endpoint::HotspotStop,
+        RequestBody::PortalStart(_) => Endpoint::PortalStart,
+        RequestBody::PortalStop => Endpoint::PortalStop,
+        RequestBody::PortalStatus => Endpoint::PortalStatus,
+        RequestBody::MountList => Endpoint::MountList,
+        RequestBody::MountStart(_) => Endpoint::MountStart,
+        RequestBody::UnmountStart(_) => Endpoint::UnmountStart,
     }
 }
 
 pub fn is_dangerous_job(kind: &JobKind) -> bool {
     !matches!(
         kind,
-        JobKind::Noop | JobKind::Sleep { .. } | JobKind::ScanRun { .. }
+        JobKind::Noop | JobKind::Sleep { .. } | JobKind::ScanRun { .. } | JobKind::WifiScan { .. }
     )
 }

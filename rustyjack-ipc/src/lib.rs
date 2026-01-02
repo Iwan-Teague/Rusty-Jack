@@ -10,18 +10,23 @@ mod wire;
 pub use authz::{AuthzSummary, AuthorizationTier};
 pub use error::{DaemonError, ErrorCode};
 pub use job::{
-    JobEvent, JobId, JobInfo, JobKind, JobSpec, JobStarted, JobState, Progress, ScanModeIpc,
-    ScanRequestIpc, UpdateRequestIpc,
+    HotspotStartRequestIpc, JobEvent, JobId, JobInfo, JobKind, JobSpec, JobStarted, JobState,
+    MountStartRequestIpc, PortalStartRequestIpc, Progress, ScanModeIpc, ScanRequestIpc,
+    UnmountStartRequestIpc, UpdateRequestIpc, WifiConnectRequestIpc, WifiScanRequestIpc,
 };
 pub use types::{
     endpoint_for_body, is_dangerous_job, BlockDeviceInfo, BlockDevicesResponse, ClientHello,
     CoreDispatchRequest, CoreDispatchResponse, DaemonEvent, DiskUsageRequest, DiskUsageResponse,
-    Endpoint, FeatureFlag, GpioDiagnosticsResponse, HealthResponse, HelloAck, HostnameResponse,
-    HotspotApSupport, HotspotClient, HotspotClientsResponse, HotspotDiagnosticsRequest,
-    HotspotDiagnosticsResponse, HotspotWarningsResponse, JobCancelRequest, JobCancelResponse,
-    JobStartRequest, JobStatusRequest, JobStatusResponse, RequestBody, RequestEnvelope,
-    ResponseBody, ResponseEnvelope, ResponseOk, RfkillEntry, StatusResponse, SystemActionResponse,
-    SystemLogsResponse, SystemStatusResponse, VersionResponse, WifiCapabilitiesRequest,
-    WifiCapabilitiesResponse,
+    Endpoint, FeatureFlag, GpioDiagnosticsResponse, HealthResponse, HelloAck,
+    HotspotActionResponse, HotspotApSupport, HotspotClient, HotspotClientsResponse,
+    HotspotDiagnosticsRequest, HotspotDiagnosticsResponse, HotspotStartRequest,
+    HotspotWarningsResponse, HostnameResponse, JobCancelRequest, JobCancelResponse,
+    JobStartRequest, JobStatusRequest, JobStatusResponse, LegacyCommand, MountInfo,
+    MountListResponse, MountStartRequest, PortalActionResponse, PortalStartRequest,
+    PortalStatusResponse, RequestBody, RequestEnvelope, ResponseBody, ResponseEnvelope,
+    ResponseOk, RfkillEntry, StatusResponse, SystemActionResponse, SystemLogsResponse,
+    SystemStatusResponse, UnmountStartRequest, VersionResponse, WifiCapabilitiesRequest,
+    WifiCapabilitiesResponse, WifiConnectStartRequest, WifiDisconnectRequest,
+    WifiDisconnectResponse, WifiInterfacesResponse, WifiScanStartRequest,
 };
 pub use wire::{decode_frame_length, encode_frame, FrameError};

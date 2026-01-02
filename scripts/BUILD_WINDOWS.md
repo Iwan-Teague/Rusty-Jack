@@ -102,6 +102,18 @@ The scripts mount your repository root as `/work` inside the container, so:
 
 ## Troubleshooting
 
+### Error: "The system cannot find the file specified" or "cannot connect to docker"
+
+**Problem**: Docker Desktop is not running.
+
+**Solution**:
+1. Start Docker Desktop from the Windows Start menu
+2. Wait for Docker to fully start (icon in system tray turns green)
+3. Verify Docker is running: `docker ps`
+4. Run the build script again
+
+The PowerShell scripts now check if Docker is running and provide helpful error messages.
+
 ### Error: "docker: command not found"
 
 Make sure Docker Desktop is installed and running. Add Docker to your PATH if needed.

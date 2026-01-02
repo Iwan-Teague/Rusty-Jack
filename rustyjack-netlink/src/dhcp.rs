@@ -1213,6 +1213,7 @@ fn subnet_mask_to_prefix(mask: Ipv4Addr) -> u8 {
     bits.count_ones() as u8
 }
 
+#[allow(dead_code)]
 fn is_addr_in_use(err: &io::Error) -> bool {
     err.kind() == io::ErrorKind::AddrInUse
         || err.raw_os_error() == Some(libc::EADDRINUSE)

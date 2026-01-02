@@ -258,7 +258,7 @@ pub(crate) fn parse_scan_results(results: Vec<HashMap<String, String>>) -> Vec<S
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct BssCandidate {
+pub struct BssCandidate {
     pub(crate) bssid: String,
     pub(crate) frequency: Option<u32>,
     pub(crate) signal_dbm: Option<i32>,

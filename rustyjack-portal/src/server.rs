@@ -5,7 +5,7 @@ use axum::{
     extract::{ConnectInfo, Form, State},
     http::{header, HeaderMap, StatusCode, Uri},
     response::{Html, Redirect},
-    routing::{get, post},
+    routing::get,
     Router,
 };
 use serde::Deserialize;

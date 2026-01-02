@@ -776,9 +776,9 @@ pub fn spawn_arpspoof_pair(interface: &str, gateway: Ipv4Addr, host: &HostInfo) 
 
     let mut state = arp_spoof_state().lock().unwrap();
     state.push(ArpSpoofHandle {
-        interface: interface.to_string(),
-        target_ip: host.ip,
-        gateway_ip: gateway,
+        _interface: interface.to_string(),
+        _target_ip: host.ip,
+        _gateway_ip: gateway,
         spoofers: vec![to_target, to_gateway],
     });
 
@@ -1095,9 +1095,9 @@ struct DnsSpoofHandle {
 }
 
 struct ArpSpoofHandle {
-    interface: String,
-    target_ip: Ipv4Addr,
-    gateway_ip: Ipv4Addr,
+    _interface: String,
+    _target_ip: Ipv4Addr,
+    _gateway_ip: Ipv4Addr,
     spoofers: Vec<ArpSpoofer>,
 }
 
@@ -3279,7 +3279,7 @@ pub fn connect_wifi_network(interface: &str, ssid: &str, password: Option<&str>)
     let rt = crate::runtime::shared_runtime()
         .with_context(|| "Failed to use tokio runtime for WiFi connect")?;
 
-    let mut backend = wifi_backend_from_env();
+    let backend = wifi_backend_from_env();
     if backend != StationBackendKind::ExternalWpa {
         log::info!("[WIFI] Station backend set to {:?}", backend);
     }

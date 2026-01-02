@@ -4,7 +4,7 @@ use crate::supplicant::{BssCandidate, StationConfig, StationOutcome};
 use crate::wpa::WpaStatus;
 
 pub struct RustOpenBackend {
-    interface: String,
+    _interface: String,
 }
 
 impl RustOpenBackend {
@@ -15,7 +15,7 @@ impl RustOpenBackend {
             ));
         }
         Ok(Self {
-            interface: interface.to_string(),
+            _interface: interface.to_string(),
         })
     }
 }

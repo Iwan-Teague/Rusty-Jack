@@ -27,6 +27,7 @@ pub fn pkill_exact(name: &str) -> Result<usize> {
         .map_err(|e| WirelessError::System(format!("Failed to kill process '{}': {}", name, e)))
 }
 
+#[allow(dead_code)]
 pub fn pkill_exact_force(name: &str) -> Result<usize> {
     use rustyjack_netlink::process;
     process::pkill_exact_force(name)

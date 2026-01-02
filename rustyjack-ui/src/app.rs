@@ -2,7 +2,7 @@ use std::{
     collections::HashSet,
     fs,
     fs::File,
-    io::{BufRead, BufReader, Read, Write},
+    io::{BufRead, BufReader, Write},
     path::{Component, Path, PathBuf},
     sync::mpsc::{self, TryRecvError},
     thread,

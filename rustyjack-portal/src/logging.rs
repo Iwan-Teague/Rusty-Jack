@@ -44,6 +44,7 @@ impl PortalLogger {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub async fn log_visit_lines(&self, lines: &[String]) -> Result<()> {
         let mut file = self.visits.lock().await;
         for line in lines {

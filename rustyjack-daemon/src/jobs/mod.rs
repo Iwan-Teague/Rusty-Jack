@@ -215,5 +215,11 @@ fn required_locks(kind: &JobKind) -> Vec<LockKind> {
         JobKind::Sleep { .. } => Vec::new(),
         JobKind::ScanRun { .. } => vec![LockKind::Wifi],
         JobKind::SystemUpdate { .. } => vec![LockKind::Update],
+        JobKind::WifiScan { .. } => vec![LockKind::Wifi],
+        JobKind::WifiConnect { .. } => vec![LockKind::Wifi],
+        JobKind::HotspotStart { .. } => vec![LockKind::Wifi],
+        JobKind::PortalStart { .. } => vec![LockKind::Portal],
+        JobKind::MountStart { .. } => vec![LockKind::Mount],
+        JobKind::UnmountStart { .. } => vec![LockKind::Mount],
     }
 }

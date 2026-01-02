@@ -83,3 +83,129 @@ pub fn list_block_devices() -> Result<Vec<BlockDeviceInfo>, ServiceError> {
 
     Ok(devices)
 }
+
+#[derive(Debug, Clone)]
+pub struct MountInfo {
+    pub device: String,
+    pub mountpoint: String,
+    pub filesystem: String,
+    pub size: String,
+}
+
+pub fn list_mounts() -> Result<Vec<MountInfo>, ServiceError> {
+    use std::fs;
+    
+    let mounts = fs::read_to_string("/proc/mounts")
+        .map_err(ServiceError::Io)?;
+    
+    let mut result = Vec::new();
+    for line in mounts.lines() {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() < 3 {
+            continue;
+        }
+        
+        let device = parts[0];
+        let mountpoint = parts[1];
+        let filesystem = parts[2];
+        
+        if !device.starts_with("/dev/") {
+            continue;
+        }
+        
+        if device.starts_with("/dev/loop") || device.starts_with("/dev/ram") {
+            continue;
+        }
+        
+        result.push(MountInfo {
+            device: device.to_string(),
+            mountpoint: mountpoint.to_string(),
+            filesystem: filesystem.to_string(),
+            size: "".to_string(),
+        });
+    }
+    
+    Ok(result)
+}
+
+pub struct MountRequest {
+    pub device: String,
+    pub filesystem: Option<String>,
+}
+
+pub fn mount<F>(req: MountRequest, mut on_progress: F) -> Result<Value, ServiceError>
+where
+    F: FnMut(u8, &str),
+{
+    if req.device.trim().is_empty() {
+        return Err(ServiceError::InvalidInput("device".to_string()));
+    }
+    
+    if !req.device.starts_with("/dev/") {
+        return Err(ServiceError::InvalidInput("device must start with /dev/".to_string()));
+    }
+    
+    on_progress(10, "Preparing mount");
+    
+    let device_name = req.device.trim_start_matches("/dev/").replace('/', "_");
+    let mountpoint = format!("/media/rustyjack/{}", device_name);
+    
+    std::fs::create_dir_all(&mountpoint)
+        .map_err(ServiceError::Io)?;
+    
+    on_progress(50, "Mounting device");
+    
+    let mut cmd = Command::new("mount");
+    cmd.arg(&req.device).arg(&mountpoint);
+    
+    if let Some(ref fs) = req.filesystem {
+        cmd.arg("-t").arg(fs);
+    }
+    
+    let output = cmd.output().map_err(ServiceError::Io)?;
+    
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(ServiceError::External(format!("mount failed: {}", stderr)));
+    }
+    
+    on_progress(100, "Mounted");
+    
+    Ok(serde_json::json!({
+        "device": req.device,
+        "mountpoint": mountpoint,
+        "mounted": true
+    }))
+}
+
+pub struct UnmountRequest {
+    pub device: String,
+}
+
+pub fn unmount<F>(req: UnmountRequest, mut on_progress: F) -> Result<Value, ServiceError>
+where
+    F: FnMut(u8, &str),
+{
+    if req.device.trim().is_empty() {
+        return Err(ServiceError::InvalidInput("device".to_string()));
+    }
+    
+    on_progress(10, "Unmounting device");
+    
+    let output = Command::new("umount")
+        .arg(&req.device)
+        .output()
+        .map_err(ServiceError::Io)?;
+    
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(ServiceError::External(format!("umount failed: {}", stderr)));
+    }
+    
+    on_progress(100, "Unmounted");
+    
+    Ok(serde_json::json!({
+        "device": req.device,
+        "unmounted": true
+    }))
+}

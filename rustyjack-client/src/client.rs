@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
@@ -15,11 +15,15 @@ use rustyjack_ipc::{
 };
 use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+#[cfg(unix)]
 use tokio::net::UnixStream;
-use tokio::time::timeout;
+use tokio::time::{sleep, timeout};
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(2);
-const RESPONSE_TIMEOUT: Duration = Duration::from_secs(10);
+const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+const LONG_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
+const MAX_RETRY_ATTEMPTS: u32 = 3;
+const INITIAL_RETRY_DELAY: Duration = Duration::from_millis(100);
 
 #[derive(Debug, Clone)]
 pub struct DaemonClientInfo {
@@ -30,23 +34,102 @@ pub struct DaemonClientInfo {
     pub max_frame: u32,
 }
 
+#[derive(Debug, Clone)]
+pub struct ClientConfig {
+    pub socket_path: PathBuf,
+    pub client_name: String,
+    pub client_version: String,
+    pub request_timeout: Duration,
+    pub long_request_timeout: Duration,
+    pub max_retries: u32,
+    pub retry_delay_ms: u64,
+}
+
+impl Default for ClientConfig {
+    fn default() -> Self {
+        Self {
+            socket_path: PathBuf::from("/run/rustyjack/rustyjackd.sock"),
+            client_name: "rustyjack-client".to_string(),
+            client_version: env!("CARGO_PKG_VERSION").to_string(),
+            request_timeout: DEFAULT_REQUEST_TIMEOUT,
+            long_request_timeout: LONG_REQUEST_TIMEOUT,
+            max_retries: MAX_RETRY_ATTEMPTS,
+            retry_delay_ms: INITIAL_RETRY_DELAY.as_millis() as u64,
+        }
+    }
+}
+
 pub struct DaemonClient {
-    stream: UnixStream,
+    #[cfg(unix)]
+    stream: Option<UnixStream>,
+    #[cfg(not(unix))]
+    stream: Option<()>,
     next_request_id: AtomicU64,
-    info: DaemonClientInfo,
+    info: Option<DaemonClientInfo>,
+    config: ClientConfig,
 }
 
 impl DaemonClient {
+    #[cfg(unix)]
     pub async fn connect<P: AsRef<Path>>(
         path: P,
         client_name: &str,
         client_version: &str,
     ) -> Result<Self> {
-        let mut stream = UnixStream::connect(path).await?;
-        let hello = ClientHello {
-            protocol_version: PROTOCOL_VERSION,
+        let config = ClientConfig {
+            socket_path: path.as_ref().to_path_buf(),
             client_name: client_name.to_string(),
             client_version: client_version.to_string(),
+            ..Default::default()
+        };
+        Self::connect_with_config(config).await
+    }
+
+    #[cfg(not(unix))]
+    pub async fn connect<P: AsRef<Path>>(
+        _path: P,
+        _client_name: &str,
+        _client_version: &str,
+    ) -> Result<Self> {
+        bail!("Unix domain sockets not supported on this platform")
+    }
+
+    #[cfg(unix)]
+    pub async fn connect_with_config(config: ClientConfig) -> Result<Self> {
+        let mut client = Self {
+            stream: None,
+            next_request_id: AtomicU64::new(1),
+            info: None,
+            config,
+        };
+        client.reconnect().await?;
+        Ok(client)
+    }
+
+    #[cfg(not(unix))]
+    pub async fn connect_with_config(_config: ClientConfig) -> Result<Self> {
+        bail!("Unix domain sockets not supported on this platform")
+    }
+
+    pub fn new_disconnected(config: ClientConfig) -> Self {
+        Self {
+            stream: None,
+            next_request_id: AtomicU64::new(1),
+            info: None,
+            config,
+        }
+    }
+
+    #[cfg(unix)]
+    async fn reconnect(&mut self) -> Result<()> {
+        let mut stream = UnixStream::connect(&self.config.socket_path)
+            .await
+            .with_context(|| format!("connecting to {}", self.config.socket_path.display()))?;
+        
+        let hello = ClientHello {
+            protocol_version: PROTOCOL_VERSION,
+            client_name: self.config.client_name.clone(),
+            client_version: self.config.client_version.clone(),
             supports: Vec::new(),
         };
         let hello_bytes = serde_json::to_vec(&hello)?;
@@ -72,37 +155,104 @@ impl DaemonClient {
             max_frame: ack.max_frame,
         };
 
-        Ok(Self {
-            stream,
-            next_request_id: AtomicU64::new(1),
-            info,
-        })
+        self.stream = Some(stream);
+        self.info = Some(info);
+        Ok(())
     }
 
-    pub fn info(&self) -> &DaemonClientInfo {
-        &self.info
+    #[cfg(not(unix))]
+    async fn reconnect(&mut self) -> Result<()> {
+        bail!("Unix domain sockets not supported on this platform")
+    }
+
+    pub fn is_connected(&self) -> bool {
+        self.stream.is_some()
+    }
+
+    pub fn info(&self) -> Option<&DaemonClientInfo> {
+        self.info.as_ref()
+    }
+
+    pub async fn ensure_connected(&mut self) -> Result<()> {
+        if !self.is_connected() {
+            self.reconnect().await?;
+        }
+        Ok(())
     }
 
     pub async fn request(&mut self, body: RequestBody) -> Result<ResponseBody> {
-        let request_id = self.next_request_id.fetch_add(1, Ordering::Relaxed);
-        self.request_with_id(request_id, body).await
+        self.request_with_timeout(body, self.config.request_timeout)
+            .await
     }
 
-    pub async fn request_with_id(
+    pub async fn request_long(&mut self, body: RequestBody) -> Result<ResponseBody> {
+        self.request_with_timeout(body, self.config.long_request_timeout)
+            .await
+    }
+
+    pub async fn request_with_timeout(
         &mut self,
-        request_id: u64,
         body: RequestBody,
+        req_timeout: Duration,
     ) -> Result<ResponseBody> {
+        let mut attempts = 0;
+        let mut last_error = None;
+
+        while attempts < self.config.max_retries {
+            if attempts > 0 {
+                let delay = Duration::from_millis(
+                    self.config.retry_delay_ms * (1u64 << (attempts - 1).min(4)),
+                );
+                sleep(delay).await;
+            }
+
+            match self.try_request(&body, req_timeout).await {
+                Ok(response) => return Ok(response),
+                Err(err) => {
+                    let should_retry = is_retryable_error(&err);
+                    last_error = Some(err);
+                    
+                    if !should_retry {
+                        break;
+                    }
+                    
+                    attempts += 1;
+                    
+                    if attempts < self.config.max_retries {
+                        self.stream = None;
+                        if let Err(e) = self.reconnect().await {
+                            last_error = Some(e);
+                        }
+                    }
+                }
+            }
+        }
+
+        Err(last_error.unwrap_or_else(|| anyhow!("request failed with no error")))
+    }
+
+    #[cfg(unix)]
+    async fn try_request(
+        &mut self,
+        body: &RequestBody,
+        req_timeout: Duration,
+    ) -> Result<ResponseBody> {
+        self.ensure_connected().await?;
+        
+        let stream = self.stream.as_mut().ok_or_else(|| anyhow!("not connected"))?;
+        let info = self.info.as_ref().ok_or_else(|| anyhow!("no info"))?;
+
+        let request_id = self.next_request_id.fetch_add(1, Ordering::Relaxed);
         let envelope = RequestEnvelope {
-            v: self.info.protocol_version,
+            v: info.protocol_version,
             request_id,
-            endpoint: endpoint_for_body(&body),
-            body,
+            endpoint: endpoint_for_body(body),
+            body: body.clone(),
         };
         let payload = serde_json::to_vec(&envelope)?;
-        write_frame(&mut self.stream, &payload, self.info.max_frame).await?;
+        write_frame(stream, &payload, info.max_frame).await?;
 
-        let response_bytes = timeout(RESPONSE_TIMEOUT, read_frame(&mut self.stream, self.info.max_frame))
+        let response_bytes = timeout(req_timeout, read_frame(stream, info.max_frame))
             .await
             .context("response timed out")??;
         let response: ResponseEnvelope = serde_json::from_slice(&response_bytes)?;
@@ -113,14 +263,23 @@ impl DaemonClient {
                 response.request_id
             );
         }
-        if response.v != self.info.protocol_version {
+        if response.v != info.protocol_version {
             bail!(
                 "protocol version mismatch: expected {} got {}",
-                self.info.protocol_version,
+                info.protocol_version,
                 response.v
             );
         }
         Ok(response.body)
+    }
+
+    #[cfg(not(unix))]
+    async fn try_request(
+        &mut self,
+        _body: &RequestBody,
+        _req_timeout: Duration,
+    ) -> Result<ResponseBody> {
+        bail!("Unix domain sockets not supported on this platform")
     }
 
     pub async fn health(&mut self) -> Result<HealthResponse> {
@@ -298,8 +457,134 @@ impl DaemonClient {
         }
     }
 
-    pub async fn core_dispatch(&mut self, command: Value) -> Result<CoreDispatchResponse> {
-        let body = RequestBody::CoreDispatch(CoreDispatchRequest { command });
+    pub async fn wifi_interfaces(&mut self) -> Result<rustyjack_ipc::WifiInterfacesResponse> {
+        match self.request(RequestBody::WifiInterfacesList).await? {
+            ResponseBody::Ok(ResponseOk::WifiInterfaces(resp)) => Ok(resp),
+            ResponseBody::Err(err) => Err(daemon_error(err)),
+            _ => Err(anyhow!("unexpected response body")),
+        }
+    }
+
+    pub async fn wifi_disconnect(&mut self, interface: &str) -> Result<rustyjack_ipc::WifiDisconnectResponse> {
+        let body = RequestBody::WifiDisconnect(rustyjack_ipc::WifiDisconnectRequest {
+            interface: interface.to_string(),
+        });
+        match self.request(body).await? {
+            ResponseBody::Ok(ResponseOk::WifiDisconnect(resp)) => Ok(resp),
+            ResponseBody::Err(err) => Err(daemon_error(err)),
+            _ => Err(anyhow!("unexpected response body")),
+        }
+    }
+
+    pub async fn wifi_scan_start(&mut self, interface: &str, timeout_ms: u64) -> Result<JobStarted> {
+        let body = RequestBody::WifiScanStart(rustyjack_ipc::WifiScanStartRequest {
+            interface: interface.to_string(),
+            timeout_ms,
+        });
+        match self.request(body).await? {
+            ResponseBody::Ok(ResponseOk::JobStarted(resp)) => Ok(resp),
+            ResponseBody::Err(err) => Err(daemon_error(err)),
+            _ => Err(anyhow!("unexpected response body")),
+        }
+    }
+
+    pub async fn wifi_connect_start(&mut self, interface: &str, ssid: &str, psk: Option<String>, timeout_ms: u64) -> Result<JobStarted> {
+        let body = RequestBody::WifiConnectStart(rustyjack_ipc::WifiConnectStartRequest {
+            interface: interface.to_string(),
+            ssid: ssid.to_string(),
+            psk,
+            timeout_ms,
+        });
+        match self.request(body).await? {
+            ResponseBody::Ok(ResponseOk::JobStarted(resp)) => Ok(resp),
+            ResponseBody::Err(err) => Err(daemon_error(err)),
+            _ => Err(anyhow!("unexpected response body")),
+        }
+    }
+
+    pub async fn hotspot_start(&mut self, interface: &str, ssid: &str, passphrase: Option<String>, channel: Option<u8>) -> Result<JobStarted> {
+        let body = RequestBody::HotspotStart(rustyjack_ipc::HotspotStartRequest {
+            interface: interface.to_string(),
+            ssid: ssid.to_string(),
+            passphrase,
+            channel,
+        });
+        match self.request(body).await? {
+            ResponseBody::Ok(ResponseOk::JobStarted(resp)) => Ok(resp),
+            ResponseBody::Err(err) => Err(daemon_error(err)),
+            _ => Err(anyhow!("unexpected response body")),
+        }
+    }
+
+    pub async fn hotspot_stop(&mut self) -> Result<rustyjack_ipc::HotspotActionResponse> {
+        match self.request(RequestBody::HotspotStop).await? {
+            ResponseBody::Ok(ResponseOk::HotspotAction(resp)) => Ok(resp),
+            ResponseBody::Err(err) => Err(daemon_error(err)),
+            _ => Err(anyhow!("unexpected response body")),
+        }
+    }
+
+    pub async fn portal_start(&mut self, interface: &str, port: u16) -> Result<JobStarted> {
+        let body = RequestBody::PortalStart(rustyjack_ipc::PortalStartRequest {
+            interface: interface.to_string(),
+            port,
+        });
+        match self.request(body).await? {
+            ResponseBody::Ok(ResponseOk::JobStarted(resp)) => Ok(resp),
+            ResponseBody::Err(err) => Err(daemon_error(err)),
+            _ => Err(anyhow!("unexpected response body")),
+        }
+    }
+
+    pub async fn portal_stop(&mut self) -> Result<rustyjack_ipc::PortalActionResponse> {
+        match self.request(RequestBody::PortalStop).await? {
+            ResponseBody::Ok(ResponseOk::PortalAction(resp)) => Ok(resp),
+            ResponseBody::Err(err) => Err(daemon_error(err)),
+            _ => Err(anyhow!("unexpected response body")),
+        }
+    }
+
+    pub async fn portal_status(&mut self) -> Result<rustyjack_ipc::PortalStatusResponse> {
+        match self.request(RequestBody::PortalStatus).await? {
+            ResponseBody::Ok(ResponseOk::PortalStatus(resp)) => Ok(resp),
+            ResponseBody::Err(err) => Err(daemon_error(err)),
+            _ => Err(anyhow!("unexpected response body")),
+        }
+    }
+
+    pub async fn mount_list(&mut self) -> Result<rustyjack_ipc::MountListResponse> {
+        match self.request(RequestBody::MountList).await? {
+            ResponseBody::Ok(ResponseOk::MountList(resp)) => Ok(resp),
+            ResponseBody::Err(err) => Err(daemon_error(err)),
+            _ => Err(anyhow!("unexpected response body")),
+        }
+    }
+
+    pub async fn mount_start(&mut self, device: &str, filesystem: Option<String>) -> Result<JobStarted> {
+        let body = RequestBody::MountStart(rustyjack_ipc::MountStartRequest {
+            device: device.to_string(),
+            filesystem,
+        });
+        match self.request(body).await? {
+            ResponseBody::Ok(ResponseOk::JobStarted(resp)) => Ok(resp),
+            ResponseBody::Err(err) => Err(daemon_error(err)),
+            _ => Err(anyhow!("unexpected response body")),
+        }
+    }
+
+    pub async fn unmount_start(&mut self, device: &str) -> Result<JobStarted> {
+        let body = RequestBody::UnmountStart(rustyjack_ipc::UnmountStartRequest {
+            device: device.to_string(),
+        });
+        match self.request(body).await? {
+            ResponseBody::Ok(ResponseOk::JobStarted(resp)) => Ok(resp),
+            ResponseBody::Err(err) => Err(daemon_error(err)),
+            _ => Err(anyhow!("unexpected response body")),
+        }
+    }
+
+    pub async fn core_dispatch(&mut self, legacy: rustyjack_ipc::LegacyCommand, args: Value) -> Result<CoreDispatchResponse> {
+        let body = RequestBody::CoreDispatch(CoreDispatchRequest { legacy, args });
         match self.request(body).await? {
             ResponseBody::Ok(ResponseOk::CoreDispatch(resp)) => Ok(resp),
             ResponseBody::Err(err) => Err(daemon_error(err)),
@@ -337,6 +622,25 @@ fn daemon_error(err: DaemonError) -> anyhow::Error {
     })
 }
 
+fn is_retryable_error(err: &anyhow::Error) -> bool {
+    if let Some(io_err) = err.downcast_ref::<std::io::Error>() {
+        matches!(
+            io_err.kind(),
+            std::io::ErrorKind::ConnectionRefused
+                | std::io::ErrorKind::ConnectionReset
+                | std::io::ErrorKind::ConnectionAborted
+                | std::io::ErrorKind::BrokenPipe
+                | std::io::ErrorKind::TimedOut
+                | std::io::ErrorKind::Interrupted
+        )
+    } else {
+        err.to_string().contains("retryable")
+            || err.to_string().contains("timed out")
+            || err.to_string().contains("connection")
+    }
+}
+
+#[cfg(unix)]
 async fn read_frame(stream: &mut UnixStream, max_frame: u32) -> Result<Vec<u8>> {
     let mut len_buf = [0u8; 4];
     stream.read_exact(&mut len_buf).await?;
@@ -347,6 +651,7 @@ async fn read_frame(stream: &mut UnixStream, max_frame: u32) -> Result<Vec<u8>> 
     Ok(buf)
 }
 
+#[cfg(unix)]
 async fn write_frame(stream: &mut UnixStream, payload: &[u8], max_frame: u32) -> Result<()> {
     if payload.is_empty() {
         bail!("empty payload");

@@ -70,6 +70,18 @@ pub fn required_tier(endpoint: Endpoint) -> AuthorizationTier {
         Endpoint::HotspotDiagnosticsGet => AuthorizationTier::Operator,
         Endpoint::HotspotClientsList => AuthorizationTier::Operator,
         Endpoint::GpioDiagnosticsGet => AuthorizationTier::Operator,
+        Endpoint::WifiInterfacesList => AuthorizationTier::ReadOnly,
+        Endpoint::WifiDisconnect => AuthorizationTier::Operator,
+        Endpoint::WifiScanStart => AuthorizationTier::Operator,
+        Endpoint::WifiConnectStart => AuthorizationTier::Operator,
+        Endpoint::HotspotStart => AuthorizationTier::Operator,
+        Endpoint::HotspotStop => AuthorizationTier::Operator,
+        Endpoint::PortalStart => AuthorizationTier::Operator,
+        Endpoint::PortalStop => AuthorizationTier::Operator,
+        Endpoint::PortalStatus => AuthorizationTier::ReadOnly,
+        Endpoint::MountList => AuthorizationTier::ReadOnly,
+        Endpoint::MountStart => AuthorizationTier::Operator,
+        Endpoint::UnmountStart => AuthorizationTier::Operator,
     }
 }
 

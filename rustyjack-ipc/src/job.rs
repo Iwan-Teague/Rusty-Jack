@@ -26,6 +26,12 @@ pub enum JobKind {
     Sleep { seconds: u64 },
     ScanRun { req: ScanRequestIpc },
     SystemUpdate { req: UpdateRequestIpc },
+    WifiScan { req: WifiScanRequestIpc },
+    WifiConnect { req: WifiConnectRequestIpc },
+    HotspotStart { req: HotspotStartRequestIpc },
+    PortalStart { req: PortalStartRequestIpc },
+    MountStart { req: MountStartRequestIpc },
+    UnmountStart { req: UnmountStartRequestIpc },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -85,4 +91,43 @@ pub struct JobEvent {
     pub job_id: JobId,
     pub state: JobState,
     pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WifiScanRequestIpc {
+    pub interface: String,
+    pub timeout_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WifiConnectRequestIpc {
+    pub interface: String,
+    pub ssid: String,
+    pub psk: Option<String>,
+    pub timeout_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HotspotStartRequestIpc {
+    pub interface: String,
+    pub ssid: String,
+    pub passphrase: Option<String>,
+    pub channel: Option<u8>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PortalStartRequestIpc {
+    pub interface: String,
+    pub port: u16,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MountStartRequestIpc {
+    pub device: String,
+    pub filesystem: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UnmountStartRequestIpc {
+    pub device: String,
 }

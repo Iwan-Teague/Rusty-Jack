@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sign In</title>
+    <style>
+        body { font-family: Arial, sans-serif; background: #0b1c2c; color: #e6edf5; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; }
+        .card { background: #11263a; padding: 28px; border-radius: 8px; width: 320px; box-shadow: 0 8px 20px rgba(0,0,0,0.35); }
+        h1 { margin: 0 0 12px; font-size: 20px; letter-spacing: 0.5px; }
+        p { margin: 0 0 14px; color: #b8c6d8; }
+        label { display: block; margin-bottom: 6px; font-weight: bold; }
+        input { width: 100%; padding: 10px; margin-bottom: 12px; border: 1px solid #2b4158; border-radius: 4px; background: #0b1c2c; color: #e6edf5; }
+        button { width: 100%; padding: 10px; background: #2f8cff; color: #fff; border: none; border-radius: 4px; font-weight: bold; cursor: pointer; }
+        button:hover { background: #1f6fcc; }
+        .msg { margin-bottom: 12px; color: #f5a623; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h1>Sign In</h1>
+        <p>Please verify your account to continue.</p>
+        <div class="msg" id="error-msg" hidden>Invalid credentials. Please try again.</div>
+        <form method="POST">
+            <label for="username">Username</label>
+            <input id="username" name="username" type="text" required>
+
+            <label for="password">Password</label>
+            <input id="password" name="password" type="password" required>
+
+            <button type="submit">Continue</button>
+        </form>
+    </div>
+    <script>
+        (function () {
+            var params = new URLSearchParams(window.location.search);
+            var msg = document.getElementById("error-msg");
+            if (msg && params.get("err") === "1") {
+                msg.hidden = false;
+            }
+        })();
+    </script>
+</body>
+</html>

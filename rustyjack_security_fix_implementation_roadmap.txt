@@ -1,0 +1,957 @@
+RUSTYJACK — SECURITY FIX IMPLEMENTATION ROADMAP (Rust-focused, daemon-first)
+Target: Pi Zero 2 W, Raspbian 32-bit CLI (Trixie), dedicated device.
+Scope: Implement all security fixes from the previous review, with clear phases, file/function changes, and refactor guidance.
+
+===============================================================================
+0) Guiding principles (so we don’t “fix” security by breaking the product)
+===============================================================================
+
+A. The daemon is the privilege boundary.
+   - Anything that changes system state (network config, mounts, updates, reboot/shutdown, portal DNAT rules, etc.)
+     must be reachable ONLY through the daemon API (socket) unless explicitly whitelisted for offline/admin use.
+   - The daemon must validate inputs in ONE place, and must enforce authorization in ONE place.
+
+B. Validation must be consistent across:
+   - explicit endpoints (WifiConnectStart, HotspotStart, MountStart, etc.)
+   - generic JobStart (JobSpec sent directly)
+   Today those are inconsistent (JobStart can bypass per-endpoint validators).
+
+C. Observability is a security requirement.
+   - Every error returned to the UI must include: “what failed”, “where”, and “which request/job”.
+   - Logs must be actionable: if something fails on-device, you should be able to identify the failing subsystem in minutes.
+
+D. Keep backwards compatibility where possible.
+   - Avoid breaking the IPC protocol unless the benefit is large.
+   - When protocol additions are needed, add new endpoints/types rather than changing existing ones.
+
+===============================================================================
+1) Phase plan (high-level)
+===============================================================================
+
+PHASE 0 — Safety net and scaffolding (do first)
+PHASE 1 — Fix daemon boundary leaks (JobStart validation + per-job authorization)
+PHASE 2 — Make privileged operations safe-by-construction (mount policy + log bundle sizing)
+PHASE 3 — Make the daemon reliable under load (blocking ops audit + cancellation + retention)
+PHASE 4 — Make failures diagnosable (structured errors + logging improvements)
+PHASE 5 — Hardening / defense-in-depth (feature-gate CLI, portal isolation option, systemd tightening)
+
+Each phase below includes:
+  - Goal
+  - Concrete tasks
+  - Files to touch
+  - Functions to add/change
+  - Implementation notes + pitfalls
+  - Suggested tests (unit + integration)
+
+===============================================================================
+PHASE 0 — Safety net and scaffolding
+===============================================================================
+
+Goal:
+  Make it safe to refactor without regressions and without guessing. Add minimal tests/harness + fixtures.
+
+Tasks:
+
+0.1 Add a “daemon integration test harness” crate or module
+Files:
+  - rustyjack-daemon/Cargo.toml (add dev-dependencies: tempfile, assert_cmd, nix if needed)
+  - rustyjack-daemon/tests/daemon_ipc.rs (new)
+
+What to do:
+  - Spawn rustyjackd bound to a temporary socket path (env RUSTYJACKD_SOCKET=...).
+  - Use rustyjack-client to connect and call endpoints.
+  - Verify:
+      * endpoints enforce auth
+      * JobStart rejects invalid parameters
+      * log bundle endpoint returns <= MAX_FRAME
+      * mount endpoints reject forbidden devices
+  - Run tests as root in CI? If not feasible, separate “privileged integration tests” behind a feature flag.
+
+0.2 Add a “validation golden tests” module
+Files:
+  - rustyjack-daemon/src/validation.rs
+  - rustyjack-daemon/src/validation_tests.rs (new, or tests in validation.rs with cfg(test))
+
+What to do:
+  - Unit tests for each validator (interface names, SSIDs, PSKs, device paths, scan target rules, etc.)
+  - Especially tests for negative cases: empty, too long, invalid characters, path traversal, mmc devices, etc.
+
+0.3 Add “error context helpers” (used later in Phase 4)
+Files:
+  - rustyjack-ipc/src/error.rs (optional helper methods)
+  - rustyjack-daemon/src/dispatch.rs (helpers)
+  - rustyjack-core/src/services/error.rs
+
+What to do:
+  - Introduce a consistent “source string” convention now, so you don’t invent 15 patterns later.
+    Example source formats:
+      daemon.dispatch.system_status_get
+      daemon.jobs.wifi_connect
+      core.services.mount.mount
+      core.operations.system_update.git_fetch
+
+===============================================================================
+PHASE 1 — Fix daemon boundary leaks (JobStart validation + per-job authorization)
+===============================================================================
+
+Goal:
+  Make JobStart as strict as the explicit “Start” endpoints. Prevent starting “validated-only” jobs with bypassed parameters.
+  Ensure JobStart can’t be used to reach privileged job kinds with insufficient authorization tier.
+
+Key files:
+  - rustyjack-daemon/src/dispatch.rs
+  - rustyjack-daemon/src/validation.rs
+  - rustyjack-daemon/src/server.rs
+  - rustyjack-daemon/src/auth.rs
+  - rustyjack-ipc/src/job.rs (JobKind definitions)
+  - rustyjack-ipc/src/types.rs (RequestBody enum)
+  - rustyjack-ipc/src/authz.rs (AuthorizationTier)
+
+------------------------------------------------------------------------------
+1.1 Add validate_job_kind(&JobKind) and call it from JobStart
+------------------------------------------------------------------------------
+Current problem:
+  RequestBody::JobStart only checks dangerous_ops_enabled/is_dangerous_job(). It does NOT validate job fields.
+  That allows bypassing:
+    - validate_port(), validate_interface_name(), validate_device_path(), validate_psk(), etc.
+
+Implementation:
+
+A) Add a new validator entry point:
+File: rustyjack-daemon/src/validation.rs
+
+Add:
+  use rustyjack_ipc::{JobKind, ScanModeIpc, ...};
+
+  pub fn validate_job_kind(kind: &JobKind) -> Result<(), DaemonError> {
+      match kind {
+          JobKind::Noop => Ok(()),
+          JobKind::Sleep { seconds } => validate_sleep_seconds(*seconds),
+          JobKind::ScanRun { req } => {
+              validate_scan_target(&req.target)?;
+              validate_timeout_ms(req.timeout_ms)?;
+              validate_scan_ports(req.mode, req.ports.as_deref())?;
+              Ok(())
+          }
+          JobKind::SystemUpdate { req } => {
+              validate_update_service(&req.service)?;
+              validate_git_remote(&req.remote)?;
+              validate_git_ref(&req.branch)?;
+              if let Some(dir) = &req.backup_dir { validate_backup_dir(dir)?; }
+              Ok(())
+          }
+          JobKind::WifiScan { req } => {
+              validate_interface_name(&req.interface)?;
+              validate_timeout_ms(req.timeout_ms)?;
+              Ok(())
+          }
+          JobKind::WifiConnect { req } => {
+              validate_interface_name(&req.interface)?;
+              validate_ssid(&req.ssid)?;
+              validate_psk(&req.psk)?;
+              validate_timeout_ms(req.timeout_ms)?;
+              Ok(())
+          }
+          JobKind::HotspotStart { req } => {
+              validate_interface_name(&req.interface)?;
+              validate_ssid(&req.ssid)?;
+              validate_psk(&req.passphrase)?;
+              if let Some(ch) = req.channel { validate_channel(ch)?; }
+              Ok(())
+          }
+          JobKind::PortalStart { req } => {
+              validate_interface_name(&req.interface)?;
+              validate_port(req.port)?;
+              Ok(())
+          }
+          JobKind::MountStart { req } => {
+              validate_device_path(&req.device)?;      // string-only checks
+              validate_filesystem(&req.filesystem)?;   // allowlist
+              Ok(())
+          }
+          JobKind::UnmountStart { req } => {
+              validate_device_path(&req.device)?;      // string-only checks for now
+              Ok(())
+          }
+      }
+  }
+
+B) Add supporting validators for missing areas:
+File: rustyjack-daemon/src/validation.rs
+Add:
+  - validate_sleep_seconds(seconds: u64)
+      * prevent absurd values; choose a sane upper bound (e.g. 24h).
+  - validate_scan_target(target: &str)
+      * allow IPv4, IPv4 CIDR, hostname, or interface-like names if supported
+      * hard cap length (e.g. 256)
+      * reject control chars (\r \n \t) to prevent log injection
+  - validate_scan_ports(mode: ScanModeIpc, ports: Option<&[u16]>)
+      * if mode==DiscoveryOnly => ports must be None/empty
+      * if mode==DiscoveryAndPorts => ports must be Some and within size limit (e.g. <= 128)
+      * validate each port via validate_port()
+  - validate_update_service(service: &str)
+      * allowlist: likely “rustyjack”, “rustyjack-ui”, “rustyjackd” (whatever you support)
+      * reject path separators, whitespace, control chars
+  - validate_git_remote(remote: &str)
+      * safest: allowlist known remotes (“origin” only) OR allow only https://… and ssh forms you actually use
+      * reject whitespace, control chars
+  - validate_git_ref(branch: &str)
+      * enforce git-ref-safe characters (no spaces, no ~^:?*[] etc)
+      * length cap (e.g. 128)
+  - validate_backup_dir(path: &str)
+      * MUST be under RUSTYJACK_ROOT (e.g. /var/lib/rustyjack/backups)
+      * reject absolute paths unless inside root
+      * reject “..” segments and symlinks (canonicalize inside spawn_blocking if needed)
+      * if you cannot canonicalize in async context, do string-level checks here and enforce with fs canonicalize
+        inside the blocking operation (preferred)
+
+C) Enforce validate_job_kind in JobStart
+File: rustyjack-daemon/src/dispatch.rs
+Change inside:
+  RequestBody::JobStart(JobStartRequest { job }) => { ... }
+
+To:
+  - call validation::validate_job_kind(&job.kind) early, before dangerous checks, returning BadRequest.
+  - then dangerous_ops_enabled check
+  - then start_job
+
+Pseudo-change:
+
+  if let Err(err) = validation::validate_job_kind(&job.kind) {
+      return ResponseEnvelope { ... Err(err) };
+  }
+
+Note:
+  For Mount/Unmount we’ll later add deeper policy checks in Phase 2. Here we do only string-level + filesystem allowlist.
+
+------------------------------------------------------------------------------
+1.2 Enforce per-job authorization tier (JobStart-specific)
+------------------------------------------------------------------------------
+Current problem:
+  Endpoint tier is enforced, but JobStart can carry multiple job kinds, some of which may deserve higher auth
+  (e.g., SystemUpdate, mounting, or other “dangerous” ops).
+
+Implementation choice:
+  Enforce extra authorization ONLY for JobStart endpoint (since other endpoints are explicit and already mapped).
+  This prevents generic JobStart from becoming “super endpoint”.
+
+A) Add required_tier_for_jobkind(&JobKind)
+File: rustyjack-daemon/src/auth.rs
+
+Add:
+  use rustyjack_ipc::{AuthorizationTier, JobKind};
+
+  pub fn required_tier_for_jobkind(kind: &JobKind) -> AuthorizationTier {
+      match kind {
+          JobKind::Noop => AuthorizationTier::ReadOnly,
+          JobKind::Sleep { .. } => AuthorizationTier::ReadOnly,
+          JobKind::WifiScan { .. } => AuthorizationTier::Operator,
+          JobKind::WifiConnect { .. } => AuthorizationTier::Operator,
+          JobKind::HotspotStart { .. } => AuthorizationTier::Operator,
+          JobKind::PortalStart { .. } => AuthorizationTier::Operator,
+          JobKind::MountStart { .. } => AuthorizationTier::Operator,
+          JobKind::UnmountStart { .. } => AuthorizationTier::Operator,
+          JobKind::ScanRun { .. } => AuthorizationTier::Operator,   // can be “dangerous” but still operator
+          JobKind::SystemUpdate { .. } => AuthorizationTier::Admin, // recommended
+      }
+  }
+
+If SystemUpdate must be usable from the UI (non-root), you have two options:
+  Option 1 (best): implement group-based admin auth (see 1.3), and run UI in that group.
+  Option 2: keep SystemUpdate at Operator but enforce “dangerous_ops_enabled + allowlist branch/remote”.
+
+B) Enforce it in server.rs (not dispatch.rs)
+Why server.rs:
+  It already has “authz” computed and used for endpoint gating.
+  You avoid recomputing tier in dispatch.
+
+File: rustyjack-daemon/src/server.rs
+In the request handling loop, after endpoint required tier check, add:
+
+  if request.endpoint == Endpoint::JobStart {
+      if let RequestBody::JobStart(JobStartRequest { job }) = &request.body {
+          let required = required_tier_for_jobkind(&job.kind);
+          if !tier_allows(authz, required) {
+              send forbidden...
+              continue;
+          }
+      }
+  }
+
+You will need to import:
+  - rustyjack_ipc::RequestBody, JobStartRequest
+  - crate::auth::required_tier_for_jobkind
+
+------------------------------------------------------------------------------
+1.3 (Recommended) Improve authorization_for() to support ReadOnly + group-based roles
+------------------------------------------------------------------------------
+Current:
+  authorization_for(uid) => root is Admin, everyone else is Operator. ReadOnly is unused.
+
+Recommended:
+  Use peer PID to derive supplementary groups from /proc/<pid>/status:
+    Groups: 4 24 27 ...  (numeric GIDs)
+
+Implementation:
+File: rustyjack-daemon/src/auth.rs
+
+Add:
+  pub fn authorization_for_peer(peer: PeerCred) -> AuthorizationTier {
+      if peer.uid == 0 { return Admin; }
+
+      // parse /proc/<pid>/status Groups:
+      // if in admin_group => Admin
+      // else if in operator_group => Operator
+      // else => ReadOnly
+  }
+
+Make groups configurable:
+File: rustyjack-daemon/src/config.rs
+Add env vars:
+  RUSTYJACKD_ADMIN_GID or RUSTYJACKD_ADMIN_GROUP
+  RUSTYJACKD_OPERATOR_GID or reuse socket_group
+
+Then in server.rs, replace:
+  let authz = authorization_for(peer.uid);
+with:
+  let authz = authorization_for_peer(peer);
+
+This lets you:
+  - run UI as non-root but still grant Admin privileges by group (only if desired)
+  - run future “read-only clients” safely
+
+===============================================================================
+PHASE 2 — Make privileged operations safe-by-construction
+===============================================================================
+
+Goal:
+  Ensure the daemon can safely perform high-impact operations (mount/unmount, logs bundle) without opening
+  destructive paths or breaking IPC framing.
+
+Key files:
+  - rustyjack-core/src/mount.rs (already has policy-based syscalls)
+  - rustyjack-core/src/services/mount.rs (currently uses “mount/umount” shell commands)
+  - rustyjack-daemon/src/jobs/kinds/mount_start.rs
+  - rustyjack-daemon/src/jobs/kinds/unmount_start.rs
+  - rustyjack-daemon/src/dispatch.rs (MountStart/UnmountStart endpoints)
+  - rustyjack-core/src/services/logs.rs
+  - rustyjack-ipc/src/lib.rs (MAX_FRAME constant)
+
+------------------------------------------------------------------------------
+2.1 Replace command-based mount service with policy-based syscalls
+------------------------------------------------------------------------------
+Current problem:
+  core/services/mount.rs uses Command::new("mount"/"umount") on arbitrary device strings.
+  That is both less controlled and easier to misuse (including internal mmc partitions).
+
+Best implementation strategy:
+  Make core/services/mount.rs a thin wrapper around core/mount.rs (policy module),
+  so ANY caller (daemon, tests, future tools) uses the same policy.
+
+A) Define a canonical mount root under RUSTYJACK_ROOT
+Policy requirement:
+  Mounts should only occur under a dedicated directory, owned by the daemon, e.g.:
+    /var/lib/rustyjack/mounts/<auto-name>
+  Avoid mounting under /media or /mnt unless systemd unit explicitly allows it.
+
+File: rustyjack-core/src/mount.rs
+MountPolicy already contains mount_root and lock_timeout; keep as-is.
+
+File: rustyjack-core/src/services/mount.rs
+Add helper:
+  fn default_policy(root: &Path) -> MountPolicy {
+      MountPolicy {
+          mount_root: root.join("mounts"),
+          lock_timeout: Duration::from_secs(10),
+          allowed_fs: ... (if policy supports)
+          ...
+      }
+  }
+
+B) Rewrite services::mount::mount to call mount::mount_device
+File: rustyjack-core/src/services/mount.rs
+
+Old:
+  Command::new("mount") ...
+
+New:
+  - resolve root (callers already pass root sometimes; if not, use crate::resolve_root(None))
+  - policy = default_policy(root)
+  - request.device => PathBuf
+  - fs_type:
+      * if req.filesystem None => FsType::Auto
+      * else map string to FsType (ext4, vfat, exfat, ntfs, ...)
+  - request.mode:
+      * default ReadOnly OR read-write depending on your threat model
+      * recommend default ReadOnly, with explicit enable for RW
+  - call mount::mount_device(&policy, request) -> MountResponse
+  - return JSON:
+      { device, mountpoint, fs_type, readonly }
+
+C) Rewrite services::mount::unmount safely
+File: rustyjack-core/src/services/mount.rs
+
+Problem:
+  Your daemon IPC unmount request carries a “device” string.
+  Policy unmount wants a mountpoint under mount_root.
+
+Implementation:
+  - resolve root
+  - policy = default_policy(root)
+  - list mounts under mount_root: mount::list_mounts_under(&policy.mount_root)
+  - find entry where entry.device == provided device (canonicalize strings)
+  - if not found => InvalidInput / NotFound
+  - call mount::unmount(&policy, UnmountRequest { mountpoint })
+  - return JSON { device, mountpoint, unmounted: true }
+
+D) Add “allowed device” enforcement
+File: rustyjack-core/src/mount.rs
+is_allowed_device() already exists. Ensure it is used by mount_device().
+If mount_device() does NOT currently enforce removable-only, add it:
+  - check sysfs removable flag (e.g. /sys/block/sda/removable == "1")
+  - ensure reject /dev/mmcblk* unless explicitly allowed by config.
+
+E) Update daemon job kinds to use the updated core service (minimal changes)
+If you rewrite core/services/mount.rs as above, then daemon jobs/kinds/mount_start.rs can remain mostly unchanged.
+Still, it is worth adding source-tagging:
+  Err(err) => Err(err.to_daemon_error_with_code(ErrorCode::MountFailed).with_source("daemon.jobs.mount_start"))
+
+You’ll implement to_daemon_error_with_code in Phase 4.
+
+------------------------------------------------------------------------------
+2.2 Tighten daemon-side mount/unmount validation
+------------------------------------------------------------------------------
+Even with core policy enforcing, daemon should do early rejection for common invalid inputs (fast fail).
+
+File: rustyjack-daemon/src/validation.rs
+- extend validate_device_path():
+    * reject control characters
+    * require ASCII? optional
+    * require starts_with("/dev/")
+    * cap length
+- add validate_mount_device_hint(path: &str):
+    * reject "/dev/mmcblk" and "/dev/loop" at string level unless explicitly allowed by env flag
+    * optionally allow only "/dev/sd" and "/dev/nvme" patterns (Pi likely uses USB => /dev/sdX)
+
+Wire-up:
+- dispatch.rs MountStart/UnmountStart endpoints should call validate_mount_device_hint
+- validate_job_kind() should call it for MountStart/UnmountStart JobKinds
+
+Note:
+  Don’t attempt to read sysfs from async context here; let core policy do that in spawn_blocking path.
+
+------------------------------------------------------------------------------
+2.3 Fix SystemLogsGet payload size to respect MAX_FRAME
+------------------------------------------------------------------------------
+Current problem:
+  daemon returns SystemLogsResponse { content: String }. IPC MAX_FRAME is 1,048,576 bytes.
+  log bundle can exceed this and then the daemon fails to send a valid response.
+
+Minimal (recommended immediate) fix:
+  Ensure the bundle generated by rustyjack-core/services/logs.rs is capped.
+
+File: rustyjack-core/src/services/logs.rs
+Add:
+  const MAX_LOG_BUNDLE_BYTES: usize = 900_000; // safely under MAX_FRAME
+
+Then:
+  - when appending each command output, cap it.
+  - for journalctl, add “-n <lines>” and prefer short formats.
+  - after building, if out.len() > MAX_LOG_BUNDLE_BYTES:
+      truncate and append a footer:
+        "\n--- truncated: exceeded MAX_LOG_BUNDLE_BYTES ---\n"
+  - also consider per-section caps:
+      e.g. 200KB per unit log, 100KB for network snapshot, etc.
+
+Where to apply:
+  - append_command_output(): cap stdout/stderr captured
+  - run_cmd_output(): cap output
+  - optionally take a max_bytes parameter:
+      pub fn collect_log_bundle(root: &Path, max_bytes: usize) -> Result<String, ServiceError>
+    but changing signature touches daemon; acceptable but not required.
+
+Better (later) fix:
+  Add a chunked download endpoint, e.g. SystemLogsExportStart + SystemLogsExportChunkGet.
+  That requires extending rustyjack-ipc types and client; do only if truncation is insufficient.
+
+===============================================================================
+PHASE 3 — Make the daemon reliable under load (blocking ops + cancellation + retention)
+===============================================================================
+
+Goal:
+  Ensure daemon responsiveness (no blocking in async reactor), and ensure jobs behave correctly under cancel/retention.
+
+Key files:
+  - rustyjack-daemon/src/dispatch.rs
+  - rustyjack-daemon/src/jobs/mod.rs
+  - rustyjack-daemon/src/jobs/kinds/*.rs
+  - rustyjack-core/src/services/* (for cancellation integration)
+  - rustyjack-core/src/operations.rs (for long-running operations)
+
+------------------------------------------------------------------------------
+3.1 Move blocking operations out of async contexts in dispatch.rs
+------------------------------------------------------------------------------
+Current problem:
+  Several dispatch arms call filesystem and core services synchronously (std::fs, core::services::*),
+  which can block the single-thread tokio runtime (daemon main uses current_thread).
+
+Fix strategy:
+  - Any call that can touch disk, sysfs, spawn processes, or do netlink should run in spawn_blocking.
+  - Prefer to keep dispatch handlers thin: validate -> spawn_blocking -> map to response.
+
+File: rustyjack-daemon/src/main.rs
+Option A (bigger): switch runtime flavor to multi-thread
+  #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
+This helps but does not fix blocking correctness. Still recommend spawn_blocking for heavy work.
+
+File: rustyjack-daemon/src/dispatch.rs
+Audit each RequestBody arm, and wrap blocking work:
+
+Examples to wrap:
+  - RequestBody::SystemStatusGet
+      * std::fs::read_to_string("/etc/hostname")
+      * rustyjack_core::services::stats::status_summary()
+  - RequestBody::DiskUsageGet
+      * core service call
+  - SystemReboot/SystemShutdown/SystemSync/HostnameRandomizeNow
+  - WifiCapabilitiesGet, WifiInterfacesList, WifiDisconnect
+  - HotspotWarningsGet/DiagnosticsGet/ClientsGet
+  - MountList
+  - PortalStatus/Stop/HotspotStop (if they touch processes/files)
+
+Add a helper in dispatch.rs:
+
+  async fn run_blocking<T, E, F>(label: &'static str, f: F) -> Result<T, DaemonError>
+  where
+      T: Send + 'static,
+      E: Into<DaemonError> + Send + 'static,
+      F: FnOnce() -> Result<T, E> + Send + 'static
+  {
+      task::spawn_blocking(f)
+          .await
+          .map_err(|e| DaemonError::new(ErrorCode::Internal, format!("{label} panicked"), false)
+              .with_detail(e.to_string())
+              .with_source(format!("daemon.dispatch.{label}")) )?
+          .map_err(|e| e.into())
+  }
+
+Then each handler becomes:
+
+  let summary = run_blocking("system_status_get", || rustyjack_core::services::stats::status_summary()).await?;
+  ...
+
+This reduces repeated boilerplate and centralizes panic mapping.
+
+------------------------------------------------------------------------------
+3.2 Implement real cancellation for jobs (not just “token set”)
+------------------------------------------------------------------------------
+Current problem:
+  In jobs/kinds/*, most run() functions check cancel.is_cancelled() once at the beginning,
+  then spawn_blocking and wait for completion. Cancelling sets the token but does not stop the underlying work.
+
+There are two levels of cancellation:
+
+Level 1 (quick): “stop waiting” and report Cancelled (best-effort)
+  - In the select! loop, add a branch for cancel.cancelled()
+  - Call handle.abort() and return Cancelled.
+  - Caveat: spawn_blocking work may continue in background thread and still mutate system state.
+
+Level 2 (correct): cooperative cancellation within the core operation
+  - Pass cancellation down to core services/operations and actively stop or kill subprocesses.
+
+You should do Level 1 immediately, and Level 2 for any operation that can change system state significantly.
+
+A) Level 1 changes (daemon)
+Files:
+  - rustyjack-daemon/src/jobs/kinds/wifi_connect.rs
+  - .../wifi_scan.rs
+  - .../scan.rs
+  - .../update.rs
+  - .../mount_start.rs
+  - .../unmount_start.rs
+  - .../portal_start.rs
+  - .../hotspot_start.rs
+Pattern change:
+
+Inside the loop:
+  tokio::select! {
+      _ = cancel.cancelled() => {
+          // best-effort: abort join + return Cancelled
+          handle.abort();
+          return Err(DaemonError::new(ErrorCode::Cancelled, "Job cancelled", false)
+              .with_source("daemon.jobs.<kind>"));
+      }
+      res = &mut handle => { ... }
+      Some((percent, message)) = rx.recv() => { ... }
+  }
+
+Also consider:
+  - On cancel, attempt cleanup (service-specific):
+      * wifi_connect: call core::services::wifi::disconnect(interface)
+      * hotspot_start: call core::services::hotspot::stop()
+      * portal_start: call core::services::portal::stop()
+      * mount_start: if mount already happened, attempt unmount; (harder)
+  These cleanup calls should also run in spawn_blocking, but you’re already in async job context; do it.
+
+B) Level 2 changes (core cooperative cancellation)
+This is the “real fix” for update/scan/mount if they can run long and/or spawn subprocesses.
+
+Recommended design:
+  Introduce a cancellation primitive in core operations:
+    pub struct CancelFlag(Arc<AtomicBool>);
+    impl CancelFlag { pub fn cancelled(&self) -> bool; }
+
+  Add optional cancel parameter to long-running operations:
+    run_system_update_with_progress(root, args, cancel: Option<&CancelFlag>, on_progress)
+    run_scan_with_progress(root, args, cancel: Option<&CancelFlag>, on_progress)
+
+  If those functions spawn child processes:
+    - use Command::spawn()
+    - periodically poll child.try_wait() in a loop with small sleep (e.g. 50ms)
+    - if cancel => send SIGTERM, then after grace send SIGKILL
+    - return a typed error that maps to ErrorCode::Cancelled
+
+Files:
+  - rustyjack-core/src/operations.rs (run_system_update_with_progress, run_scan_with_progress)
+  - rustyjack-core/src/services/update.rs
+  - rustyjack-core/src/services/scan.rs
+  - rustyjack-core/src/services/mount.rs (if it can hang; mount syscalls usually won’t)
+  - rustyjack-core/src/services/error.rs (add Cancelled variant or map)
+
+Then daemon jobs pass cancel down:
+  - in spawn_blocking closure, capture a CancelFlag clone derived from daemon CancellationToken:
+      * simplest bridging: create Arc<AtomicBool>; spawn a tokio task that sets it when cancelled
+      * or: in spawn_blocking, periodically check a shared atomic set by async side
+
+This is more work, but it’s the only way to guarantee “cancel means stop”.
+
+------------------------------------------------------------------------------
+3.3 Fix job retention logic to never evict active jobs
+------------------------------------------------------------------------------
+Current problem:
+  rustyjack-daemon/src/jobs/mod.rs enforce_retention() sorts by created_at_ms and removes oldest records
+  regardless of state. It can remove Queued/Running jobs, breaking status queries and cancellation.
+
+Fix:
+File: rustyjack-daemon/src/jobs/mod.rs
+Change enforce_retention() to:
+  - Partition jobs into active vs finished:
+      active = Queued/Running
+      finished = Completed/Failed/Cancelled
+  - If total <= retention => return
+  - Only remove from finished jobs.
+  - If finished_count is insufficient to drop below retention:
+      * keep all active jobs, and only drop finished until:
+            total = active + remaining_finished <= retention
+      * if active > retention: do NOT delete active; instead keep all active and accept exceeding retention until they finish.
+
+Pseudo:
+
+  let active_ids: HashSet<u64> = jobs.iter().filter(|(_,r)| is_active(r)).map(|(id,_)| *id).collect();
+  let mut finished: Vec<(u64, u64)> = jobs.iter()
+      .filter(|(_,r)| !is_active(r))
+      .map(|(id,r)| (*id, r.info.created_at_ms))
+      .collect();
+  finished.sort_by_key(|(_,created)| *created);
+  while jobs.len() > self.retention && !finished.is_empty() {
+      let (id,_) = finished.remove(0);
+      jobs.remove(&id);
+  }
+
+Add a unit test for retention: start 3 jobs, set retention=1, ensure active job remains.
+
+===============================================================================
+PHASE 4 — Make failures diagnosable (structured errors + logging)
+===============================================================================
+
+Goal:
+  When something fails, you should know:
+    - which endpoint/job
+    - which parameter
+    - which subsystem (core services vs core operations vs external tool)
+    - whether retry makes sense
+
+Key files:
+  - rustyjack-daemon/src/telemetry.rs
+  - rustyjack-daemon/src/dispatch.rs
+  - rustyjack-daemon/src/jobs/mod.rs
+  - rustyjack-daemon/src/jobs/kinds/*.rs
+  - rustyjack-core/src/services/error.rs
+  - rustyjack-ipc/src/error.rs
+  - systemd unit: set RUST_LOG appropriately
+
+------------------------------------------------------------------------------
+4.1 Expand DaemonError usage: fill “source” and “detail” consistently
+------------------------------------------------------------------------------
+Current:
+  Many errors are created with message only; source is rarely set.
+
+Target:
+  Every DaemonError returned to clients must have:
+    - code: meaningful
+    - message: user-facing short
+    - detail: technical detail (stderr, internal context, etc.)
+    - source: stable identifier for searching logs
+
+Implementation:
+
+A) Add helper constructors in daemon:
+File: rustyjack-daemon/src/dispatch.rs (or new src/errors.rs)
+Add:
+
+  fn err_bad_request(source: &'static str, msg: &str, detail: Option<String>) -> DaemonError
+  fn err_internal(source: &'static str, msg: &str, detail: impl Into<String>) -> DaemonError
+
+Use these when mapping errors.
+
+B) Improve ServiceError -> DaemonError mapping
+File: rustyjack-core/src/services/error.rs
+Add:
+
+  impl ServiceError {
+      pub fn to_daemon_error_with_code(&self, code: ErrorCode, source: &'static str) -> DaemonError {
+          match self {
+              ServiceError::InvalidInput(msg) => DaemonError::new(ErrorCode::BadRequest, msg, false).with_source(source),
+              ServiceError::Io(err) => DaemonError::new(ErrorCode::Io, err.to_string(), false).with_source(source),
+              ServiceError::Netlink(msg) => DaemonError::new(ErrorCode::Netlink, msg, false).with_source(source),
+              ServiceError::External(msg) => DaemonError::new(code, msg, false).with_source(source),
+              ServiceError::Internal(msg) => DaemonError::new(ErrorCode::Internal, msg, false).with_source(source),
+              ServiceError::OperationFailed(msg) => DaemonError::new(code, msg, true).with_source(source),
+          }
+      }
+  }
+
+Then in daemon jobs:
+  Err(err) => Err(err.to_daemon_error_with_code(ErrorCode::MountFailed, "daemon.jobs.mount_start"))
+
+Do this per domain:
+  - mount_start: MountFailed
+  - wifi_*: WifiFailed
+  - update: UpdateFailed
+  - cleanup operations: CleanupFailed
+
+This is a targeted improvement without changing the IPC protocol.
+
+------------------------------------------------------------------------------
+4.2 Make request logging include outcome + error code + sources
+------------------------------------------------------------------------------
+Current:
+  telemetry.rs logs request_id/endpoint/peer/duration/result.
+
+Improve:
+  - include error code on failures
+  - include source and retryable flag
+  - include job_id when endpoint starts a job
+  - include validation failures as “bad_request” with message summary
+
+File: rustyjack-daemon/src/telemetry.rs
+
+Update log_request():
+  - if ResponseBody::Err(err):
+      log code, source, retryable
+  - if ResponseBody::Ok(ResponseOk::JobStarted(...)):
+      log job_id and job kind if available (you might have it at dispatch time)
+
+Additionally:
+  Add debug logs at the start of handle_request for endpoint + peer.
+  Avoid logging secrets:
+    - PSKs/passphrases must never appear in logs
+    - redact them before formatting structs
+
+------------------------------------------------------------------------------
+4.3 Improve job logging: lifecycle + progress + final error details
+------------------------------------------------------------------------------
+File: rustyjack-daemon/src/jobs/mod.rs
+
+Add logs:
+  - when job queued, started, completed/failed/cancelled
+  - include job_id + kind + requested_by
+  - on failure, log error.code + message + detail + source
+
+Also consider:
+  - store last N progress events in JobInfo (optional) so UI can show “what happened recently”
+    This can be done by adding a VecDeque<Progress> field to JobRecord (daemon-only).
+
+------------------------------------------------------------------------------
+4.4 Ensure daemon logs are available by default via systemd journal
+------------------------------------------------------------------------------
+File: rustyjackd.service
+Add:
+  Environment=RUST_LOG=info,rustyjack_daemon=debug,rustyjack_core=info
+or whatever level you prefer.
+
+Also consider:
+  StandardOutput=journal
+  StandardError=journal
+(usually default under systemd, but explicit is fine)
+
+===============================================================================
+PHASE 5 — Hardening / defense-in-depth
+===============================================================================
+
+Goal:
+  Reduce attack surface and the blast radius if something goes wrong.
+
+Key items:
+  - feature-gate the core CLI binary (do not ship by default)
+  - optional portal isolation into separate unprivileged process
+  - systemd confinement review
+
+------------------------------------------------------------------------------
+5.1 Feature-gate the core CLI (rustyjack-core/src/main.rs)
+------------------------------------------------------------------------------
+Current problem:
+  rustyjack-core builds a CLI binary (src/main.rs) that can run privileged operations directly.
+  If present on the device, it becomes a bypass path around the daemon boundary.
+
+Implementation options:
+
+Option A (minimal change): required-features on the bin target
+File: rustyjack-core/Cargo.toml
+
+1) Mark clap + env_logger optional:
+  clap = { version = "4.5", features = ["derive"], optional = true }
+  env_logger = { version = "0.11", optional = true }
+
+2) Add features:
+  [features]
+  default = []
+  cli = ["dep:clap", "dep:env_logger"]
+
+3) Declare bin with required feature:
+  [[bin]]
+  name = "rustyjack"
+  path = "src/main.rs"
+  required-features = ["cli"]
+
+Now production builds that don’t enable “cli” will NOT produce/install the binary.
+
+Option B (cleaner long-term): move CLI to a separate crate rustyjack-cli
+  - remove src/main.rs from core
+  - create new workspace member with dependency on rustyjack-core
+This is more refactor but clearer separation.
+
+Update deployment scripts:
+  - scripts/install.sh (or your packaging path) should only copy:
+      * rustyjackd
+      * rustyjack-ui
+      * (maybe) rustyjack-client if you want diagnostics
+    and NOT copy the core CLI.
+
+------------------------------------------------------------------------------
+5.2 Optional: isolate the captive portal out of the privileged daemon process
+------------------------------------------------------------------------------
+Why:
+  Captive portal is network-facing. Even with Rust safety, it is far higher risk than internal IPC.
+  Running it inside root-privileged code increases blast radius.
+
+Current design:
+  core/services/portal::start uses rustyjack-portal::start_portal() which spawns a thread + runtime inside the same process.
+
+Isolation plan:
+  - Provide a dedicated binary for the portal:
+      * add src/main.rs under rustyjack-portal (or a separate crate)
+      * load config from file or env
+      * run as unprivileged user “rustyjack-portal”
+  - Create systemd unit: rustyjack-portal.service
+      * User=rustyjack-portal
+      * Group=rustyjack-portal
+      * NoNewPrivileges=true
+      * ProtectSystem=strict
+      * ReadWritePaths=/var/lib/rustyjack/portal /var/lib/rustyjack/loot/Portal
+      * AmbientCapabilities=CAP_NET_BIND_SERVICE (only if binding <1024)
+  - Modify daemon endpoints:
+      * PortalStart => systemctl start rustyjack-portal.service (spawn_blocking)
+      * PortalStop => systemctl stop ...
+      * PortalStatus => systemctl is-active ...
+
+This is a non-trivial change; do it after Phase 1–4.
+
+------------------------------------------------------------------------------
+5.3 Systemd unit tightening (review and adjust based on required capabilities)
+------------------------------------------------------------------------------
+Files:
+  - rustyjackd.service
+  - rustyjack-ui.service
+  - rustyjackd.socket
+
+Your units already include several good hardening flags. Next steps:
+
+A) Ensure mounts happen under StateDirectory, not arbitrary locations
+  - If you move mounts under /var/lib/rustyjack/mounts, systemd confinement is easier.
+  - Consider adding ReadWritePaths=/var/lib/rustyjack/mounts (if needed).
+
+B) Capabilities (optional)
+  If you want to avoid “full root”, you can run the daemon with a limited set of caps.
+  Reality check: mount requires CAP_SYS_ADMIN (very broad). If you keep mount, caps may not buy you much.
+  Still, you can:
+    - set NoNewPrivileges=true (already)
+    - consider SystemCallFilter with allowlist (hard, test carefully)
+    - ProtectKernelTunables=true, ProtectKernelModules=true, ProtectControlGroups=true
+    - RestrictNamespaces=true
+    - RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 (if you don’t need others)
+
+C) Socket permissions
+  - Keep SocketMode=0660 and use a dedicated group.
+  - Ensure only UI and trusted tooling are in that group.
+
+===============================================================================
+Appendix — Concrete “edit list” by file (quick reference)
+===============================================================================
+
+rustyjack-daemon/src/validation.rs
+  + validate_job_kind(&JobKind)
+  + validate_sleep_seconds()
+  + validate_scan_target()
+  + validate_scan_ports()
+  + validate_update_service()
+  + validate_git_remote()
+  + validate_git_ref()
+  + validate_backup_dir()
+  + validate_mount_device_hint()
+
+rustyjack-daemon/src/dispatch.rs
+  * In RequestBody::JobStart: call validate_job_kind()
+  * Wrap blocking endpoint work in spawn_blocking via helper
+  * Ensure errors returned have .with_source("daemon.dispatch.<endpoint>")
+
+rustyjack-daemon/src/auth.rs
+  + required_tier_for_jobkind(&JobKind)
+  + (optional) authorization_for_peer(peer: PeerCred) using /proc/<pid>/status groups
+
+rustyjack-daemon/src/server.rs
+  * After endpoint auth check, enforce per-job tier for Endpoint::JobStart
+
+rustyjack-daemon/src/jobs/mod.rs
+  * enforce_retention(): never evict active jobs
+  + more lifecycle logging (job start/end/error)
+  * optional: store recent progress events
+
+rustyjack-daemon/src/jobs/kinds/*.rs
+  * add cancel.cancelled() branch in select!
+  * best-effort cleanup on cancel for stateful jobs
+  * error mapping: use domain-specific ErrorCodes + sources
+
+rustyjack-core/src/services/mount.rs
+  * rewrite mount/unmount to use core/mount.rs policy syscalls
+  * enforce removable-only and mount-root confinement
+  * map failures to MountFailed where appropriate
+
+rustyjack-core/src/services/logs.rs
+  * cap total output to < MAX_FRAME
+  * reduce journalctl output via -n lines
+  * add truncation footer
+
+rustyjack-core/src/services/error.rs
+  + to_daemon_error_with_code(code, source)
+
+rustyjack-core/Cargo.toml
+  * feature-gate CLI binary (required-features = ["cli"])
+  * make clap/env_logger optional
+
+rustyjackd.service
+  + (optional) Environment=RUST_LOG=...
+  + (optional) ProtectKernelTunables/Modules/ControlGroups, RestrictNamespaces, etc.
+
+===============================================================================
+End of document.

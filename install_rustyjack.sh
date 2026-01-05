@@ -265,7 +265,7 @@ PACKAGES=(
   # - wpasupplicant: provides wpa_supplicant daemon and wpa_cli for WPA auth fallback
   wpasupplicant
   # misc
-  git i2c-tools curl
+  git i2c-tools curl usbutils
 )
 
 # Optional firmware bundles (may require non-free-firmware repo on Debian)
@@ -450,11 +450,11 @@ if [ ! -f "$PROJECT_ROOT/target/release/rustyjack-ui" ]; then
 fi
 
 # Build rustyjack-core CLI (used for status/validation)
-info "Building rustyjack-core CLI (release)..."
-(cd "$PROJECT_ROOT" && cargo build --release -p rustyjack-core) || fail "Failed to build rustyjack-core"
+info "Building rustyjack CLI (release with cli feature)..."
+(cd "$PROJECT_ROOT" && cargo build --release --bin rustyjack --features rustyjack-core/cli) || fail "Failed to build rustyjack"
 
-if [ ! -f "$PROJECT_ROOT/target/release/rustyjack-core" ]; then
-  fail "rustyjack-core binary not found after build!"
+if [ ! -f "$PROJECT_ROOT/target/release/rustyjack" ]; then
+  fail "rustyjack binary not found after build!"
 fi
 
 # Build rustyjackd daemon
@@ -465,19 +465,29 @@ if [ ! -f "$PROJECT_ROOT/target/release/rustyjackd" ]; then
   fail "rustyjackd binary not found after build!"
 fi
 
+# Build rustyjack-portal binary
+info "Building rustyjack-portal binary (release)..."
+(cd "$PROJECT_ROOT" && cargo build --release -p rustyjack-portal) || fail "Failed to build rustyjack-portal"
+
+if [ ! -f "$PROJECT_ROOT/target/release/rustyjack-portal" ]; then
+  fail "rustyjack-portal binary not found after build!"
+fi
+
 # Install binaries
 sudo install -Dm755 "$PROJECT_ROOT/target/release/rustyjack-ui" /usr/local/bin/rustyjack-ui
-sudo install -Dm755 "$PROJECT_ROOT/target/release/rustyjack-core" /usr/local/bin/rustyjack
+sudo install -Dm755 "$PROJECT_ROOT/target/release/rustyjack" /usr/local/bin/rustyjack
 sudo install -Dm755 "$PROJECT_ROOT/target/release/rustyjackd" /usr/local/bin/rustyjackd
+sudo install -Dm755 "$PROJECT_ROOT/target/release/rustyjack-portal" /usr/local/bin/rustyjack-portal
 
 # Verify installation
-if [ -x /usr/local/bin/rustyjack-ui ] && [ -x /usr/local/bin/rustyjack ] && [ -x /usr/local/bin/rustyjackd ]; then
+if [ -x /usr/local/bin/rustyjack-ui ] && [ -x /usr/local/bin/rustyjack ] && [ -x /usr/local/bin/rustyjackd ] && [ -x /usr/local/bin/rustyjack-portal ]; then
   info "Installed binaries to /usr/local/bin/"
   # Show binary info to confirm it's new
   info "Binary info:"
   ls -la /usr/local/bin/rustyjack-ui
   ls -la /usr/local/bin/rustyjack
   ls -la /usr/local/bin/rustyjackd
+  ls -la /usr/local/bin/rustyjack-portal
 else
   fail "Failed to install binaries to /usr/local/bin/"
 fi
@@ -583,8 +593,14 @@ fi
 if ! getent group rustyjack-ui >/dev/null 2>&1; then
   sudo groupadd --system rustyjack-ui || true
 fi
+if ! getent group rustyjack-portal >/dev/null 2>&1; then
+  sudo groupadd --system rustyjack-portal || true
+fi
 if ! id -u rustyjack-ui >/dev/null 2>&1; then
   sudo useradd --system --home /var/lib/rustyjack --shell /usr/sbin/nologin -g rustyjack-ui rustyjack-ui || true
+fi
+if ! id -u rustyjack-portal >/dev/null 2>&1; then
+  sudo useradd --system --home /nonexistent --shell /usr/sbin/nologin -g rustyjack-portal rustyjack-portal || true
 fi
 for grp in rustyjack gpio spi; do
   if getent group "$grp" >/dev/null 2>&1; then
@@ -592,10 +608,24 @@ for grp in rustyjack gpio spi; do
   fi
 done
 
+# Create portal directories with proper ownership
+sudo mkdir -p "$RUNTIME_ROOT/portal/site"
+sudo mkdir -p "$RUNTIME_ROOT/loot/Portal"
+sudo chown -R rustyjack-portal:rustyjack-portal "$RUNTIME_ROOT/portal"
+sudo chown -R rustyjack-portal:rustyjack-portal "$RUNTIME_ROOT/loot/Portal"
+sudo chmod -R 755 "$RUNTIME_ROOT/portal"
+sudo chmod -R 755 "$RUNTIME_ROOT/loot/Portal"
+
 sudo chown -R root:rustyjack "$RUNTIME_ROOT"
 sudo chmod -R g+rwX "$RUNTIME_ROOT"
 sudo find "$RUNTIME_ROOT/wifi/profiles" -type f -exec chmod 660 {} \; 2>/dev/null || true
 sudo chmod 770 "$RUNTIME_ROOT/wifi/profiles" 2>/dev/null || true
+
+# Ensure runtime and state directories exist with correct permissions
+step "Ensuring runtime and state directories exist..."
+sudo mkdir -p /var/lib/rustyjack /run/rustyjack
+sudo chown root:rustyjack /var/lib/rustyjack /run/rustyjack
+sudo chmod 2770 /var/lib/rustyjack /run/rustyjack
 
 DAEMON_SOCKET=/etc/systemd/system/rustyjackd.socket
 DAEMON_SERVICE=/etc/systemd/system/rustyjackd.service
@@ -611,14 +641,13 @@ SocketMode=0660
 SocketUser=root
 SocketGroup=rustyjack
 RemoveOnStop=true
-
-[Install]
-WantedBy=sockets.target
 UNIT
+
 
 sudo tee "$DAEMON_SERVICE" >/dev/null <<UNIT
 [Unit]
-Description=Rustyjack privileged daemon
+Description=Rustyjack Daemon (Hardened)
+Documentation=https://github.com/yourusername/rustyjack
 After=local-fs.target network.target
 Wants=network.target
 
@@ -626,32 +655,74 @@ Wants=network.target
 Type=notify
 ExecStart=/usr/local/bin/rustyjackd
 Restart=on-failure
-RestartSec=2
-RuntimeDirectory=rustyjack
-RuntimeDirectoryMode=0770
-StateDirectory=rustyjack
-StateDirectoryMode=0770
-ConfigurationDirectory=rustyjack
-ConfigurationDirectoryMode=0770
-Group=rustyjack
+RestartSec=5
+
+# Environment
+Environment=RUSTYJACKD_SOCKET=/run/rustyjack/rustyjackd.sock
 Environment=RUSTYJACK_ROOT=$RUNTIME_ROOT
-Environment=RUSTYJACKD_SOCKET_GROUP=rustyjack
-WatchdogSec=20s
-NotifyAccess=main
-NoNewPrivileges=true
-PrivateTmp=true
+# Uncomment to enable dangerous operations (system updates)
+#Environment=RUSTYJACKD_DANGEROUS_OPS=true
+
+# Privilege and capability management
+User=root
+# Keep only required capabilities
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW CAP_SYS_ADMIN CAP_DAC_OVERRIDE
+# Ambient capabilities for rootless operation where possible
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
+
+# Filesystem access restrictions
 ProtectSystem=strict
 ProtectHome=true
+ReadWritePaths=/var/lib/rustyjack /run/rustyjack /tmp/rustyjack
+ReadOnlyPaths=/etc/NetworkManager /etc/wpa_supplicant
+PrivateTmp=true
+
+# Kernel hardening
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectProc=invisible
+
+# Process restrictions
+NoNewPrivileges=true
 RestrictRealtime=true
+RestrictSUIDSGID=true
 LockPersonality=true
+RestrictNamespaces=true
+
+# Memory protection
 MemoryDenyWriteExecute=true
+
+# Network restrictions (allow all needed for WiFi)
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK AF_PACKET
+
+# Syscall filtering
+SystemCallFilter=@system-service
+SystemCallFilter=~@clock @debug @module @mount @obsolete @raw-io @reboot @swap
 SystemCallArchitectures=native
+
+# Resource limits
+LimitNOFILE=1024
+LimitNPROC=64
+TasksMax=64
+CPUQuota=80%
+MemoryMax=256M
+
+# Working directory
+WorkingDirectory=$RUNTIME_ROOT
+
+# Security
+PrivateDevices=false
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=rustyjackd
 
 [Install]
 WantedBy=multi-user.target
 UNIT
-
-SERVICE=/etc/systemd/system/rustyjack-ui.service
 step "Installing systemd service $SERVICE..."
 
 sudo tee "$SERVICE" >/dev/null <<UNIT
@@ -680,6 +751,15 @@ Alias=rustyjack.service
 UNIT
 
 sudo systemctl daemon-reload
+
+# Verify the generated daemon unit is valid
+if command -v systemd-analyze >/dev/null 2>&1; then
+  if systemd-analyze verify /etc/systemd/system/rustyjackd.service >/dev/null 2>&1; then
+    info "systemd unit OK: rustyjackd.service"
+  else
+    warn "systemd-analyze verify reported issues for rustyjackd.service; check 'systemctl status' and 'journalctl -u rustyjackd'"
+  fi
+fi
 sudo systemctl enable rustyjackd.socket
 sudo systemctl start rustyjackd.socket 2>/dev/null || true
 sudo systemctl enable rustyjack-ui.service

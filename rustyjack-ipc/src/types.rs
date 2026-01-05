@@ -1,5 +1,10 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use rustyjack_commands::{
+    BridgeCommand, DnsSpoofCommand, EthernetCommand, HardwareCommand, HotspotCommand, LootCommand,
+    MitmCommand, NotifyCommand, ProcessCommand, ReverseCommand, ScanCommand, StatusCommand,
+    SystemCommand, WifiCommand,
+};
 
 use crate::{AuthzSummary, DaemonError, JobEvent, JobInfo, JobKind, JobSpec, JobStarted};
 
@@ -8,6 +13,10 @@ use crate::{AuthzSummary, DaemonError, JobEvent, JobInfo, JobKind, JobSpec, JobS
 pub enum FeatureFlag {
     JobSubscribe,
     Compression,
+    DangerousOpsEnabled,
+    JobProgress,
+    UdsTimeouts,
+    GroupBasedAuth,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -34,6 +43,20 @@ pub enum Endpoint {
     Version,
     Status,
     CoreDispatch,
+    StatusCommand,
+    WifiCommand,
+    EthernetCommand,
+    LootCommand,
+    NotifyCommand,
+    SystemCommand,
+    HardwareCommand,
+    DnsSpoofCommand,
+    MitmCommand,
+    ReverseCommand,
+    HotspotCommand,
+    ScanCommand,
+    BridgeCommand,
+    ProcessCommand,
     JobStart,
     JobStatus,
     JobCancel,
@@ -45,6 +68,9 @@ pub enum Endpoint {
     HostnameRandomizeNow,
     BlockDevicesList,
     SystemLogsGet,
+    ActiveInterfaceGet,
+    ActiveInterfaceClear,
+    InterfaceStatusGet,
     WifiCapabilitiesGet,
     HotspotWarningsGet,
     HotspotDiagnosticsGet,
@@ -62,6 +88,8 @@ pub enum Endpoint {
     MountList,
     MountStart,
     UnmountStart,
+    SetActiveInterface,
+    HotplugNotify,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -86,6 +114,20 @@ pub enum RequestBody {
     Version,
     Status,
     CoreDispatch(CoreDispatchRequest),
+    StatusCommand(StatusCommand),
+    WifiCommand(WifiCommand),
+    EthernetCommand(EthernetCommand),
+    LootCommand(LootCommand),
+    NotifyCommand(NotifyCommand),
+    SystemCommand(SystemCommand),
+    HardwareCommand(HardwareCommand),
+    DnsSpoofCommand(DnsSpoofCommand),
+    MitmCommand(MitmCommand),
+    ReverseCommand(ReverseCommand),
+    HotspotCommand(HotspotCommand),
+    ScanCommand(ScanCommand),
+    BridgeCommand(BridgeCommand),
+    ProcessCommand(ProcessCommand),
     JobStart(JobStartRequest),
     JobStatus(JobStatusRequest),
     JobCancel(JobCancelRequest),
@@ -97,6 +139,9 @@ pub enum RequestBody {
     HostnameRandomizeNow,
     BlockDevicesList,
     SystemLogsGet,
+    ActiveInterfaceGet,
+    ActiveInterfaceClear,
+    InterfaceStatusGet(InterfaceStatusRequest),
     WifiCapabilitiesGet(WifiCapabilitiesRequest),
     HotspotWarningsGet,
     HotspotDiagnosticsGet(HotspotDiagnosticsRequest),
@@ -114,6 +159,8 @@ pub enum RequestBody {
     MountList,
     MountStart(MountStartRequest),
     UnmountStart(UnmountStartRequest),
+    SetActiveInterface(SetActiveInterfaceRequest),
+    HotplugNotify,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -131,6 +178,20 @@ pub enum ResponseOk {
     Version(VersionResponse),
     Status(StatusResponse),
     CoreDispatch(CoreDispatchResponse),
+    StatusCommand(CoreDispatchResponse),
+    WifiCommand(CoreDispatchResponse),
+    EthernetCommand(CoreDispatchResponse),
+    LootCommand(CoreDispatchResponse),
+    NotifyCommand(CoreDispatchResponse),
+    SystemCommand(CoreDispatchResponse),
+    HardwareCommand(CoreDispatchResponse),
+    DnsSpoofCommand(CoreDispatchResponse),
+    MitmCommand(CoreDispatchResponse),
+    ReverseCommand(CoreDispatchResponse),
+    HotspotCommand(CoreDispatchResponse),
+    ScanCommand(CoreDispatchResponse),
+    BridgeCommand(CoreDispatchResponse),
+    ProcessCommand(CoreDispatchResponse),
     JobStarted(JobStarted),
     JobStatus(JobStatusResponse),
     JobCancelled(JobCancelResponse),
@@ -140,6 +201,9 @@ pub enum ResponseOk {
     Hostname(HostnameResponse),
     BlockDevices(BlockDevicesResponse),
     SystemLogs(SystemLogsResponse),
+    ActiveInterface(ActiveInterfaceResponse),
+    ActiveInterfaceCleared(ActiveInterfaceClearResponse),
+    InterfaceStatus(InterfaceStatusResponse),
     WifiCapabilities(WifiCapabilitiesResponse),
     HotspotWarnings(HotspotWarningsResponse),
     HotspotDiagnostics(HotspotDiagnosticsResponse),
@@ -151,6 +215,8 @@ pub enum ResponseOk {
     PortalAction(PortalActionResponse),
     PortalStatus(PortalStatusResponse),
     MountList(MountListResponse),
+    SetActiveInterface(SetActiveInterfaceResponse),
+    HotplugNotify(HotplugNotifyResponse),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -220,6 +286,47 @@ pub struct BlockDevicesResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SystemLogsResponse {
     pub content: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ActiveInterfaceResponse {
+    pub interface: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ActiveInterfaceClearResponse {
+    pub cleared: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InterfaceStatusRequest {
+    pub interface: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InterfaceCapabilities {
+    pub is_wireless: bool,
+    pub is_physical: bool,
+    pub supports_monitor: bool,
+    pub supports_ap: bool,
+    pub supports_injection: bool,
+    pub supports_5ghz: bool,
+    pub supports_2ghz: bool,
+    pub mac_address: Option<String>,
+    pub driver: Option<String>,
+    pub chipset: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InterfaceStatusResponse {
+    pub interface: String,
+    pub exists: bool,
+    pub is_wireless: bool,
+    pub oper_state: String,
+    pub is_up: bool,
+    pub carrier: Option<bool>,
+    pub ip: Option<String>,
+    pub capabilities: Option<InterfaceCapabilities>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -325,6 +432,7 @@ pub struct WifiConnectStartRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HotspotStartRequest {
     pub interface: String,
+    pub upstream_interface: String,
     pub ssid: String,
     pub passphrase: Option<String>,
     pub channel: Option<u8>,
@@ -380,6 +488,25 @@ pub struct UnmountStartRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SetActiveInterfaceRequest {
+    pub interface: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SetActiveInterfaceResponse {
+    pub interface: String,
+    pub allowed: Vec<String>,
+    pub blocked: Vec<String>,
+    pub errors: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HotplugNotifyResponse {
+    pub acknowledged: bool,
+}
+
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LegacyCommand {
     WifiScan,
@@ -391,6 +518,7 @@ pub enum LegacyCommand {
     PortalStop,
     MountStart,
     MountStop,
+    CommandDispatch,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -437,12 +565,26 @@ pub enum DaemonEvent {
     JobUpdate(JobEvent),
 }
 
-pub fn endpoint_for_body(body: &RequestBody) -> Endpoint {
+    pub fn endpoint_for_body(body: &RequestBody) -> Endpoint {
     match body {
         RequestBody::Health => Endpoint::Health,
         RequestBody::Version => Endpoint::Version,
         RequestBody::Status => Endpoint::Status,
         RequestBody::CoreDispatch(_) => Endpoint::CoreDispatch,
+        RequestBody::StatusCommand(_) => Endpoint::StatusCommand,
+        RequestBody::WifiCommand(_) => Endpoint::WifiCommand,
+        RequestBody::EthernetCommand(_) => Endpoint::EthernetCommand,
+        RequestBody::LootCommand(_) => Endpoint::LootCommand,
+        RequestBody::NotifyCommand(_) => Endpoint::NotifyCommand,
+        RequestBody::SystemCommand(_) => Endpoint::SystemCommand,
+        RequestBody::HardwareCommand(_) => Endpoint::HardwareCommand,
+        RequestBody::DnsSpoofCommand(_) => Endpoint::DnsSpoofCommand,
+        RequestBody::MitmCommand(_) => Endpoint::MitmCommand,
+        RequestBody::ReverseCommand(_) => Endpoint::ReverseCommand,
+        RequestBody::HotspotCommand(_) => Endpoint::HotspotCommand,
+        RequestBody::ScanCommand(_) => Endpoint::ScanCommand,
+        RequestBody::BridgeCommand(_) => Endpoint::BridgeCommand,
+        RequestBody::ProcessCommand(_) => Endpoint::ProcessCommand,
         RequestBody::JobStart(_) => Endpoint::JobStart,
         RequestBody::JobStatus(_) => Endpoint::JobStatus,
         RequestBody::JobCancel(_) => Endpoint::JobCancel,
@@ -454,6 +596,9 @@ pub fn endpoint_for_body(body: &RequestBody) -> Endpoint {
         RequestBody::HostnameRandomizeNow => Endpoint::HostnameRandomizeNow,
         RequestBody::BlockDevicesList => Endpoint::BlockDevicesList,
         RequestBody::SystemLogsGet => Endpoint::SystemLogsGet,
+        RequestBody::ActiveInterfaceGet => Endpoint::ActiveInterfaceGet,
+        RequestBody::ActiveInterfaceClear => Endpoint::ActiveInterfaceClear,
+        RequestBody::InterfaceStatusGet(_) => Endpoint::InterfaceStatusGet,
         RequestBody::WifiCapabilitiesGet(_) => Endpoint::WifiCapabilitiesGet,
         RequestBody::HotspotWarningsGet => Endpoint::HotspotWarningsGet,
         RequestBody::HotspotDiagnosticsGet(_) => Endpoint::HotspotDiagnosticsGet,
@@ -471,6 +616,8 @@ pub fn endpoint_for_body(body: &RequestBody) -> Endpoint {
         RequestBody::MountList => Endpoint::MountList,
         RequestBody::MountStart(_) => Endpoint::MountStart,
         RequestBody::UnmountStart(_) => Endpoint::UnmountStart,
+        RequestBody::SetActiveInterface(_) => Endpoint::SetActiveInterface,
+        RequestBody::HotplugNotify => Endpoint::HotplugNotify,
     }
 }
 

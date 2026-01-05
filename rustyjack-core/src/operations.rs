@@ -28,11 +28,10 @@ use rustyjack_wireless::{
     start_hotspot, status_hotspot, stop_hotspot, HotspotConfig, HotspotState,
 };
 use serde_json::{json, Map, Value};
+
 use walkdir::WalkDir;
 #[cfg(target_os = "linux")]
-use rustyjack_netlink::{
-    ensure_wpa_control_socket, TxPowerSetting, WirelessManager, WpaManager, WpaSupplicantState,
-};
+use rustyjack_netlink::{TxPowerSetting, WirelessManager};
 
 use crate::cli::{
     BridgeCommand, BridgeStartArgs, BridgeStopArgs, Commands, DiscordCommand, DiscordSendArgs,
@@ -80,7 +79,25 @@ use crate::system::{
 pub type HandlerResult = (String, Value);
 
 fn get_active_interface(root: &Path) -> Result<Option<String>> {
-    read_interface_preference(root, "system_preferred")
+    use crate::system::PreferenceManager;
+    let prefs = PreferenceManager::new(root.to_path_buf());
+    prefs.get_preferred()
+}
+
+pub fn set_active_interface(root: &Path, iface: &str) -> Result<crate::system::ops::IsolationOutcome> {
+    use crate::system::{IsolationEngine, PreferenceManager, RealNetOps, NetOps};
+    use std::sync::Arc;
+    
+    let ops = Arc::new(RealNetOps);
+    if !ops.interface_exists(iface) {
+        bail!("Interface '{}' does not exist", iface);
+    }
+    
+    let prefs = PreferenceManager::new(root.to_path_buf());
+    prefs.set_preferred(iface)?;
+    
+    let engine = IsolationEngine::new(ops, root.to_path_buf());
+    engine.enforce()
 }
 
 #[allow(dead_code)]
@@ -2343,24 +2360,18 @@ fn handle_network_status() -> Result<HandlerResult> {
             .ok()
             .and_then(|v| v.trim().parse::<u8>().ok())
             .map(|v| v == 1);
-        let wpa_state = if summary.kind == "wireless" {
-            #[cfg(target_os = "linux")]
-            {
-                let mgr = WpaManager::new(&summary.name).ok();
-                mgr.and_then(|m| m.status().ok())
-                    .map(|status| format!("{:?}", status.wpa_state))
-            }
-            #[cfg(not(target_os = "linux"))]
-            {
-                None
-            }
+        let wifi_link = if summary.kind == "wireless" {
+            Some(read_wifi_link_info(&summary.name))
         } else {
             None
         };
+        let wpa_state = wifi_link
+            .as_ref()
+            .map(|link| if link.connected { "Connected" } else { "Disconnected" }.to_string());
 
         let link_ready = match summary.kind.as_str() {
             "wired" => carrier.unwrap_or(false),
-            "wireless" => matches!(wpa_state.as_deref(), Some("Completed")),
+            "wireless" => wifi_link.as_ref().map(|link| link.connected).unwrap_or(false),
             _ => false,
         };
 
@@ -2738,35 +2749,7 @@ fn interface_has_carrier(interface: &str) -> bool {
 
 #[cfg(target_os = "linux")]
 fn wpa_ready_for_dhcp(interface: &str) -> bool {
-    let mgr = match WpaManager::new(interface) {
-        Ok(mgr) => mgr,
-        Err(err) => {
-            log::debug!(
-                "[ROUTE] WPA status unavailable for {} (no control socket?): {}",
-                interface,
-                err
-            );
-            return false;
-        }
-    };
-
-    let status = match mgr.status() {
-        Ok(status) => status,
-        Err(err) => {
-            log::debug!("[ROUTE] WPA status read failed for {}: {}", interface, err);
-            return false;
-        }
-    };
-
-    log::info!(
-        "[ROUTE] WPA status iface={} state={:?} ssid={:?} ip={:?}",
-        interface,
-        status.wpa_state,
-        status.ssid,
-        status.ip_address
-    );
-
-    matches!(status.wpa_state, WpaSupplicantState::Completed)
+    interface_has_carrier(interface)
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -3573,48 +3556,7 @@ fn renew_dhcp_and_reconnect(interface: &str) -> bool {
         }
     };
 
-    let wpa_success = match ensure_wpa_control_socket(interface, None) {
-        Ok(control_path) => match WpaManager::new(interface)
-            .map(|mgr| mgr.with_control_path(control_path))
-        {
-            Ok(mgr) => match mgr.reconnect() {
-                Ok(_) => {
-                    log::info!("WPA reconnect triggered for {}", interface);
-                    true
-                }
-                Err(e) => {
-                    log::debug!(
-                        "WPA reconnect failed (may not be using wpa_supplicant): {}",
-                        e
-                    );
-                    false
-                }
-            },
-            Err(e) => {
-                log::debug!("WPA manager creation failed: {}", e);
-                false
-            }
-        },
-        Err(e) => {
-            log::debug!("WPA control socket unavailable: {}", e);
-            false
-        }
-    };
-
-    let nm_success = if !wpa_success {
-        match crate::runtime::shared_runtime() {
-            Ok(rt) => rt.block_on(async {
-                rustyjack_netlink::networkmanager::reconnect_device(interface)
-                    .await
-                    .is_ok()
-            }),
-            Err(_) => false,
-        }
-    } else {
-        false
-    };
-
-    dhcp_success || wpa_success || nm_success
+    dhcp_success
 }
 
 #[cfg(not(target_os = "linux"))]

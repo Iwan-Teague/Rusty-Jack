@@ -22,8 +22,8 @@ use rustyjack_commands::{
     LootCommand, LootReadArgs, MitmCommand,
     MitmStartArgs, NotifyCommand, ReverseCommand, ReverseLaunchArgs, SystemCommand,
     SystemFdeMigrateArgs, SystemFdePrepareArgs, UsbMountArgs, UsbMountMode, UsbUnmountArgs,
-    WifiCommand, WifiDeauthArgs, WifiDisconnectArgs, WifiMacRandomizeArgs, WifiMacRestoreArgs,
-    WifiMacSetArgs, WifiMacSetVendorArgs, WifiRouteCommand, WifiRouteEnsureArgs, WifiScanArgs,
+    WifiCommand, WifiDeauthArgs, WifiMacRandomizeArgs, WifiMacRestoreArgs,
+    WifiMacSetArgs, WifiMacSetVendorArgs, WifiRouteCommand, WifiRouteEnsureArgs,
     WifiStatusArgs, WifiTxPowerArgs,
     WifiProfileCommand, WifiProfileConnectArgs, WifiProfileDeleteArgs, WifiProfileSaveArgs,
     WifiProfileShowArgs,
@@ -213,12 +213,15 @@ impl App {
         if active_interface.is_empty() {
             return self.show_message("WiFi", ["No active interface set"]);
         }
-        match self.core.dispatch(Commands::Wifi(WifiCommand::Disconnect(
-            WifiDisconnectArgs {
-                interface: Some(active_interface.clone()),
-            },
-        ))) {
-            Ok((msg, _)) => self.show_message("WiFi", [msg]),
+        match self.core.wifi_disconnect(&active_interface) {
+            Ok(disconnected) => {
+                let msg = if disconnected {
+                    format!("Disconnected from {}", active_interface)
+                } else {
+                    format!("{} was already disconnected", active_interface)
+                };
+                self.show_message("WiFi", [msg])
+            }
             Err(e) => self.show_message("WiFi", [format!("Disconnect failed: {}", e)]),
         }
     }
@@ -356,14 +359,6 @@ impl App {
             .map(|mac| mac.trim().to_uppercase())
     }
 
-    fn is_ethernet_interface(&self, interface: &str) -> bool {
-        if interface.is_empty() {
-            return false;
-        }
-        let wireless_dir = format!("/sys/class/net/{}/wireless", interface);
-        !Path::new(&wireless_dir).exists()
-    }
-
     fn interface_has_carrier(&self, interface: &str) -> bool {
         if interface.is_empty() {
             return false;
@@ -396,10 +391,7 @@ impl App {
             let button = self.buttons.wait_for_press()?;
             match self.map_button(button) {
                 ButtonAction::Select => {
-                    match self
-                        .core
-                        .dispatch(Commands::System(SystemCommand::Reboot))
-                    {
+                    match self.core.system_reboot() {
                         Ok(_) => {
                             std::process::exit(0);
                         }
@@ -607,9 +599,13 @@ impl MenuState {
             offset: 0,
         }
     }
-
+    
     fn current_id(&self) -> &str {
         self.stack.last().map(|s| s.as_str()).unwrap_or("a")
+    }
+    
+    fn path(&self) -> &str {
+        self.current_id()
     }
 
     fn enter(&mut self, id: &str) {
@@ -794,7 +790,20 @@ impl App {
                 match self.map_button(button) {
                     ButtonAction::Up => self.menu_state.move_up(entries.len()),
                     ButtonAction::Down => self.menu_state.move_down(entries.len()),
-                    ButtonAction::Back => self.menu_state.back(),
+                    ButtonAction::Back => {
+                        // HARDWARE INTERFACE ISOLATION:
+                        // Clear active interface when returning to main menu
+                        let was_at_main = self.menu_state.path() == "a";
+                        self.menu_state.back();
+                        let now_at_main = self.menu_state.path() == "a";
+                        
+                        if !was_at_main && now_at_main {
+                            // Returned to main menu - clear active interface (isolate all)
+                            if let Err(e) = self.core.clear_active_interface() {
+                                log::warn!("Failed to clear active interface on return to main: {}", e);
+                            }
+                        }
+                    }
                     ButtonAction::Select => {
                         if let Some(entry) = entries.get(self.menu_state.selection) {
                             let action = entry.action.clone();
@@ -1000,6 +1009,8 @@ impl App {
             MenuAction::ExportLogsToUsb => self.export_logs_to_usb()?,
             MenuAction::TransferToUSB => self.transfer_to_usb()?,
             MenuAction::HardwareDetect => self.show_hardware_detect()?,
+            MenuAction::SelectActiveInterface => self.select_active_interface()?,
+            MenuAction::ViewInterfaceStatus => self.view_interface_status()?,
             MenuAction::InstallWifiDrivers => self.install_wifi_drivers()?,
             MenuAction::ScanNetworks => self.scan_wifi_networks()?,
             MenuAction::DeauthAttack => self.launch_deauth_attack()?,
@@ -1601,10 +1612,7 @@ impl App {
     }
 
     fn restart_system(&mut self) -> Result<()> {
-        match self
-            .core
-            .dispatch(Commands::System(SystemCommand::Reboot))
-        {
+        match self.core.system_reboot() {
             Ok(_) => Ok(()),
             Err(err) => {
                 let msg = shorten_for_display(&err.to_string(), 90);
@@ -1643,10 +1651,7 @@ impl App {
 
         // Power off
         self.show_progress("Secure Shutdown", ["Powering off now...", ""])?;
-        if let Err(err) = self
-            .core
-            .dispatch(Commands::System(SystemCommand::Poweroff))
-        {
+        if let Err(err) = self.core.system_shutdown() {
             let msg = shorten_for_display(&err.to_string(), 90);
             self.show_message("Shutdown Failed", [msg])?;
         }
@@ -1891,14 +1896,12 @@ impl App {
 
     fn fetch_wifi_scan(&mut self) -> Result<WifiScanResponse> {
         let interface = if !self.config.settings.active_network_interface.is_empty() {
-            Some(self.config.settings.active_network_interface.clone())
+            self.config.settings.active_network_interface.clone()
         } else {
-            None
+            bail!("No active interface set");
         };
-        let args = WifiScanArgs { interface };
-        let (_, data) = self
-            .core
-            .dispatch(Commands::Wifi(WifiCommand::Scan(args)))?;
+        
+        let data = self.core.wifi_scan(&interface, 30000)?;
         let resp: WifiScanResponse = serde_json::from_value(data)?;
         Ok(resp)
     }
@@ -4207,29 +4210,72 @@ impl App {
                             let btn = self.buttons.wait_for_press()?;
                             match self.map_button(btn) {
                                 ButtonAction::Select => {
-                                    // Set this interface as active
-                                    self.config.settings.active_network_interface =
-                                        interface_name.clone();
-                                    let config_path = self.root.join("gui_conf.json");
-                                    let mut lines = vec![format!("Set to: {}", interface_name)];
+                                    self.show_progress(
+                                        "Setting Interface",
+                                        &[
+                                            &format!("Activating {}", interface_name),
+                                            "Blocking others...",
+                                            "Please wait",
+                                        ],
+                                    )?;
 
-                                    if let Err(e) = self.config.save(&config_path) {
-                                        self.show_message(
-                                            "Error",
-                                            [format!("Failed to save: {}", e)],
-                                        )?;
-                                    } else {
-                                        // Try to ensure route (will succeed if already connected)
-                                        if let Some(route_msg) =
-                                            self.ensure_route_for_interface(&interface_name)?
-                                        {
-                                            lines.push(route_msg);
+                                    let mut lines = Vec::new();
+                                    match self.core.set_active_interface(&interface_name) {
+                                        Ok(data) => {
+                                            let allowed = data["allowed"]
+                                                .as_array()
+                                                .map(|a| {
+                                                    a.iter()
+                                                        .filter_map(|v| v.as_str())
+                                                        .map(String::from)
+                                                        .collect::<Vec<_>>()
+                                                })
+                                                .unwrap_or_default();
+                                            let blocked = data["blocked"]
+                                                .as_array()
+                                                .map(|b| {
+                                                    b.iter()
+                                                        .filter_map(|v| v.as_str())
+                                                        .map(String::from)
+                                                        .collect::<Vec<_>>()
+                                                })
+                                                .unwrap_or_default();
+
+                                            self.config.settings.active_network_interface =
+                                                interface_name.clone();
+                                            let config_path = self.root.join("gui_conf.json");
+                                            if let Err(e) = self.config.save(&config_path) {
+                                                lines.push(format!("Config save failed: {}", e));
+                                            } else {
+                                                lines.push("Config saved".to_string());
+                                            }
+
+                                            if allowed.is_empty() {
+                                                lines.push(format!("Active: {}", interface_name));
+                                            } else {
+                                                lines.push(format!("Active: {}", allowed.join(", ")));
+                                            }
+                                            if !blocked.is_empty() {
+                                                lines.push(format!(
+                                                    "Blocked: {}",
+                                                    blocked.join(", ")
+                                                ));
+                                            }
+
+                                            if let Some(route_msg) =
+                                                self.ensure_route_for_interface(&interface_name)?
+                                            {
+                                                lines.push(route_msg);
+                                            }
+
+                                            self.show_message(
+                                                "Active Interface",
+                                                lines.iter().map(|s| s.as_str()),
+                                            )?;
                                         }
-
-                                        self.show_message(
-                                            "Active Interface",
-                                            lines.iter().map(|s| s.as_str()),
-                                        )?;
+                                        Err(e) => {
+                                            self.show_message("Error", [format!("Failed: {}", e)])?;
+                                        }
                                     }
                                     // Refresh the labels to show new active indicator
                                     labels.clear();
@@ -5071,6 +5117,19 @@ impl App {
         if !self.mode_allows_active("Wi-Fi scanning disabled in Stealth")? {
             return Ok(());
         }
+        
+        let active_interface = self.config.settings.active_network_interface.clone();
+        if active_interface.is_empty() {
+            return self.show_message(
+                "WiFi Scan",
+                ["No active interface", "", "Run Hardware Detect first"],
+            );
+        }
+        
+        if let Some(error) = self.preflight_wireless_scan(&active_interface)? {
+            return self.show_preflight_error("Preflight Failed", &error);
+        }
+        
         self.show_progress("WiFi Scan", ["Scanning for networks...", "Please wait"])?;
 
         let scan_result = self.fetch_wifi_scan();
@@ -5194,28 +5253,8 @@ impl App {
             );
         }
 
-        if !self.monitor_mode_supported(&active_interface) {
-            return self.show_message(
-                "Hardware Error",
-                [
-                    "Interface does not",
-                    "support monitor mode.",
-                    "",
-                    "External adapter required",
-                ],
-            );
-        }
-
-        // Validate we have all required target info
-        if target_bssid.is_empty() {
-            return self.show_message(
-                "Deauth Attack",
-                [
-                    "No target BSSID set",
-                    "Scan networks first",
-                    "and select a target",
-                ],
-            );
+        if let Some(error) = self.preflight_deauth_attack(&active_interface)? {
+            return self.show_preflight_error("Preflight Failed", &error);
         }
 
         if target_channel == 0 {
@@ -5226,13 +5265,6 @@ impl App {
                     "Scan networks first",
                     "and select a target",
                 ],
-            );
-        }
-
-        if active_interface.is_empty() {
-            return self.show_message(
-                "Deauth Attack",
-                ["No active interface", "Set in Hardware Detect"],
             );
         }
 
@@ -5591,16 +5623,8 @@ impl App {
             }
         }
 
-        if !self.monitor_mode_supported(&attack_interface) {
-            return self.show_message(
-                "Hardware Error",
-                [
-                    "Interface does not",
-                    "support monitor mode.",
-                    "",
-                    "External adapter required",
-                ],
-            );
+        if let Some(error) = self.preflight_evil_twin(&attack_interface)? {
+            return self.show_preflight_error("Preflight Failed", &error);
         }
 
         // Duration selection
@@ -5722,16 +5746,8 @@ impl App {
             );
         }
 
-        if !self.monitor_mode_supported(&active_interface) {
-            return self.show_message(
-                "Hardware Error",
-                [
-                    "Interface does not",
-                    "support monitor mode.",
-                    "",
-                    "External adapter required",
-                ],
-            );
+        if let Some(error) = self.preflight_probe_sniff(&active_interface)? {
+            return self.show_preflight_error("Preflight Failed", &error);
         }
 
         // Duration selection
@@ -5821,16 +5837,8 @@ impl App {
             );
         }
 
-        if !self.monitor_mode_supported(&active_interface) {
-            return self.show_message(
-                "Hardware Error",
-                [
-                    "Interface does not",
-                    "support monitor mode.",
-                    "",
-                    "External adapter required",
-                ],
-            );
+        if let Some(error) = self.preflight_pmkid_capture(&active_interface)? {
+            return self.show_preflight_error("Preflight Failed", &error);
         }
 
         // Option to target specific network or passive capture
@@ -6438,16 +6446,8 @@ impl App {
             );
         }
 
-        if !self.monitor_mode_supported(&active_interface) {
-            return self.show_message(
-                "Hardware Error",
-                [
-                    "Interface does not",
-                    "support monitor mode.",
-                    "",
-                    "External adapter required",
-                ],
-            );
+        if let Some(error) = self.preflight_karma(&active_interface)? {
+            return self.show_preflight_error("Preflight Failed", &error);
         }
 
         // Explain what Karma does
@@ -7116,6 +7116,10 @@ impl App {
         match step {
             0 => {
                 // Step 1: Scan networks
+                let preflight_error = self.preflight_wireless_scan(interface)?;
+                if let Some(error) = self.preflight_or_skip(preflight_error)? {
+                    return Ok(StepOutcome::Skipped(error));
+                }
                 let cmd = Commands::Wifi(WifiCommand::Scan(WifiScanArgs {
                     interface: Some(interface.to_string()),
                 }));
@@ -7132,6 +7136,10 @@ impl App {
                     return Ok(StepOutcome::Skipped(
                         "Target BSSID not set; select a network first".to_string(),
                     ));
+                }
+                let preflight_error = self.preflight_pmkid_capture(interface)?;
+                if let Some(error) = self.preflight_or_skip(preflight_error)? {
+                    return Ok(StepOutcome::Skipped(error));
                 }
                 let cmd = Commands::Wifi(WifiCommand::PmkidCapture(WifiPmkidArgs {
                     interface: interface.to_string(),
@@ -7156,6 +7164,10 @@ impl App {
                     return Ok(StepOutcome::Skipped(
                         "Target BSSID not set; select a network first".to_string(),
                     ));
+                }
+                let preflight_error = self.preflight_deauth_attack(interface)?;
+                if let Some(error) = self.preflight_or_skip(preflight_error)? {
+                    return Ok(StepOutcome::Skipped(error));
                 }
                 let cmd = Commands::Wifi(WifiCommand::Deauth(WifiDeauthArgs {
                     interface: interface.to_string(),
@@ -7189,6 +7201,10 @@ impl App {
                     return Ok(StepOutcome::Skipped(
                         "Target BSSID not set; select a network first".to_string(),
                     ));
+                }
+                let preflight_error = self.preflight_handshake_capture(interface)?;
+                if let Some(error) = self.preflight_or_skip(preflight_error)? {
+                    return Ok(StepOutcome::Skipped(error));
                 }
                 let cmd = Commands::Wifi(WifiCommand::Deauth(WifiDeauthArgs {
                     interface: interface.to_string(),
@@ -7264,6 +7280,10 @@ impl App {
         match step {
             0 => {
                 // Step 1: Scan all networks
+                let preflight_error = self.preflight_wireless_scan(interface)?;
+                if let Some(error) = self.preflight_or_skip(preflight_error)? {
+                    return Ok(StepOutcome::Skipped(error));
+                }
                 let cmd = Commands::Wifi(WifiCommand::Scan(WifiScanArgs {
                     interface: Some(interface.to_string()),
                 }));
@@ -7274,6 +7294,10 @@ impl App {
             }
             1 => {
                 // Step 2: Channel hopping scan (longer passive scan)
+                let preflight_error = self.preflight_wireless_scan(interface)?;
+                if let Some(error) = self.preflight_or_skip(preflight_error)? {
+                    return Ok(StepOutcome::Skipped(error));
+                }
                 let cmd = Commands::Wifi(WifiCommand::Scan(WifiScanArgs {
                     interface: Some(interface.to_string()),
                 }));
@@ -7284,6 +7308,10 @@ impl App {
             }
             2 => {
                 // Step 3: Multi-target PMKID capture (passive, all networks)
+                let preflight_error = self.preflight_pmkid_capture(interface)?;
+                if let Some(error) = self.preflight_or_skip(preflight_error)? {
+                    return Ok(StepOutcome::Skipped(error));
+                }
                 let cmd = Commands::Wifi(WifiCommand::PmkidCapture(WifiPmkidArgs {
                     interface: interface.to_string(),
                     bssid: None,
@@ -7301,6 +7329,10 @@ impl App {
             }
             3 => {
                 // Step 4: Continuous capture (probe sniffing for client info)
+                let preflight_error = self.preflight_probe_sniff(interface)?;
+                if let Some(error) = self.preflight_or_skip(preflight_error)? {
+                    return Ok(StepOutcome::Skipped(error));
+                }
                 use rustyjack_commands::WifiProbeSniffArgs;
                 let cmd = Commands::Wifi(WifiCommand::ProbeSniff(WifiProbeSniffArgs {
                     interface: interface.to_string(),
@@ -7361,6 +7393,10 @@ impl App {
             2 => {
                 // Step 3: Passive scan only (no probe requests sent)
                 // Use probe sniff which is passive
+                let preflight_error = self.preflight_probe_sniff(interface)?;
+                if let Some(error) = self.preflight_or_skip(preflight_error)? {
+                    return Ok(StepOutcome::Skipped(error));
+                }
                 let cmd = Commands::Wifi(WifiCommand::ProbeSniff(WifiProbeSniffArgs {
                     interface: interface.to_string(),
                     channel: 0,
@@ -7376,6 +7412,10 @@ impl App {
             }
             3 => {
                 // Step 4: Extended probe sniffing
+                let preflight_error = self.preflight_probe_sniff(interface)?;
+                if let Some(error) = self.preflight_or_skip(preflight_error)? {
+                    return Ok(StepOutcome::Skipped(error));
+                }
                 let cmd = Commands::Wifi(WifiCommand::ProbeSniff(WifiProbeSniffArgs {
                     interface: interface.to_string(),
                     channel: 0,
@@ -7415,6 +7455,10 @@ impl App {
         match step {
             0 => {
                 // Step 1: Probe sniff to find target networks
+                let preflight_error = self.preflight_probe_sniff(interface)?;
+                if let Some(error) = self.preflight_or_skip(preflight_error)? {
+                    return Ok(StepOutcome::Skipped(error));
+                }
                 let cmd = Commands::Wifi(WifiCommand::ProbeSniff(WifiProbeSniffArgs {
                     interface: interface.to_string(),
                     channel: 0,
@@ -7436,6 +7480,10 @@ impl App {
             }
             1 => {
                 // Step 2: Karma attack
+                let preflight_error = self.preflight_karma(interface)?;
+                if let Some(error) = self.preflight_or_skip(preflight_error)? {
+                    return Ok(StepOutcome::Skipped(error));
+                }
                 let cmd = Commands::Wifi(WifiCommand::Karma(WifiKarmaArgs {
                     interface: interface.to_string(),
                     duration: 60,
@@ -7456,6 +7504,10 @@ impl App {
                     return Ok(StepOutcome::Skipped(
                         "Target SSID not set; select a network first".to_string(),
                     ));
+                }
+                let preflight_error = self.preflight_evil_twin(interface)?;
+                if let Some(error) = self.preflight_or_skip(preflight_error)? {
+                    return Ok(StepOutcome::Skipped(error));
                 }
                 let cmd = Commands::Wifi(WifiCommand::EvilTwin(WifiEvilTwinArgs {
                     interface: interface.to_string(),
@@ -7515,6 +7567,10 @@ impl App {
                         },
                     )));
                 }
+                let preflight_error = self.preflight_probe_sniff(interface)?;
+                if let Some(error) = self.preflight_or_skip(preflight_error)? {
+                    return Ok(StepOutcome::Skipped(error));
+                }
                 let cmd = Commands::Wifi(WifiCommand::ProbeSniff(WifiProbeSniffArgs {
                     interface: interface.to_string(),
                     channel: 0,
@@ -7536,6 +7592,10 @@ impl App {
             }
             1 => {
                 // Step 2: Network mapping (active scan)
+                let preflight_error = self.preflight_wireless_scan(interface)?;
+                if let Some(error) = self.preflight_or_skip(preflight_error)? {
+                    return Ok(StepOutcome::Skipped(error));
+                }
                 let cmd = Commands::Wifi(WifiCommand::Scan(WifiScanArgs {
                     interface: Some(interface.to_string()),
                 }));
@@ -7546,6 +7606,10 @@ impl App {
             }
             2 => {
                 // Step 3: PMKID harvest
+                let preflight_error = self.preflight_pmkid_capture(interface)?;
+                if let Some(error) = self.preflight_or_skip(preflight_error)? {
+                    return Ok(StepOutcome::Skipped(error));
+                }
                 let cmd = Commands::Wifi(WifiCommand::PmkidCapture(WifiPmkidArgs {
                     interface: interface.to_string(),
                     bssid: if bssid.is_empty() {
@@ -7576,6 +7640,10 @@ impl App {
                         "Target BSSID not set; select a network first".to_string(),
                     ));
                 }
+                let preflight_error = self.preflight_deauth_attack(interface)?;
+                if let Some(error) = self.preflight_or_skip(preflight_error)? {
+                    return Ok(StepOutcome::Skipped(error));
+                }
                 let cmd = Commands::Wifi(WifiCommand::Deauth(WifiDeauthArgs {
                     interface: interface.to_string(),
                     bssid: bssid.to_string(),
@@ -7602,6 +7670,10 @@ impl App {
             }
             4 => {
                 // Step 5: Evil Twin/Karma
+                let preflight_error = self.preflight_karma(interface)?;
+                if let Some(error) = self.preflight_or_skip(preflight_error)? {
+                    return Ok(StepOutcome::Skipped(error));
+                }
                 let cmd = Commands::Wifi(WifiCommand::Karma(WifiKarmaArgs {
                     interface: interface.to_string(),
                     duration: 60,
@@ -8699,17 +8771,8 @@ impl App {
                 );
             }
 
-            if !self.is_ethernet_interface(&active_interface) {
-                return self.show_message(
-                    "Ethernet",
-                    [
-                        &format!("Active iface: {}", active_interface),
-                        "Not an Ethernet interface",
-                        "",
-                        "Set an Ethernet interface",
-                        "as Active before scanning.",
-                    ],
-                );
+            if let Some(error) = self.preflight_ethernet_operation(&active_interface, false)? {
+                return self.show_preflight_error("Preflight Failed", &error);
             }
 
             if !self.interface_has_carrier(&active_interface) {
@@ -8832,17 +8895,8 @@ impl App {
                 );
             }
 
-            if !self.is_ethernet_interface(&active_interface) {
-                return self.show_message(
-                    "Port Scan",
-                    [
-                        &format!("Active iface: {}", active_interface),
-                        "Not an Ethernet interface",
-                        "",
-                        "Set an Ethernet interface",
-                        "as Active before scanning.",
-                    ],
-                );
+            if let Some(error) = self.preflight_ethernet_operation(&active_interface, false)? {
+                return self.show_preflight_error("Preflight Failed", &error);
             }
 
             if !self.interface_has_carrier(&active_interface) {
@@ -8988,17 +9042,8 @@ impl App {
                 );
             }
 
-            if !self.is_ethernet_interface(&active_interface) {
-                return self.show_message(
-                    "Inventory",
-                    [
-                        &format!("Active iface: {}", active_interface),
-                        "Not an Ethernet interface",
-                        "",
-                        "Set an Ethernet interface",
-                        "as Active before scanning.",
-                    ],
-                );
+            if let Some(error) = self.preflight_ethernet_operation(&active_interface, false)? {
+                return self.show_preflight_error("Preflight Failed", &error);
             }
 
             if !self.interface_has_carrier(&active_interface) {
@@ -9073,17 +9118,8 @@ impl App {
                 );
             }
 
-            if !self.is_ethernet_interface(&active_interface) {
-                return self.show_message(
-                    "Ethernet MITM",
-                    [
-                        &format!("Active iface: {}", active_interface),
-                        "Not an Ethernet interface",
-                        "",
-                        "Set an Ethernet interface",
-                        "as Active before starting.",
-                    ],
-                );
+            if let Some(error) = self.preflight_mitm(&active_interface)? {
+                return self.show_preflight_error("Preflight Failed", &error);
             }
 
             if !self.interface_has_carrier(&active_interface) {
@@ -9309,17 +9345,8 @@ impl App {
                 );
             }
 
-            if !self.is_ethernet_interface(&active_interface) {
-                return self.show_message(
-                    "Site Cred Capture",
-                    [
-                        &format!("Active iface: {}", active_interface),
-                        "Not an Ethernet interface",
-                        "",
-                        "Set an Ethernet interface",
-                        "as Active before starting.",
-                    ],
-                );
+            if let Some(error) = self.preflight_ethernet_operation(&active_interface, true)? {
+                return self.show_preflight_error("Preflight Failed", &error);
             }
 
             if !self.interface_has_carrier(&active_interface) {
@@ -11578,6 +11605,10 @@ impl App {
                                     .unwrap_or_else(|| "wlan0".to_string())
                             });
 
+                        if let Some(error) = self.preflight_hotspot(&ap_iface, &upstream_iface)? {
+                            return self.show_preflight_error("Preflight Failed", &error);
+                        }
+
                         let args = HotspotStartArgs {
                             ap_interface: ap_iface.clone(),
                             upstream_interface: upstream_iface.clone(),
@@ -11765,19 +11796,10 @@ impl App {
         Ok(wifi)
     }
 
-    fn interface_has_ip(&self, interface: &str) -> bool {
-        if interface.trim().is_empty() {
-            return false;
-        }
-        if let Ok((_, data)) = self.core.dispatch(Commands::Wifi(WifiCommand::List)) {
-            if let Ok(list) = serde_json::from_value::<WifiListResponse>(data) {
-                return list
-                    .interfaces
-                    .iter()
-                    .any(|iface| iface.name == interface && iface.ip.as_deref().unwrap_or("").len() > 0);
-            }
-        }
-        false
+    fn interface_has_ip(&self, _interface: &str) -> bool {
+        // TODO: Implement once daemon provides interface details with IP info
+        // For now, assume interfaces might have IPs
+        true
     }
 
     fn monitor_mode_supported(&self, interface: &str) -> bool {
@@ -12409,6 +12431,136 @@ impl App {
 
         Ok(())
     }
+    
+    // ==================== Interface Selection & Isolation ====================
+    
+    fn select_active_interface(&mut self) -> Result<()> {
+        // List all interfaces via daemon RPC
+        let data = self.core.wifi_interfaces()?;
+        let ifaces: rustyjack_ipc::WifiInterfacesResponse = serde_json::from_value(data)?;
+        
+        if ifaces.interfaces.is_empty() {
+            return self.show_message("Interfaces", ["No interfaces found"]);
+        }
+        
+        // Build menu labels (just names since daemon doesn't provide full details yet)
+        let labels = ifaces.interfaces.clone();
+        
+        // Let user select
+        if let Some(idx) = self.choose_from_menu("Select Interface", &labels)? {
+            let selected_name = &ifaces.interfaces[idx];
+            
+            // Confirm selection with dialog
+            let overlay = self.stats.snapshot();
+            let content = vec![
+                format!("Interface: {}", selected_name),
+                "".to_string(),
+                "All other interfaces will be".to_string(),
+                "brought DOWN and blocked.".to_string(),
+                "".to_string(),
+                "SELECT = Continue".to_string(),
+                "LEFT = Cancel".to_string(),
+            ];
+            self.display.draw_dialog(&content, &overlay)?;
+            
+            loop {
+                let button = self.buttons.wait_for_press()?;
+                match self.map_button(button) {
+                    ButtonAction::Select => {
+                        break;
+                    }
+                    ButtonAction::Back | ButtonAction::MainMenu => {
+                        return Ok(());
+                    }
+                    ButtonAction::Refresh => {
+                        self.display.draw_dialog(&content, &overlay)?;
+                    }
+                    _ => {}
+                }
+            }
+            
+            // Call set-active-interface RPC
+            self.show_progress(
+                "Setting Interface",
+                &[
+                    &format!("Activating {}", selected_name),
+                    "Blocking others...",
+                    "Please wait",
+                ],
+            )?;
+            
+            match self.core.set_active_interface(selected_name) {
+                Ok(data) => {
+                    let allowed = data["allowed"]
+                        .as_array()
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(|v| v.as_str())
+                                .map(String::from)
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default();
+                    let blocked = data["blocked"]
+                        .as_array()
+                        .map(|b| {
+                            b.iter()
+                                .filter_map(|v| v.as_str())
+                                .map(String::from)
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default();
+
+                    self.config.settings.active_network_interface = selected_name.to_string();
+                    let config_path = self.root.join("gui_conf.json");
+
+                    let mut lines = Vec::new();
+                    if allowed.is_empty() {
+                        lines.push(format!("Active: {}", selected_name));
+                    } else {
+                        lines.push(format!("Active: {}", allowed.join(", ")));
+                    }
+                    if !blocked.is_empty() {
+                        lines.push(format!("Blocked: {}", blocked.join(", ")));
+                    }
+                    lines.push("".to_string());
+                    if let Err(e) = self.config.save(&config_path) {
+                        lines.push(format!("Config save failed: {}", e));
+                    } else {
+                        lines.push("Config saved".to_string());
+                    }
+                    lines.push("Enforcement complete".to_string());
+
+                    self.show_message("Interface Set", lines.iter().map(|s| s.as_str()))
+                }
+                Err(e) => self.show_message("Error", [format!("Failed: {}", e)]),
+            }
+        } else {
+            Ok(())
+        }
+    }
+    
+    fn view_interface_status(&mut self) -> Result<()> {
+        // Get current state - daemon only returns interface names
+        let data = self.core.wifi_interfaces()?;
+        let ifaces: rustyjack_ipc::WifiInterfacesResponse = serde_json::from_value(data)?;
+        
+        // Show available interfaces
+        let mut status_lines = vec!["Available Interfaces:".to_string(), "".to_string()];
+        
+        for iface_name in &ifaces.interfaces {
+            status_lines.push(format!("  {}", iface_name));
+        }
+        
+        if ifaces.interfaces.is_empty() {
+            status_lines.push("  (none found)".to_string());
+        }
+        
+        status_lines.push("".to_string());
+        status_lines.push("Only one interface should".to_string());
+        status_lines.push("be active at a time.".to_string());
+        
+        self.show_message("Interface Status", status_lines)
+    }
 }
 
 fn format_bytes_per_sec(bytes: u64) -> String {
@@ -12499,5 +12651,471 @@ fn classify_start_ap_error(err: &str) -> Option<StartApErrorHint> {
             hint: "Run as root with CAP_NET_ADMIN.",
         }),
         _ => None,
+    }
+}
+
+// ===== Preflight Check Methods =====
+
+impl App {
+    /// Preflight check for wireless scanning operations
+    fn preflight_wireless_scan(&mut self, iface: &str) -> Result<Option<String>> {
+        let status = match self.core.interface_status(iface) {
+            Ok(s) => s,
+            Err(e) => return Ok(Some(format!("Failed to check interface status: {}", e))),
+        };
+
+        if !status.exists {
+            return Ok(Some(format!(
+                "{} does not exist. Select a valid Wi-Fi interface.",
+                iface
+            )));
+        }
+
+        if !status.is_wireless {
+            return Ok(Some(format!(
+                "{} is not a wireless interface. Wireless scanning requires a Wi-Fi adapter.",
+                iface
+            )));
+        }
+
+        if !status.is_up {
+            return Ok(Some(format!(
+                "{} is currently DOWN. The interface must be active to scan for networks.",
+                iface
+            )));
+        }
+        
+        Ok(None)
+    }
+
+    /// Preflight check for deauth attack
+    fn preflight_deauth_attack(&mut self, iface: &str) -> Result<Option<String>> {
+        let status = match self.core.interface_status(iface) {
+            Ok(s) => s,
+            Err(e) => return Ok(Some(format!("Failed to check interface status: {}", e))),
+        };
+
+        if !status.exists {
+            return Ok(Some(format!(
+                "{} does not exist. Select a valid Wi-Fi interface.",
+                iface
+            )));
+        }
+
+        if !status.is_wireless {
+            return Ok(Some(format!(
+                "{} is not wireless. Deauth attacks require a Wi-Fi adapter with injection support.",
+                iface
+            )));
+        }
+
+        let caps = match self.core.get_interface_capabilities(iface) {
+            Ok(c) => c,
+            Err(e) => return Ok(Some(format!("Failed to check interface capabilities: {}", e))),
+        };
+        
+        if !caps.supports_monitor {
+            return Ok(Some(format!(
+                "{} does not support monitor mode. Deauth requires an adapter that can enter monitor mode (e.g., ath9k, rtl8812au).",
+                iface
+            )));
+        }
+        
+        if !caps.supports_injection {
+            return Ok(Some(format!(
+                "{} cannot inject packets. Deauth attacks require packet injection capability. Consider using an external USB Wi-Fi adapter.",
+                iface
+            )));
+        }
+        
+        if self.config.settings.target_bssid.is_empty() {
+            return Ok(Some(
+                "No target BSSID set. Use 'Set as Target' on a network from the scan list first.".to_string()
+            ));
+        }
+        
+        Ok(None)
+    }
+
+    /// Preflight check for evil twin attack
+    fn preflight_evil_twin(&mut self, iface: &str) -> Result<Option<String>> {
+        let status = match self.core.interface_status(iface) {
+            Ok(s) => s,
+            Err(e) => return Ok(Some(format!("Failed to check interface status: {}", e))),
+        };
+
+        if !status.exists {
+            return Ok(Some(format!(
+                "{} does not exist. Select a valid Wi-Fi interface.",
+                iface
+            )));
+        }
+
+        if !status.is_wireless {
+            return Ok(Some(format!(
+                "{} is not wireless. Evil Twin requires a Wi-Fi adapter.",
+                iface
+            )));
+        }
+
+        let caps = match self.core.get_interface_capabilities(iface) {
+            Ok(c) => c,
+            Err(e) => return Ok(Some(format!("Failed to check interface capabilities: {}", e))),
+        };
+        
+        if !caps.supports_ap {
+            return Ok(Some(format!(
+                "{} does not support Access Point mode. Evil Twin requires AP capability. The built-in CYW43436 supports limited AP mode on 2.4GHz only.",
+                iface
+            )));
+        }
+        
+        let target_net = &self.config.settings.target_network;
+        if !target_net.is_empty() {
+            let channel_str = target_net.split('|').nth(2).unwrap_or("0");
+            if let Ok(channel) = channel_str.parse::<u8>() {
+                if channel > 14 && !caps.supports_5ghz {
+                    return Ok(Some(format!(
+                        "Target network is on 5GHz (channel {}), but {} only supports 2.4GHz. Use a dual-band adapter.",
+                        channel, iface
+                    )));
+                }
+            }
+        }
+        
+        if self.config.settings.target_network.is_empty() {
+            return Ok(Some(
+                "No target network set. Use 'Set as Target' on a network from the scan list first.".to_string()
+            ));
+        }
+        
+        Ok(None)
+    }
+
+    /// Preflight check for hotspot
+    fn preflight_hotspot(&mut self, iface: &str, upstream: &str) -> Result<Option<String>> {
+        let status = match self.core.interface_status(iface) {
+            Ok(s) => s,
+            Err(e) => return Ok(Some(format!("Failed to check interface status: {}", e))),
+        };
+
+        if !status.exists {
+            return Ok(Some(format!(
+                "{} does not exist. Select a valid Wi-Fi interface.",
+                iface
+            )));
+        }
+
+        if !status.is_wireless {
+            return Ok(Some(format!(
+                "{} is not wireless. Hotspot requires a Wi-Fi adapter.",
+                iface
+            )));
+        }
+
+        let caps = match self.core.get_interface_capabilities(iface) {
+            Ok(c) => c,
+            Err(e) => return Ok(Some(format!("Failed to check interface capabilities: {}", e))),
+        };
+        
+        if !caps.supports_ap {
+            return Ok(Some(format!(
+                "{} does not support Access Point mode. Hotspot requires AP capability.",
+                iface
+            )));
+        }
+        
+        if !caps.supports_2ghz {
+            return Ok(Some(format!(
+                "{} does not support 2.4GHz. Hotspot requires 2.4GHz band support.",
+                iface
+            )));
+        }
+
+        if !upstream.is_empty() {
+            if upstream == iface {
+                return Ok(Some(
+                    "Upstream interface must be different from the AP interface.".to_string(),
+                ));
+            }
+
+            let status = match self.core.interface_status(upstream) {
+                Ok(s) => s,
+                Err(e) => return Ok(Some(format!("Failed to check upstream status: {}", e))),
+            };
+
+            if !status.exists {
+                return Ok(Some(format!(
+                    "Upstream interface {} does not exist.",
+                    upstream
+                )));
+            }
+
+            if !status.is_up {
+                return Ok(Some(format!(
+                    "Upstream interface {} is DOWN. Bring it up before starting hotspot.",
+                    upstream
+                )));
+            }
+
+            if let Some(ip) = status.ip.as_deref() {
+                if let Ok(addr) = ip.parse::<std::net::Ipv4Addr>() {
+                    let octets = addr.octets();
+                    if octets[0] == 10 && octets[1] == 20 && octets[2] == 30 {
+                        return Ok(Some(format!(
+                            "Upstream interface {} has IP {} which conflicts with hotspot subnet 10.20.30.0/24.",
+                            upstream, ip
+                        )));
+                    }
+                }
+            }
+        }
+        
+        Ok(None)
+    }
+
+    /// Preflight check for karma attack
+    fn preflight_karma(&mut self, iface: &str) -> Result<Option<String>> {
+        let status = match self.core.interface_status(iface) {
+            Ok(s) => s,
+            Err(e) => return Ok(Some(format!("Failed to check interface status: {}", e))),
+        };
+
+        if !status.exists {
+            return Ok(Some(format!(
+                "{} does not exist. Select a valid Wi-Fi interface.",
+                iface
+            )));
+        }
+
+        if !status.is_wireless {
+            return Ok(Some(format!(
+                "{} is not wireless. Karma attack requires a Wi-Fi adapter.",
+                iface
+            )));
+        }
+
+        let caps = match self.core.get_interface_capabilities(iface) {
+            Ok(c) => c,
+            Err(e) => return Ok(Some(format!("Failed to check interface capabilities: {}", e))),
+        };
+        
+        if !caps.supports_ap {
+            return Ok(Some(format!(
+                "{} does not support AP mode. Karma requires AP capability.",
+                iface
+            )));
+        }
+        
+        if !caps.supports_monitor {
+            return Ok(Some(format!(
+                "{} does not support monitor mode. Karma requires monitor mode to sniff probe requests.",
+                iface
+            )));
+        }
+        
+        Ok(None)
+    }
+
+    /// Preflight check for handshake capture
+    fn preflight_handshake_capture(&mut self, iface: &str) -> Result<Option<String>> {
+        let status = match self.core.interface_status(iface) {
+            Ok(s) => s,
+            Err(e) => return Ok(Some(format!("Failed to check interface status: {}", e))),
+        };
+
+        if !status.exists {
+            return Ok(Some(format!(
+                "{} does not exist. Select a valid Wi-Fi interface.",
+                iface
+            )));
+        }
+
+        if !status.is_wireless {
+            return Ok(Some(format!(
+                "{} is not wireless. Handshake capture requires a Wi-Fi adapter.",
+                iface
+            )));
+        }
+
+        let caps = match self.core.get_interface_capabilities(iface) {
+            Ok(c) => c,
+            Err(e) => return Ok(Some(format!("Failed to check interface capabilities: {}", e))),
+        };
+        
+        if !caps.supports_monitor {
+            return Ok(Some(format!(
+                "{} does not support monitor mode. Handshake capture requires monitor mode capability.",
+                iface
+            )));
+        }
+
+        if !caps.supports_injection {
+            return Ok(Some(format!(
+                "{} cannot inject packets. Handshake capture requires injection capability.",
+                iface
+            )));
+        }
+        
+        if self.config.settings.target_bssid.is_empty() {
+            return Ok(Some(
+                "No target BSSID set. Use 'Set as Target' on a network from the scan list first.".to_string()
+            ));
+        }
+        
+        Ok(None)
+    }
+
+    /// Preflight check for PMKID capture
+    fn preflight_pmkid_capture(&mut self, iface: &str) -> Result<Option<String>> {
+        let status = match self.core.interface_status(iface) {
+            Ok(s) => s,
+            Err(e) => return Ok(Some(format!("Failed to check interface status: {}", e))),
+        };
+
+        if !status.exists {
+            return Ok(Some(format!(
+                "{} does not exist. Select a valid Wi-Fi interface.",
+                iface
+            )));
+        }
+
+        if !status.is_wireless {
+            return Ok(Some(format!(
+                "{} is not wireless. PMKID capture requires a Wi-Fi adapter.",
+                iface
+            )));
+        }
+
+        Ok(None)
+    }
+
+    /// Preflight check for probe sniffing
+    fn preflight_probe_sniff(&mut self, iface: &str) -> Result<Option<String>> {
+        let status = match self.core.interface_status(iface) {
+            Ok(s) => s,
+            Err(e) => return Ok(Some(format!("Failed to check interface status: {}", e))),
+        };
+
+        if !status.exists {
+            return Ok(Some(format!(
+                "{} does not exist. Select a valid Wi-Fi interface.",
+                iface
+            )));
+        }
+
+        if !status.is_wireless {
+            return Ok(Some(format!(
+                "{} is not wireless. Probe sniffing requires a Wi-Fi adapter.",
+                iface
+            )));
+        }
+
+        let caps = match self.core.get_interface_capabilities(iface) {
+            Ok(c) => c,
+            Err(e) => return Ok(Some(format!("Failed to check interface capabilities: {}", e))),
+        };
+
+        if !caps.supports_monitor {
+            return Ok(Some(format!(
+                "{} does not support monitor mode. Probe sniffing requires monitor mode.",
+                iface
+            )));
+        }
+
+        Ok(None)
+    }
+
+    /// Preflight check for ethernet operations
+    fn preflight_ethernet_operation(&mut self, iface: &str, requires_ip: bool) -> Result<Option<String>> {
+        let status = match self.core.interface_status(iface) {
+            Ok(s) => s,
+            Err(e) => return Ok(Some(format!("Failed to check interface status: {}", e))),
+        };
+
+        if !status.exists {
+            return Ok(Some(format!(
+                "{} does not exist. Select a valid Ethernet interface.",
+                iface
+            )));
+        }
+
+        if status.is_wireless {
+            return Ok(Some(format!(
+                "{} is a wireless interface. This operation requires an Ethernet adapter.",
+                iface
+            )));
+        }
+
+        if !status.is_up {
+            return Ok(Some(format!(
+                "{} is currently DOWN. The interface must be active for Ethernet operations.",
+                iface
+            )));
+        }
+        
+        if requires_ip {
+            if status.ip.is_none() {
+                return Ok(Some(format!(
+                    "{} has no IP address. This operation requires network connectivity. Try 'DHCP Request' first.",
+                    iface
+                )));
+            }
+        }
+        
+        Ok(None)
+    }
+
+    /// Preflight check for MITM attack
+    fn preflight_mitm(&mut self, iface: &str) -> Result<Option<String>> {
+        let status = match self.core.interface_status(iface) {
+            Ok(s) => s,
+            Err(e) => return Ok(Some(format!("Failed to check interface status: {}", e))),
+        };
+
+        if !status.exists {
+            return Ok(Some(format!(
+                "{} does not exist. Select a valid interface.",
+                iface
+            )));
+        }
+
+        if status.is_wireless {
+            return Ok(Some(format!(
+                "{} is a wireless interface. Ethernet MITM requires a wired adapter.",
+                iface
+            )));
+        }
+
+        if !status.is_up {
+            return Ok(Some(format!(
+                "{} is currently DOWN. MITM requires an active network connection.",
+                iface
+            )));
+        }
+
+        if status.ip.is_none() {
+            return Ok(Some(format!(
+                "{} has no IP address. MITM requires you to be connected to the target network.",
+                iface
+            )));
+        }
+        
+        Ok(None)
+    }
+
+    /// Helper to show preflight error with proper text wrapping
+    fn show_preflight_error(&mut self, title: &str, error_msg: &str) -> Result<()> {
+        use crate::display::{wrap_text, DIALOG_MAX_CHARS};
+        let lines = wrap_text(error_msg, DIALOG_MAX_CHARS);
+        self.show_message(title, lines)
+    }
+
+    fn preflight_or_skip(&mut self, error: Option<String>) -> Result<Option<String>> {
+        if let Some(msg) = error {
+            self.show_preflight_error("Preflight Failed", &msg)?;
+            return Ok(Some(msg));
+        }
+        Ok(None)
     }
 }

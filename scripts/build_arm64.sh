@@ -1,34 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Build Rustyjack for 64-bit ARM (Pi Zero 2 W on 64-bit Pi OS / other ARM64 Pis) inside the arm64 container.
-# Requires Docker Desktop with binfmt/qemu enabled.
-
+# Forwarding script — the canonical scripts are in tests/compile.
+# Use bash to avoid requiring the target script to be executable.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-
-cd "$REPO_ROOT"
-
-./docker/arm64/run.sh env CARGO_TARGET_DIR=/work/target-64 cargo build --target aarch64-unknown-linux-gnu -p rustyjack-ui -p rustyjack-core -p rustyjack-daemon
-
-# After successful build, copy the produced binaries into prebuilt/arm64 so they can be committed/pulled to the Pi.
-echo "Copying built binaries to prebuilt/arm64..."
-mkdir -p "$REPO_ROOT/prebuilt/arm64"
-bins=(rustyjack-ui rustyjack-core rustyjackd)
-for bin in "${bins[@]}"; do
-  src="$REPO_ROOT/target-64/aarch64-unknown-linux-gnu/debug/$bin"
-  dst="$REPO_ROOT/prebuilt/arm64/$bin"
-  cp -f "$src" "$dst" 2>/dev/null || true
-  chmod +x "$dst" 2>/dev/null || true
-done
-missing=0
-for bin in "${bins[@]}"; do
-  if [ ! -f "$REPO_ROOT/prebuilt/arm64/$bin" ]; then
-    missing=1
-  fi
-done
-if [ "$missing" -eq 0 ]; then
-  echo "Prebuilt binaries placed at prebuilt/arm64: ${bins[*]}"
-else
-  echo "Warning: built binaries not found to copy. Check build output." >&2
-fi
+exec bash "$REPO_ROOT/tests/compile/build_arm64.sh" "$@"

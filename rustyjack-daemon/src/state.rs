@@ -2,7 +2,7 @@ use std::fs;
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use log::{info, warn};
+use tracing::{info, warn};
 
 use crate::config::DaemonConfig;
 use crate::jobs::JobManager;
@@ -51,5 +51,49 @@ impl DaemonState {
             }
             Err(err) => warn!("Failed to read /proc/mounts: {}", err),
         }
+        
+        let root = self.config.root_path.clone();
+        tokio::task::spawn_blocking(move || {
+            use rustyjack_core::system::{IsolationEngine, RealNetOps};
+            use std::sync::Arc;
+            
+            let ops = Arc::new(RealNetOps);
+            let engine = IsolationEngine::new(ops, root);
+            
+            let mut retries = 0;
+            let max_retries = 3;
+            
+            loop {
+                match engine.enforce() {
+                    Ok(outcome) => {
+                        info!("Startup enforcement succeeded: allowed={:?}, blocked={:?}", 
+                            outcome.allowed, outcome.blocked);
+                        if !outcome.errors.is_empty() {
+                            warn!("Enforcement had {} non-fatal errors", outcome.errors.len());
+                            for err in &outcome.errors {
+                                warn!("  {}: {}", err.interface, err.message);
+                            }
+                        }
+                        break;
+                    }
+                    Err(e) => {
+                        warn!("Startup enforcement failed (attempt {}/{}): {}", 
+                            retries + 1, max_retries, e);
+                        
+                        retries += 1;
+                        if retries >= max_retries {
+                            tracing::error!("Startup enforcement failed after {} attempts, continuing anyway", max_retries);
+                            break;
+                        }
+                        
+                        std::thread::sleep(std::time::Duration::from_secs(2));
+                    }
+                }
+            }
+        })
+        .await
+        .unwrap_or_else(|e| {
+            warn!("Network reconciliation task panicked: {}", e);
+        });
     }
 }

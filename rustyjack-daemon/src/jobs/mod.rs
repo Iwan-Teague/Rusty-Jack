@@ -11,6 +11,8 @@ use rustyjack_ipc::{DaemonError, ErrorCode, JobInfo, JobKind, JobSpec, JobState,
 use crate::locks::LockKind;
 use crate::state::DaemonState;
 
+mod blocking;
+mod cancel_bridge;
 mod kinds;
 
 #[derive(Debug)]
@@ -234,7 +236,7 @@ impl JobManager {
             return;
         }
 
-        let active_ids: std::collections::HashSet<u64> = jobs
+        let _active_ids: std::collections::HashSet<u64> = jobs
             .values()
             .filter(|record| {
                 matches!(record.info.state, JobState::Queued | JobState::Running)
@@ -286,5 +288,82 @@ fn job_kind_name(kind: &JobKind) -> &'static str {
         JobKind::PortalStart { .. } => "portal_start",
         JobKind::MountStart { .. } => "mount_start",
         JobKind::UnmountStart { .. } => "unmount_start",
+    }
+}
+
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use tokio::runtime::Runtime;
+
+    fn create_test_manager() -> Arc<JobManager> {
+        Arc::new(JobManager::new(5))
+    }
+
+    #[test]
+    fn test_retention_never_evicts_running_jobs() {
+        let rt = Runtime::new().unwrap();
+        rt.block_on(async {
+            let manager = create_test_manager();
+            
+            // Start 6 sleep jobs (retention limit is 5)
+            let mut job_ids = Vec::new();
+            for i in 0..6 {
+                let spec = JobSpec {
+                    kind: JobKind::Sleep { seconds: 100 },
+                    requested_by: Some(format!("test_{}", i)),
+                };
+                let fake_state = create_fake_state();
+                let job_id = manager.start_job(spec, fake_state).await;
+                job_ids.push(job_id);
+                tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+            }
+
+            // All jobs should still exist (all running)
+            let (total, active) = manager.job_counts().await;
+            assert_eq!(total, 6);
+            assert_eq!(active, 6);
+        });
+    }
+
+    #[test]
+    fn test_retention_evicts_finished_jobs() {
+        let rt = Runtime::new().unwrap();
+        rt.block_on(async {
+            let manager = create_test_manager();
+            
+            // Start 10 short sleep jobs
+            for i in 0..10 {
+                let spec = JobSpec {
+                    kind: JobKind::Sleep { seconds: 0 },
+                    requested_by: Some(format!("test_{}", i)),
+                };
+                let fake_state = create_fake_state();
+                manager.start_job(spec, fake_state).await;
+                tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+            }
+
+            // Wait for jobs to complete
+            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+
+            // Should have evicted down to retention limit (5)
+            let (total, active) = manager.job_counts().await;
+            assert!(total <= 5, "Expected <= 5 jobs, got {}", total);
+            assert_eq!(active, 0);
+        });
+    }
+
+    fn create_fake_state() -> Arc<DaemonState> {
+        use crate::config::DaemonConfig;
+        use crate::locks::LockManager;
+
+        Arc::new(DaemonState {
+            version: "test".to_string(),
+            config: DaemonConfig::from_env(),
+            locks: Arc::new(LockManager::new()),
+        })
     }
 }

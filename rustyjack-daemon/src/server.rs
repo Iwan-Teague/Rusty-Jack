@@ -3,27 +3,74 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
-use log::warn;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::Notify;
 use tokio::time;
+use tracing::{debug, instrument, warn};
 
 use rustyjack_ipc::{
-    endpoint_for_body, AuthzSummary, ClientHello, DaemonError, Endpoint, ErrorCode, HelloAck,
-    JobStartRequest, RequestBody, RequestEnvelope, ResponseBody, ResponseEnvelope,
+    endpoint_for_body, AuthzSummary, ClientHello, DaemonError, Endpoint, ErrorCode, FeatureFlag,
+    HelloAck, JobStartRequest, RequestBody, RequestEnvelope, ResponseBody, ResponseEnvelope,
     PROTOCOL_VERSION,
 };
 
 use crate::auth::{
-    authorization_for, peer_credentials, required_tier, required_tier_for_jobkind, tier_allows,
+    authorization_for_peer, peer_credentials, required_tier, required_tier_for_jobkind,
+    tier_allows,
 };
+use crate::config::DaemonConfig;
 use crate::dispatch::handle_request;
 use crate::state::DaemonState;
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(2);
 const MAX_PROTOCOL_VIOLATIONS: usize = 3;
 const ERROR_REQUEST_ID: u64 = 0;
+
+fn build_feature_list(config: &DaemonConfig) -> Vec<FeatureFlag> {
+    let mut features = Vec::new();
+
+    // Always enabled features
+    features.push(FeatureFlag::JobProgress);
+    features.push(FeatureFlag::UdsTimeouts);
+    features.push(FeatureFlag::GroupBasedAuth);
+
+    // Conditionally enabled features
+    if config.dangerous_ops_enabled {
+        features.push(FeatureFlag::DangerousOpsEnabled);
+    }
+
+    features
+}
+
+async fn read_frame_timed(
+    stream: &mut UnixStream,
+    max_frame: u32,
+    timeout_duration: Duration,
+) -> io::Result<Vec<u8>> {
+    match time::timeout(timeout_duration, read_frame(stream, max_frame)).await {
+        Ok(result) => result,
+        Err(_) => Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "frame read timeout",
+        )),
+    }
+}
+
+async fn write_frame_timed(
+    stream: &mut UnixStream,
+    payload: &[u8],
+    max_frame: u32,
+    timeout_duration: Duration,
+) -> io::Result<()> {
+    match time::timeout(timeout_duration, write_frame(stream, payload, max_frame)).await {
+        Ok(result) => result,
+        Err(_) => Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "frame write timeout",
+        )),
+    }
+}
 
 pub async fn run(listener: UnixListener, state: Arc<DaemonState>, shutdown: Arc<Notify>) {
     loop {
@@ -49,6 +96,7 @@ pub async fn run(listener: UnixListener, state: Arc<DaemonState>, shutdown: Arc<
     }
 }
 
+#[instrument(skip(stream, state), fields(pid, uid, gid, tier))]
 async fn handle_connection(stream: UnixStream, state: Arc<DaemonState>) {
     let peer = match peer_credentials(&stream) {
         Ok(cred) => cred,
@@ -58,7 +106,17 @@ async fn handle_connection(stream: UnixStream, state: Arc<DaemonState>) {
         }
     };
 
-    let authz = authorization_for(peer.uid);
+    // Add peer info to span
+    let span = tracing::Span::current();
+    span.record("pid", peer.pid);
+    span.record("uid", peer.uid);
+    span.record("gid", peer.gid);
+
+    let authz = authorization_for_peer(&peer, &state.config);
+    span.record("tier", format!("{:?}", authz).as_str());
+    
+    debug!("New connection accepted");
+    
     let mut stream = stream;
 
     let hello_payload = match time::timeout(
@@ -81,12 +139,13 @@ async fn handle_connection(stream: UnixStream, state: Arc<DaemonState>) {
     let hello: ClientHello = match serde_json::from_slice(&hello_payload) {
         Ok(hello) => hello,
         Err(err) => {
-            let _ = send_error(
+            let _ = send_error_timed(
                 &mut stream,
                 PROTOCOL_VERSION,
                 ERROR_REQUEST_ID,
                 protocol_violation(format!("invalid hello: {}", err)),
                 state.config.max_frame,
+                state.config.write_timeout,
             )
             .await;
             return;
@@ -94,7 +153,7 @@ async fn handle_connection(stream: UnixStream, state: Arc<DaemonState>) {
     };
 
     if hello.protocol_version != PROTOCOL_VERSION {
-        let _ = send_error(
+        let _ = send_error_timed(
             &mut stream,
             PROTOCOL_VERSION,
             ERROR_REQUEST_ID,
@@ -104,6 +163,7 @@ async fn handle_connection(stream: UnixStream, state: Arc<DaemonState>) {
                 false,
             ),
             state.config.max_frame,
+            state.config.write_timeout,
         )
         .await;
         return;
@@ -112,7 +172,7 @@ async fn handle_connection(stream: UnixStream, state: Arc<DaemonState>) {
     let ack = HelloAck {
         protocol_version: PROTOCOL_VERSION,
         daemon_version: state.version.clone(),
-        features: Vec::new(),
+        features: build_feature_list(&state.config),
         max_frame: state.config.max_frame,
         authz: AuthzSummary {
             uid: peer.uid,
@@ -129,7 +189,7 @@ async fn handle_connection(stream: UnixStream, state: Arc<DaemonState>) {
         }
     };
 
-    if let Err(err) = write_frame(&mut stream, &ack_bytes, state.config.max_frame).await {
+    if let Err(err) = write_frame_timed(&mut stream, &ack_bytes, state.config.max_frame, state.config.write_timeout).await {
         warn!("Failed to send hello ack: {}", err);
         return;
     }
@@ -137,11 +197,22 @@ async fn handle_connection(stream: UnixStream, state: Arc<DaemonState>) {
     let mut violations = 0usize;
 
     loop {
-        let payload = match read_frame(&mut stream, state.config.max_frame).await {
+        let payload = match read_frame_timed(&mut stream, state.config.max_frame, state.config.read_timeout).await {
             Ok(payload) => payload,
             Err(err) => {
-                if err.kind() != io::ErrorKind::UnexpectedEof {
-                    warn!("Frame read error: {}", err);
+                if err.kind() == io::ErrorKind::TimedOut {
+                    warn!("Frame read timeout from pid {} uid {}", peer.pid, peer.uid);
+                    let _ = send_error_timed(
+                        &mut stream,
+                        PROTOCOL_VERSION,
+                        ERROR_REQUEST_ID,
+                        DaemonError::new(ErrorCode::Timeout, "read timeout", true),
+                        state.config.max_frame,
+                        state.config.write_timeout,
+                    )
+                    .await;
+                } else if err.kind() != io::ErrorKind::UnexpectedEof {
+                    warn!("Frame read error from pid {}: {}", peer.pid, err);
                 }
                 break;
             }
@@ -151,12 +222,13 @@ async fn handle_connection(stream: UnixStream, state: Arc<DaemonState>) {
             Ok(req) => req,
             Err(err) => {
                 violations += 1;
-                let _ = send_error(
+                let _ = send_error_timed(
                     &mut stream,
                     PROTOCOL_VERSION,
                     ERROR_REQUEST_ID,
                     protocol_violation(format!("invalid request: {}", err)),
                     state.config.max_frame,
+                    state.config.write_timeout,
                 )
                 .await;
                 if violations >= MAX_PROTOCOL_VIOLATIONS {
@@ -169,7 +241,7 @@ async fn handle_connection(stream: UnixStream, state: Arc<DaemonState>) {
 
         if request.v != PROTOCOL_VERSION {
             violations += 1;
-            let _ = send_error(
+            let _ = send_error_timed(
                 &mut stream,
                 PROTOCOL_VERSION,
                 request.request_id,
@@ -179,6 +251,7 @@ async fn handle_connection(stream: UnixStream, state: Arc<DaemonState>) {
                     false,
                 ),
                 state.config.max_frame,
+                state.config.write_timeout,
             )
             .await;
             if violations >= MAX_PROTOCOL_VIOLATIONS {
@@ -189,12 +262,13 @@ async fn handle_connection(stream: UnixStream, state: Arc<DaemonState>) {
 
         if request.endpoint != endpoint_for_body(&request.body) {
             violations += 1;
-            let _ = send_error(
+            let _ = send_error_timed(
                 &mut stream,
                 PROTOCOL_VERSION,
                 request.request_id,
                 protocol_violation("endpoint/body mismatch"),
                 state.config.max_frame,
+                state.config.write_timeout,
             )
             .await;
             if violations >= MAX_PROTOCOL_VIOLATIONS {
@@ -203,14 +277,27 @@ async fn handle_connection(stream: UnixStream, state: Arc<DaemonState>) {
             continue;
         }
 
+        // Create request span with timing
+        let start = std::time::Instant::now();
+        let request_span = tracing::info_span!(
+            "request",
+            request_id = request.request_id,
+            endpoint = ?request.endpoint,
+            duration_ms = tracing::field::Empty,
+        );
+        let _enter = request_span.enter();
+        
+        debug!("Processing request");
+
         let required = required_tier(request.endpoint);
         if !tier_allows(authz, required) {
-            let _ = send_error(
+            let _ = send_error_timed(
                 &mut stream,
                 PROTOCOL_VERSION,
                 request.request_id,
                 DaemonError::new(ErrorCode::Forbidden, "forbidden", false),
                 state.config.max_frame,
+                state.config.write_timeout,
             )
             .await;
             continue;
@@ -220,7 +307,7 @@ async fn handle_connection(stream: UnixStream, state: Arc<DaemonState>) {
             if let RequestBody::JobStart(JobStartRequest { ref job }) = request.body {
                 let job_required = required_tier_for_jobkind(&job.kind);
                 if !tier_allows(authz, job_required) {
-                    let _ = send_error(
+                    let _ = send_error_timed(
                         &mut stream,
                         PROTOCOL_VERSION,
                         request.request_id,
@@ -230,6 +317,7 @@ async fn handle_connection(stream: UnixStream, state: Arc<DaemonState>) {
                             false,
                         ),
                         state.config.max_frame,
+                        state.config.write_timeout,
                     )
                     .await;
                     continue;
@@ -246,10 +334,19 @@ async fn handle_connection(stream: UnixStream, state: Arc<DaemonState>) {
             }
         };
 
-        if let Err(err) = write_frame(&mut stream, &payload, state.config.max_frame).await {
-            warn!("Failed to write response: {}", err);
+        if let Err(err) = write_frame_timed(&mut stream, &payload, state.config.max_frame, state.config.write_timeout).await {
+            if err.kind() == io::ErrorKind::TimedOut {
+                warn!("Response write timeout to pid {} for request {}", peer.pid, response.request_id);
+            } else {
+                warn!("Failed to write response: {}", err);
+            }
             break;
         }
+        
+        // Record request duration
+        let duration_ms = start.elapsed().as_millis() as u64;
+        request_span.record("duration_ms", duration_ms);
+        debug!(duration_ms, "Request completed");
     }
 }
 
@@ -300,5 +397,23 @@ async fn send_error(
     };
     let payload = serde_json::to_vec(&envelope)?;
     write_frame(stream, &payload, max_frame).await?;
+    Ok(())
+}
+
+async fn send_error_timed(
+    stream: &mut UnixStream,
+    version: u32,
+    request_id: u64,
+    err: DaemonError,
+    max_frame: u32,
+    timeout_duration: Duration,
+) -> Result<()> {
+    let envelope = ResponseEnvelope {
+        v: version,
+        request_id,
+        body: ResponseBody::Err(err),
+    };
+    let payload = serde_json::to_vec(&envelope)?;
+    write_frame_timed(stream, &payload, max_frame, timeout_duration).await?;
     Ok(())
 }

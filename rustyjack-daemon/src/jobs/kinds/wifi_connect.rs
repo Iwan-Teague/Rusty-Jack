@@ -16,6 +16,7 @@ where
         return Err(DaemonError::new(ErrorCode::Cancelled, "Job cancelled", false));
     }
 
+    let interface = req.interface.clone();
     let request = rustyjack_core::services::wifi::WifiConnectRequest {
         interface: req.interface,
         ssid: req.ssid,
@@ -34,8 +35,9 @@ where
         tokio::select! {
             _ = cancel.cancelled() => {
                 handle.abort();
-                let _ = tokio::task::spawn_blocking(|| {
-                    let _ = rustyjack_core::services::wifi::disconnect(&request.interface);
+                let interface = interface.clone();
+                let _ = tokio::task::spawn_blocking(move || {
+                    let _ = rustyjack_core::services::wifi::disconnect(&interface);
                 }).await;
                 return Err(DaemonError::new(
                     ErrorCode::Cancelled,

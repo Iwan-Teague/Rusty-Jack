@@ -16,6 +16,22 @@ where
         return Err(DaemonError::new(ErrorCode::Cancelled, "Job cancelled", false));
     }
 
+    if std::env::var("RUSTYJACK_PORTAL_MODE").as_deref() == Ok("external") {
+        log::warn!("External portal mode is not supported; using embedded portal");
+    }
+
+    run_embedded_portal(req, cancel, progress).await
+}
+
+async fn run_embedded_portal<F, Fut>(
+    req: PortalStartRequestIpc,
+    cancel: &CancellationToken,
+    progress: &mut F,
+) -> Result<serde_json::Value, DaemonError>
+where
+    F: FnMut(&str, u8, &str) -> Fut,
+    Fut: std::future::Future<Output = ()>,
+{
     let request = rustyjack_core::services::portal::PortalStartRequest {
         interface: req.interface,
         port: req.port,

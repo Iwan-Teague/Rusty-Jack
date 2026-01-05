@@ -19,13 +19,13 @@ use crate::config::PortalConfig;
 use crate::logging::{format_credentials_line, format_visit_line, PortalLogger};
 
 #[derive(Clone)]
-pub(crate) struct PortalState {
+pub struct PortalState {
     logger: PortalLogger,
     index_html: Arc<String>,
 }
 
 impl PortalState {
-    pub(crate) fn new(logger: PortalLogger, index_html: String) -> Self {
+    pub fn new(logger: PortalLogger, index_html: String) -> Self {
         Self {
             logger,
             index_html: Arc::new(index_html),
@@ -39,7 +39,7 @@ struct CaptureForm {
     password: Option<String>,
 }
 
-pub(crate) fn build_router(cfg: &PortalConfig, state: PortalState) -> Router {
+pub fn build_router(cfg: &PortalConfig, state: PortalState) -> Router {
     let middleware = ServiceBuilder::new()
         .layer(RequestBodyLimitLayer::new(cfg.max_body_bytes))
         .layer(TimeoutLayer::with_status_code(
@@ -55,7 +55,7 @@ pub(crate) fn build_router(cfg: &PortalConfig, state: PortalState) -> Router {
         .layer(middleware)
 }
 
-pub(crate) async fn run_server(
+pub async fn run_server(
     listener: std::net::TcpListener,
     app: Router,
     shutdown: tokio::sync::oneshot::Receiver<()>,

@@ -37,9 +37,14 @@ where
         
         on_progress(50, "Configuring portal");
         
+        let listen_ip = match crate::system::detect_interface(Some(req.interface.clone())) {
+            Ok(info) => info.address,
+            Err(_) => Ipv4Addr::new(0, 0, 0, 0),
+        };
+
         let config = rustyjack_portal::PortalConfig {
             interface: req.interface.clone(),
-            listen_ip: Ipv4Addr::new(0, 0, 0, 0),
+            listen_ip,
             listen_port: req.port,
             site_dir: PathBuf::from("/var/lib/rustyjack/portal/site"),
             capture_dir: PathBuf::from("/var/lib/rustyjack/loot/Portal"),
@@ -62,6 +67,7 @@ where
                 Ok(serde_json::json!({
                     "interface": req.interface,
                     "port": req.port,
+                    "listen_ip": listen_ip.to_string(),
                     "started": true
                 }))
             }

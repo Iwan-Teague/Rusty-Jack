@@ -33,6 +33,12 @@ impl From<std::io::Error> for ServiceError {
     }
 }
 
+impl From<ServiceError> for DaemonError {
+    fn from(err: ServiceError) -> Self {
+        err.to_daemon_error()
+    }
+}
+
 impl ServiceError {
     pub fn to_daemon_error(&self) -> DaemonError {
         match self {

@@ -22,6 +22,10 @@ pub enum MenuAction {
     DeauthAttack,
     ScanNetworks,
     ConnectKnownNetwork,
+    /// Select active network interface (isolation enforcement)
+    SelectActiveInterface,
+    /// View current active interface
+    ViewInterfaceStatus,
     // New wireless attack actions
     EvilTwinAttack,
     ProbeSniff,
@@ -186,6 +190,7 @@ impl MenuTree {
         nodes.insert("asl", MenuNode::Static(logs_menu));
         nodes.insert("asd", MenuNode::Static(discord_menu));
         nodes.insert("asc", MenuNode::Static(config_menu));
+        nodes.insert("asif", MenuNode::Static(interface_menu));
         nodes.insert("ap", MenuNode::Static(pipeline_menu));
         nodes.insert("ao", MenuNode::Static(obfuscation_menu)); // Obfuscation & Evasion
         nodes.insert("aom", MenuNode::Static(mac_menu)); // MAC address submenu
@@ -455,12 +460,20 @@ fn tx_power_menu() -> Vec<MenuEntry> {
 
 fn settings_menu() -> Vec<MenuEntry> {
     vec![
+        MenuEntry::new("Active Interface", MenuAction::Submenu("asif")),
         MenuEntry::new("Discord", MenuAction::Submenu("asd")),
         MenuEntry::new("Colors", MenuAction::Submenu("aea")),
         MenuEntry::new("Logs", MenuAction::Submenu("asl")),
         MenuEntry::new("Config", MenuAction::Submenu("asc")),
         MenuEntry::new("System", MenuAction::Submenu("af")),
         MenuEntry::new("WiFi Drivers", MenuAction::InstallWifiDrivers),
+    ]
+}
+
+fn interface_menu() -> Vec<MenuEntry> {
+    vec![
+        MenuEntry::new("View Status", MenuAction::ViewInterfaceStatus),
+        MenuEntry::new("Select Interface", MenuAction::SelectActiveInterface),
     ]
 }
 

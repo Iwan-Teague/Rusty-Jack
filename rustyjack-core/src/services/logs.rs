@@ -71,7 +71,6 @@ pub fn collect_log_bundle(root: &Path) -> Result<String, ServiceError> {
 
     append_sysfs_network_snapshot(&mut out);
     append_rfkill_status(&mut out);
-    append_wpa_preflight(&mut out);
     append_wpa_supplicant_status(&mut out);
     append_netlink_routes(&mut out);
     append_file_section(&mut out, "/etc/resolv.conf");
@@ -174,7 +173,7 @@ fn append_rfkill_status(buf: &mut String) {
 }
 
 fn append_wpa_supplicant_status(buf: &mut String) {
-    buf.push_str("\n===== wpa_supplicant status =====\n");
+    buf.push_str("\n===== wireless link status =====\n");
 
     #[cfg(target_os = "linux")]
     {
@@ -193,110 +192,24 @@ fn append_wpa_supplicant_status(buf: &mut String) {
                     continue;
                 }
                 found = true;
-                match rustyjack_netlink::WpaManager::new(&iface) {
-                    Ok(wpa) => match wpa.status() {
-                        Ok(status) => {
-                            buf.push_str(&format!(
-                                "{}: state={} ssid={:?} bssid={:?} freq={:?} ip={:?}\n",
-                                iface,
-                                status.wpa_state,
-                                status.ssid,
-                                status.bssid,
-                                status.freq,
-                                status.ip_address
-                            ));
-                        }
-                        Err(err) => {
-                            buf.push_str(&format!(
-                                "{}: ERROR reading status: {}\n",
-                                iface, err
-                            ));
-                        }
-                    },
-                    Err(err) => {
-                        buf.push_str(&format!(
-                            "{}: ERROR opening control: {}\n",
-                            iface, err
-                        ));
-                    }
-                }
-            }
-        }
-        if !found {
-            buf.push_str("No wireless interfaces found\n");
-        }
-    }
-
-    #[cfg(not(target_os = "linux"))]
-    {
-        buf.push_str("Not supported on this platform\n");
-    }
-}
-
-fn append_wpa_preflight(buf: &mut String) {
-    buf.push_str("\n===== wpa_supplicant preflight =====\n");
-
-    #[cfg(target_os = "linux")]
-    {
-        use rustyjack_netlink::ProcessManager;
-
-        let mut found = false;
-        let pm = ProcessManager::new();
-        if let Ok(entries) = fs::read_dir("/sys/class/net") {
-            for entry in entries.flatten() {
-                let iface = entry.file_name().to_string_lossy().to_string();
-                if iface == "lo" {
-                    continue;
-                }
-                if !Path::new("/sys/class/net")
-                    .join(&iface)
-                    .join("wireless")
-                    .exists()
-                {
-                    continue;
-                }
-                found = true;
-
-                let candidates = rustyjack_netlink::wpa_control_socket_status(&iface);
-                if candidates.is_empty() {
-                    buf.push_str(&format!("{iface}: no control socket candidates\n"));
-                } else {
-                    let rendered = candidates
-                        .iter()
-                        .map(|(path, exists)| {
-                            format!(
-                                "{}={}",
-                                path.display(),
-                                if *exists { "ok" } else { "missing" }
-                            )
-                        })
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    buf.push_str(&format!("{iface}: ctrl_sockets: {rendered}\n"));
-                }
-
-                match pm.find_by_pattern("wpa_supplicant") {
-                    Ok(list) => {
-                        let matches: Vec<String> = list
-                            .into_iter()
-                            .filter(|p| p.cmdline.contains(&iface))
-                            .map(|p| format!("pid={} cmd={}", p.pid, p.cmdline))
-                            .collect();
-                        if matches.is_empty() {
-                            buf.push_str(&format!("{iface}: wpa_supplicant process: none\n"));
-                        } else {
-                            buf.push_str(&format!(
-                                "{iface}: wpa_supplicant process: {}\n",
-                                matches.join(" | ")
-                            ));
-                        }
-                    }
-                    Err(err) => {
-                        buf.push_str(&format!(
-                            "{iface}: wpa_supplicant process lookup error: {err}\n"
-                        ));
-                    }
-                }
+                let operstate = fs::read_to_string(format!("/sys/class/net/{}/operstate", iface))
+                    .ok()
+                    .map(|v| v.trim().to_string())
+                    .unwrap_or_else(|| "unknown".to_string());
+                let carrier = fs::read_to_string(format!("/sys/class/net/{}/carrier", iface))
+                    .ok()
+                    .map(|v| v.trim().to_string())
+                    .unwrap_or_else(|| "unknown".to_string());
+                let ip = crate::netlink_helpers::netlink_get_ipv4_addresses(&iface)
+                    .ok()
+                    .and_then(|addrs| addrs.into_iter().find_map(|addr| match addr.address {
+                        std::net::IpAddr::V4(v4) => Some(v4.to_string()),
+                        _ => None,
+                    }));
+                buf.push_str(&format!(
+                    "{}: operstate={} carrier={} ip={:?}\n",
+                    iface, operstate, carrier, ip
+                ));
             }
         }
         if !found {

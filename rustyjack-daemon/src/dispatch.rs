@@ -1,14 +1,16 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
 use rustyjack_ipc::{
-    is_dangerous_job, BlockDeviceInfo, BlockDevicesResponse, CoreDispatchRequest,
-    DaemonError, DiskUsageRequest, DiskUsageResponse, ErrorCode,
-    GpioDiagnosticsResponse, HealthResponse, HostnameResponse, HotspotClientsResponse,
-    HotspotDiagnosticsRequest, HotspotDiagnosticsResponse, HotspotWarningsResponse,
+    is_dangerous_job, ActiveInterfaceClearResponse, ActiveInterfaceResponse, BlockDeviceInfo,
+    BlockDevicesResponse, CoreDispatchRequest, CoreDispatchResponse, DaemonError, DiskUsageRequest,
+    DiskUsageResponse, ErrorCode, GpioDiagnosticsResponse, HealthResponse, HostnameResponse,
+    HotspotClientsResponse, HotspotDiagnosticsRequest, HotspotDiagnosticsResponse,
+    HotspotWarningsResponse, InterfaceCapabilities, InterfaceStatusRequest, InterfaceStatusResponse,
     JobCancelRequest, JobCancelResponse, JobSpec, JobStarted, JobStartRequest, JobStatusRequest,
-    JobStatusResponse, RequestBody, RequestEnvelope, ResponseBody, ResponseEnvelope, ResponseOk,
-    StatusResponse, SystemActionResponse, SystemLogsResponse, SystemStatusResponse,
+    JobStatusResponse, LegacyCommand, RequestBody, RequestEnvelope, ResponseBody, ResponseEnvelope,
+    ResponseOk, StatusResponse, SystemActionResponse, SystemLogsResponse, SystemStatusResponse,
     VersionResponse, WifiCapabilitiesRequest, WifiCapabilitiesResponse, PROTOCOL_VERSION,
 };
 use tokio::task;
@@ -38,6 +40,26 @@ where
         .map_err(|e| e.into())
 }
 
+async fn dispatch_core_command(
+    label: &'static str,
+    root: PathBuf,
+    command: rustyjack_core::Commands,
+) -> Result<CoreDispatchResponse, DaemonError> {
+    let result = run_blocking(label, move || {
+        rustyjack_core::operations::dispatch_command(&root, command).map_err(|err| {
+            DaemonError::new(ErrorCode::Internal, "command dispatch failed", false)
+                .with_detail(err.to_string())
+                .with_source(format!("daemon.dispatch.{label}"))
+        })
+    })
+    .await?;
+
+    Ok(CoreDispatchResponse {
+        message: result.0,
+        data: result.1,
+    })
+}
+
 pub async fn handle_request(
     state: &Arc<DaemonState>,
     request: RequestEnvelope,
@@ -62,6 +84,188 @@ pub async fn handle_request(
                 jobs_active: active,
                 jobs_total: total,
             }))
+        }
+        RequestBody::StatusCommand(command) => {
+            let root = state.config.root_path.clone();
+            match dispatch_core_command(
+                "status_command",
+                root,
+                rustyjack_core::Commands::Status(command),
+            )
+            .await
+            {
+                Ok(resp) => ResponseBody::Ok(ResponseOk::StatusCommand(resp)),
+                Err(err) => ResponseBody::Err(err),
+            }
+        }
+        RequestBody::WifiCommand(command) => {
+            let root = state.config.root_path.clone();
+            match dispatch_core_command(
+                "wifi_command",
+                root,
+                rustyjack_core::Commands::Wifi(command),
+            )
+            .await
+            {
+                Ok(resp) => ResponseBody::Ok(ResponseOk::WifiCommand(resp)),
+                Err(err) => ResponseBody::Err(err),
+            }
+        }
+        RequestBody::EthernetCommand(command) => {
+            let root = state.config.root_path.clone();
+            match dispatch_core_command(
+                "ethernet_command",
+                root,
+                rustyjack_core::Commands::Ethernet(command),
+            )
+            .await
+            {
+                Ok(resp) => ResponseBody::Ok(ResponseOk::EthernetCommand(resp)),
+                Err(err) => ResponseBody::Err(err),
+            }
+        }
+        RequestBody::LootCommand(command) => {
+            let root = state.config.root_path.clone();
+            match dispatch_core_command(
+                "loot_command",
+                root,
+                rustyjack_core::Commands::Loot(command),
+            )
+            .await
+            {
+                Ok(resp) => ResponseBody::Ok(ResponseOk::LootCommand(resp)),
+                Err(err) => ResponseBody::Err(err),
+            }
+        }
+        RequestBody::NotifyCommand(command) => {
+            let root = state.config.root_path.clone();
+            match dispatch_core_command(
+                "notify_command",
+                root,
+                rustyjack_core::Commands::Notify(command),
+            )
+            .await
+            {
+                Ok(resp) => ResponseBody::Ok(ResponseOk::NotifyCommand(resp)),
+                Err(err) => ResponseBody::Err(err),
+            }
+        }
+        RequestBody::SystemCommand(command) => {
+            let root = state.config.root_path.clone();
+            match dispatch_core_command(
+                "system_command",
+                root,
+                rustyjack_core::Commands::System(command),
+            )
+            .await
+            {
+                Ok(resp) => ResponseBody::Ok(ResponseOk::SystemCommand(resp)),
+                Err(err) => ResponseBody::Err(err),
+            }
+        }
+        RequestBody::HardwareCommand(command) => {
+            let root = state.config.root_path.clone();
+            match dispatch_core_command(
+                "hardware_command",
+                root,
+                rustyjack_core::Commands::Hardware(command),
+            )
+            .await
+            {
+                Ok(resp) => ResponseBody::Ok(ResponseOk::HardwareCommand(resp)),
+                Err(err) => ResponseBody::Err(err),
+            }
+        }
+        RequestBody::DnsSpoofCommand(command) => {
+            let root = state.config.root_path.clone();
+            match dispatch_core_command(
+                "dnsspoof_command",
+                root,
+                rustyjack_core::Commands::DnsSpoof(command),
+            )
+            .await
+            {
+                Ok(resp) => ResponseBody::Ok(ResponseOk::DnsSpoofCommand(resp)),
+                Err(err) => ResponseBody::Err(err),
+            }
+        }
+        RequestBody::MitmCommand(command) => {
+            let root = state.config.root_path.clone();
+            match dispatch_core_command(
+                "mitm_command",
+                root,
+                rustyjack_core::Commands::Mitm(command),
+            )
+            .await
+            {
+                Ok(resp) => ResponseBody::Ok(ResponseOk::MitmCommand(resp)),
+                Err(err) => ResponseBody::Err(err),
+            }
+        }
+        RequestBody::ReverseCommand(command) => {
+            let root = state.config.root_path.clone();
+            match dispatch_core_command(
+                "reverse_command",
+                root,
+                rustyjack_core::Commands::Reverse(command),
+            )
+            .await
+            {
+                Ok(resp) => ResponseBody::Ok(ResponseOk::ReverseCommand(resp)),
+                Err(err) => ResponseBody::Err(err),
+            }
+        }
+        RequestBody::HotspotCommand(command) => {
+            let root = state.config.root_path.clone();
+            match dispatch_core_command(
+                "hotspot_command",
+                root,
+                rustyjack_core::Commands::Hotspot(command),
+            )
+            .await
+            {
+                Ok(resp) => ResponseBody::Ok(ResponseOk::HotspotCommand(resp)),
+                Err(err) => ResponseBody::Err(err),
+            }
+        }
+        RequestBody::ScanCommand(command) => {
+            let root = state.config.root_path.clone();
+            match dispatch_core_command(
+                "scan_command",
+                root,
+                rustyjack_core::Commands::Scan(command),
+            )
+            .await
+            {
+                Ok(resp) => ResponseBody::Ok(ResponseOk::ScanCommand(resp)),
+                Err(err) => ResponseBody::Err(err),
+            }
+        }
+        RequestBody::BridgeCommand(command) => {
+            let root = state.config.root_path.clone();
+            match dispatch_core_command(
+                "bridge_command",
+                root,
+                rustyjack_core::Commands::Bridge(command),
+            )
+            .await
+            {
+                Ok(resp) => ResponseBody::Ok(ResponseOk::BridgeCommand(resp)),
+                Err(err) => ResponseBody::Err(err),
+            }
+        }
+        RequestBody::ProcessCommand(command) => {
+            let root = state.config.root_path.clone();
+            match dispatch_core_command(
+                "process_command",
+                root,
+                rustyjack_core::Commands::Process(command),
+            )
+            .await
+            {
+                Ok(resp) => ResponseBody::Ok(ResponseOk::ProcessCommand(resp)),
+                Err(err) => ResponseBody::Err(err),
+            }
         }
         RequestBody::SystemStatusGet => {
             let result = run_blocking("system_status_get", || {
@@ -204,6 +408,127 @@ pub async fn handle_request(
                     DaemonError::new(ErrorCode::Internal, "log bundle panicked", false)
                         .with_detail(err.to_string()),
                 ),
+            }
+        }
+        RequestBody::ActiveInterfaceGet => {
+            let root = state.config.root_path.clone();
+            let result = run_blocking("active_interface_get", move || {
+                let prefs = rustyjack_core::system::PreferenceManager::new(root);
+                prefs
+                    .get_preferred()
+                    .map_err(|err| {
+                        rustyjack_core::services::error::ServiceError::Internal(err.to_string())
+                    })
+            })
+            .await;
+
+            match result {
+                Ok(interface) => {
+                    ResponseBody::Ok(ResponseOk::ActiveInterface(ActiveInterfaceResponse {
+                        interface,
+                    }))
+                }
+                Err(err) => ResponseBody::Err(err),
+            }
+        }
+        RequestBody::ActiveInterfaceClear => {
+            let root = state.config.root_path.clone();
+            let result = run_blocking("active_interface_clear", move || {
+                let prefs = rustyjack_core::system::PreferenceManager::new(root);
+                prefs
+                    .clear_preferred()
+                    .map_err(|err| {
+                        rustyjack_core::services::error::ServiceError::Internal(err.to_string())
+                    })
+            })
+            .await;
+
+            match result {
+                Ok(()) => ResponseBody::Ok(ResponseOk::ActiveInterfaceCleared(
+                    ActiveInterfaceClearResponse { cleared: true },
+                )),
+                Err(err) => ResponseBody::Err(err),
+            }
+        }
+        RequestBody::InterfaceStatusGet(InterfaceStatusRequest { interface }) => {
+            let result = run_blocking("interface_status_get", move || {
+                use rustyjack_core::services::error::ServiceError;
+                use rustyjack_core::system::ops::{NetOps, RealNetOps};
+                use std::fs;
+                use std::path::Path;
+
+                let iface = interface.trim();
+                if iface.is_empty() {
+                    return Err(ServiceError::InvalidInput("interface".to_string()));
+                }
+
+                let sys_path = Path::new("/sys/class/net").join(iface);
+                let exists = sys_path.exists();
+                if !exists {
+                    return Ok(InterfaceStatusResponse {
+                        interface: iface.to_string(),
+                        exists,
+                        is_wireless: false,
+                        oper_state: "missing".to_string(),
+                        is_up: false,
+                        carrier: None,
+                        ip: None,
+                        capabilities: None,
+                    });
+                }
+
+                let oper_state = fs::read_to_string(sys_path.join("operstate"))
+                    .unwrap_or_else(|_| "unknown".to_string())
+                    .trim()
+                    .to_string();
+                let is_up = oper_state == "up";
+                let carrier = fs::read_to_string(sys_path.join("carrier"))
+                    .ok()
+                    .and_then(|val| match val.trim() {
+                        "0" => Some(false),
+                        "1" => Some(true),
+                        _ => None,
+                    });
+                let is_wireless = sys_path.join("wireless").exists();
+
+                let ops = RealNetOps;
+                let ip = ops
+                    .get_ipv4_address(iface)
+                    .ok()
+                    .flatten()
+                    .map(|addr| addr.to_string());
+
+                let capabilities = ops.get_interface_capabilities(iface).ok().map(|caps| {
+                    InterfaceCapabilities {
+                        is_wireless: caps.is_wireless,
+                        is_physical: caps.is_physical,
+                        supports_monitor: caps.supports_monitor,
+                        supports_ap: caps.supports_ap,
+                        supports_injection: caps.supports_injection,
+                        supports_5ghz: caps.supports_5ghz,
+                        supports_2ghz: caps.supports_2ghz,
+                        mac_address: caps.mac_address,
+                        driver: caps.driver,
+                        chipset: caps.chipset,
+                    }
+                });
+
+                Ok(InterfaceStatusResponse {
+                    interface: iface.to_string(),
+                    exists,
+                    is_wireless,
+                    oper_state,
+                    is_up,
+                    carrier,
+                    ip,
+                    capabilities,
+                })
+            })
+            .await;
+
+            match result {
+                Ok(status) => ResponseBody::Ok(ResponseOk::InterfaceStatus(status)),
+                Err(err) => ResponseBody::Err(err),
             }
         }
         RequestBody::WifiCapabilitiesGet(WifiCapabilitiesRequest { interface }) => {
@@ -430,6 +755,7 @@ pub async fn handle_request(
         }
         RequestBody::HotspotStart(rustyjack_ipc::HotspotStartRequest {
             interface,
+            upstream_interface,
             ssid,
             passphrase,
             channel,
@@ -440,6 +766,15 @@ pub async fn handle_request(
                     request_id: request.request_id,
                     body: ResponseBody::Err(err),
                 };
+            }
+            if !upstream_interface.is_empty() {
+                if let Err(err) = validation::validate_interface_name(&upstream_interface) {
+                    return ResponseEnvelope {
+                        v: PROTOCOL_VERSION,
+                        request_id: request.request_id,
+                        body: ResponseBody::Err(err),
+                    };
+                }
             }
             if let Err(err) = validation::validate_ssid(&ssid) {
                 return ResponseEnvelope {
@@ -466,6 +801,7 @@ pub async fn handle_request(
                 kind: rustyjack_ipc::JobKind::HotspotStart {
                     req: rustyjack_ipc::HotspotStartRequestIpc {
                         interface,
+                        upstream_interface,
                         ssid,
                         passphrase,
                         channel,
@@ -588,20 +924,21 @@ pub async fn handle_request(
 
             match result {
                 Ok(mounts) => {
-                let mapped = mounts
-                    .into_iter()
-                    .map(|m| rustyjack_ipc::MountInfo {
-                        device: m.device,
-                        mountpoint: m.mountpoint,
-                        filesystem: m.filesystem,
-                        size: m.size,
-                    })
-                    .collect();
-                ResponseBody::Ok(ResponseOk::MountList(rustyjack_ipc::MountListResponse {
-                    mounts: mapped,
-                }))
+                    let mapped = mounts
+                        .into_iter()
+                        .map(|m| rustyjack_ipc::MountInfo {
+                            device: m.device,
+                            mountpoint: m.mountpoint,
+                            filesystem: m.filesystem,
+                            size: m.size,
+                        })
+                        .collect();
+                    ResponseBody::Ok(ResponseOk::MountList(rustyjack_ipc::MountListResponse {
+                        mounts: mapped,
+                    }))
+                }
+                Err(err) => ResponseBody::Err(err),
             }
-            Err(err) => ResponseBody::Err(err),
         }
         RequestBody::MountStart(rustyjack_ipc::MountStartRequest { device, filesystem }) => {
             if let Err(err) = validation::validate_mount_device_hint(&device) {
@@ -666,6 +1003,78 @@ pub async fn handle_request(
                 }))
             }
         }
+        RequestBody::SetActiveInterface(rustyjack_ipc::SetActiveInterfaceRequest { interface }) => {
+            let root = state.config.root_path.clone();
+            let iface = interface.clone();
+            let result = run_blocking("set_active_interface", move || {
+                rustyjack_core::operations::set_active_interface(&root, &iface)
+                    .map_err(|e| {
+                        DaemonError::new(
+                            ErrorCode::Internal,
+                            format!("Failed to set active interface: {}", e),
+                            false,
+                        )
+                    })
+            })
+            .await;
+
+            match result {
+                Ok(outcome) => {
+                    let errors: Vec<String> = outcome.errors.iter()
+                        .map(|e| format!("{}: {}", e.interface, e.message))
+                        .collect();
+                    ResponseBody::Ok(ResponseOk::SetActiveInterface(
+                        rustyjack_ipc::SetActiveInterfaceResponse {
+                            interface,
+                            allowed: outcome.allowed,
+                            blocked: outcome.blocked,
+                            errors,
+                        },
+                    ))
+                }
+                Err(err) => ResponseBody::Err(
+                    DaemonError::new(ErrorCode::Internal, "set active interface failed", false)
+                        .with_detail(format!("{:?}", err))
+                        .with_source("daemon.dispatch.set_active_interface"),
+                ),
+            }
+        }
+        RequestBody::HotplugNotify => {
+            let root = state.config.root_path.clone();
+            tokio::spawn(async move {
+                // Increased delay for USB WiFi driver loading (2 seconds)
+                tokio::time::sleep(tokio::time::Duration::from_millis(2000)).await;
+                tokio::task::spawn_blocking(move || {
+                    use rustyjack_core::system::{IsolationEngine, RealNetOps};
+                    use std::sync::Arc;
+                    
+                    let ops = Arc::new(RealNetOps);
+                    let engine = IsolationEngine::new(ops, root);
+                    
+                    match engine.enforce() {
+                        Ok(outcome) => {
+                            tracing::info!(
+                                "Hotplug enforcement: allowed={:?}, blocked={:?}, errors={}",
+                                outcome.allowed, outcome.blocked, outcome.errors.len()
+                            );
+                            if !outcome.errors.is_empty() {
+                                for err in &outcome.errors {
+                                    tracing::warn!("Hotplug error on {}: {}", err.interface, err.message);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!("Hotplug enforcement failed: {}", e);
+                        }
+                    }
+                }).await.ok();
+            });
+            ResponseBody::Ok(ResponseOk::HotplugNotify(
+                rustyjack_ipc::HotplugNotifyResponse {
+                    acknowledged: true,
+                },
+            ))
+        }
         RequestBody::CoreDispatch(CoreDispatchRequest { legacy, args }) => {
             if !state.config.allow_core_dispatch {
                 return ResponseEnvelope {
@@ -679,14 +1088,46 @@ pub async fn handle_request(
                 };
             }
 
-            let command_str = format!("{:?}", legacy);
-            let _ = args;
-            
-            ResponseBody::Err(DaemonError::new(
-                ErrorCode::NotImplemented,
-                &format!("Legacy command {} should be migrated to explicit endpoint", command_str),
-                false,
-            ))
+            match legacy {
+                LegacyCommand::CommandDispatch => {
+                    let root = state.config.root_path.clone();
+                    let result = run_blocking("core_dispatch", move || {
+                        let command: rustyjack_core::Commands = serde_json::from_value(args)
+                            .map_err(|err| {
+                                DaemonError::new(
+                                    ErrorCode::BadRequest,
+                                    "invalid command payload",
+                                    false,
+                                )
+                                .with_detail(err.to_string())
+                            })?;
+                        rustyjack_core::operations::dispatch_command(&root, command).map_err(|err| {
+                            DaemonError::new(
+                                ErrorCode::Internal,
+                                "core dispatch failed",
+                                false,
+                            )
+                            .with_detail(err.to_string())
+                        })
+                    })
+                    .await;
+
+                    match result {
+                        Ok((message, data)) => {
+                            ResponseBody::Ok(ResponseOk::CoreDispatch(CoreDispatchResponse {
+                                message,
+                                data,
+                            }))
+                        }
+                        Err(err) => ResponseBody::Err(err),
+                    }
+                }
+                _ => ResponseBody::Err(DaemonError::new(
+                    ErrorCode::NotImplemented,
+                    "legacy command not supported",
+                    false,
+                )),
+            }
         }
         RequestBody::JobStart(JobStartRequest { job }) => {
             if let Err(err) = validation::validate_job_kind(&job.kind) {

@@ -1,5 +1,6 @@
 [Unit]
-Description=Rustyjack privileged daemon
+Description=Rustyjack Daemon (Hardened)
+Documentation=https://github.com/yourusername/rustyjack
 After=local-fs.target network.target
 Wants=network.target
 
@@ -7,7 +8,9 @@ Wants=network.target
 Type=notify
 ExecStart=/usr/local/bin/rustyjackd
 Restart=on-failure
-RestartSec=2
+RestartSec=5
+
+# Runtime & state dirs (systemd will create /run/rustyjack on start)
 RuntimeDirectory=rustyjack
 RuntimeDirectoryMode=0770
 StateDirectory=rustyjack
@@ -15,21 +18,73 @@ StateDirectoryMode=0770
 ConfigurationDirectory=rustyjack
 ConfigurationDirectoryMode=0770
 Group=rustyjack
+
+# Environment
+Environment=RUSTYJACKD_SOCKET=/run/rustyjack/rustyjackd.sock
 Environment=RUSTYJACK_ROOT=/var/lib/rustyjack
+Environment=RUSTYJACKD_ALLOW_CORE_DISPATCH=true
 Environment=RUSTYJACKD_SOCKET_GROUP=rustyjack
-Environment=RUST_LOG=info,rustyjack_daemon=debug,rustyjack_core=info
-StandardOutput=journal
-StandardError=journal
-WatchdogSec=20s
-NotifyAccess=main
-NoNewPrivileges=true
-PrivateTmp=true
+# Uncomment to enable dangerous operations (system updates)
+#Environment=RUSTYJACKD_DANGEROUS_OPS=true
+
+# Privilege and capability management
+User=root
+# Keep only required capabilities
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW CAP_SYS_ADMIN CAP_DAC_OVERRIDE
+# Ambient capabilities for rootless operation where possible
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
+
+# Filesystem access restrictions
 ProtectSystem=strict
 ProtectHome=true
+ReadWritePaths=/var/lib/rustyjack /run/rustyjack /tmp/rustyjack
+ReadOnlyPaths=/etc/NetworkManager /etc/wpa_supplicant
+PrivateTmp=true
+
+# Kernel hardening
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectProc=invisible
+
+# Process restrictions
+NoNewPrivileges=true
 RestrictRealtime=true
+RestrictSUIDSGID=true
 LockPersonality=true
+RestrictNamespaces=true
+
+# Memory protection
 MemoryDenyWriteExecute=true
+
+# Network restrictions (allow all needed for WiFi)
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK AF_PACKET
+
+# Syscall filtering
+SystemCallFilter=@system-service
+SystemCallFilter=~@clock @debug @module @mount @obsolete @raw-io @reboot @swap
 SystemCallArchitectures=native
+
+# Resource limits
+LimitNOFILE=1024
+LimitNPROC=64
+TasksMax=64
+CPUQuota=80%
+MemoryMax=256M
+
+# Working directory
+WorkingDirectory=/var/lib/rustyjack
+
+# Security
+PrivateDevices=false
+# Note: PrivateDevices=true would prevent access to /dev/sd* for mounting
+# We need access to block devices for mount operations
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=rustyjackd
 
 [Install]
 WantedBy=multi-user.target

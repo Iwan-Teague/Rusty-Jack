@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use crate::error::{NetlinkError, Result};
 
-use super::ctrl::find_control_socket;
+
 
 #[cfg(feature = "station_external")]
 pub fn is_wpa_running(interface: &str) -> Result<bool> {

@@ -8,6 +8,7 @@ pub enum LockKind {
     Mount,
     Wifi,
     Portal,
+    Uplink,
 }
 
 impl LockKind {
@@ -17,6 +18,7 @@ impl LockKind {
             LockKind::Mount => 1,
             LockKind::Wifi => 2,
             LockKind::Portal => 3,
+            LockKind::Uplink => 4,
         }
     }
 }
@@ -27,6 +29,7 @@ pub struct LockManager {
     mount: Arc<Semaphore>,
     wifi: Arc<Semaphore>,
     portal: Arc<Semaphore>,
+    uplink: Arc<Semaphore>,
 }
 
 impl LockManager {
@@ -36,6 +39,7 @@ impl LockManager {
             mount: Arc::new(Semaphore::new(1)),
             wifi: Arc::new(Semaphore::new(1)),
             portal: Arc::new(Semaphore::new(1)),
+            uplink: Arc::new(Semaphore::new(1)),
         }
     }
 
@@ -51,6 +55,7 @@ impl LockManager {
                 LockKind::Mount => self.mount.clone().acquire_owned().await,
                 LockKind::Wifi => self.wifi.clone().acquire_owned().await,
                 LockKind::Portal => self.portal.clone().acquire_owned().await,
+                LockKind::Uplink => self.uplink.clone().acquire_owned().await,
             };
 
             if let Ok(permit) = permit {
@@ -59,6 +64,10 @@ impl LockManager {
         }
 
         LockSet { _permits: permits }
+    }
+    
+    pub async fn acquire_uplink(&self) -> LockSet {
+        self.acquire(&[LockKind::Uplink]).await
     }
 }
 

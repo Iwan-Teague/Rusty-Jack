@@ -1,4 +1,5 @@
 use crate::error::{Result, WirelessError};
+use std::time::Duration;
 
 /// Scan result entry
 #[derive(Debug, Clone)]
@@ -110,81 +111,176 @@ pub struct InterfaceInfo {
     pub txpower_dbm: Option<i32>,
 }
 
-/// Get scan results via wpa_supplicant scan results
+/// Get scan results via nl80211 scan
 pub fn get_scan_results(interface: &str) -> Result<Vec<ScanResult>> {
-    if let Err(e) = rustyjack_netlink::start_wpa_supplicant(interface, None) {
-        log::warn!("Failed to start wpa_supplicant for {}: {}", interface, e);
-    }
+    let results = rustyjack_netlink::scan_wifi_networks(interface, Duration::from_secs(5))
+        .map_err(|e| WirelessError::System(format!("Failed to run nl80211 scan: {}", e)))?;
 
-    let control_path = rustyjack_netlink::ensure_wpa_control_socket(interface, None)
-        .map_err(|e| WirelessError::System(format!("Failed to ensure wpa control: {}", e)))?;
-    let wpa = rustyjack_netlink::WpaManager::new(interface)
-        .map(|mgr| mgr.with_control_path(control_path))
-        .map_err(|e| WirelessError::System(format!("Failed to open wpa control: {}", e)))?;
-    wpa.scan()
-        .map_err(|e| WirelessError::System(format!("Failed to trigger scan: {}", e)))?;
-
-    let mut results = Vec::new();
-    for entry in wpa
-        .scan_results()
-        .map_err(|e| WirelessError::System(format!("Failed to read scan results: {}", e)))?
-    {
-        let bssid = entry.get("bssid").cloned().unwrap_or_default();
-        let ssid = entry.get("ssid").cloned().unwrap_or_default();
-        let frequency = entry
-            .get("frequency")
-            .and_then(|v| v.parse::<u32>().ok())
-            .unwrap_or(0);
+    let mut entries = Vec::new();
+    for entry in results {
+        let bssid = format!(
+            "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+            entry.bssid[0],
+            entry.bssid[1],
+            entry.bssid[2],
+            entry.bssid[3],
+            entry.bssid[4],
+            entry.bssid[5]
+        );
+        let ssid = entry.ssid.unwrap_or_default();
+        let frequency = entry.frequency.unwrap_or(0);
         let channel = ScanResult::freq_to_channel(frequency);
         let signal_dbm = entry
-            .get("signal")
-            .and_then(|v| v.parse::<f32>().ok())
+            .signal_mbm
+            .map(|mbm| mbm as f32 / 100.0)
             .unwrap_or(0.0);
 
-        results.push(ScanResult {
+        entries.push(ScanResult {
             bssid,
             ssid,
             frequency,
             channel,
-            signal_mbm: (signal_dbm * 100.0) as i32,
+            signal_mbm: entry.signal_mbm.unwrap_or(0),
             signal_dbm,
-            seen_ms_ago: 0,
-            beacon_interval: 0,
-            capability: 0,
+            seen_ms_ago: entry.seen_ms_ago.unwrap_or(0),
+            beacon_interval: entry.beacon_interval.unwrap_or(0),
+            capability: entry.capability.unwrap_or(0),
             tsf: 0,
         });
     }
 
-    Ok(results)
+    Ok(entries)
 }
 
 
 
 /// Get link status for a connected interface
 pub fn get_link_status(interface: &str) -> Result<LinkStatus> {
-    let control_path = rustyjack_netlink::ensure_wpa_control_socket(interface, None)
-        .map_err(|e| WirelessError::System(format!("Failed to ensure wpa control: {}", e)))?;
-    let wpa = rustyjack_netlink::WpaManager::new(interface)
-        .map(|mgr| mgr.with_control_path(control_path))
-        .map_err(|e| WirelessError::System(format!("Failed to open wpa control: {}", e)))?;
-    let status = wpa
-        .status()
-        .map_err(|e| WirelessError::System(format!("Failed to read wpa status: {}", e)))?;
-    let connected = matches!(
-        status.wpa_state,
-        rustyjack_netlink::WpaSupplicantState::Completed
-    );
-    let frequency = status.freq;
+    let operstate = std::fs::read_to_string(format!("/sys/class/net/{}/operstate", interface))
+        .unwrap_or_default();
+    let connected = operstate.trim() == "up";
+    let mut freq = None;
+    if let Ok(mut mgr) = rustyjack_netlink::WirelessManager::new() {
+        if let Ok(info) = mgr.get_interface_info(interface) {
+            freq = info.frequency;
+        }
+    }
     Ok(LinkStatus {
         connected,
-        ssid: status.ssid,
-        bssid: status.bssid,
-        frequency,
-        channel: frequency.and_then(ScanResult::freq_to_channel),
+        ssid: None,
+        bssid: None,
+        frequency: freq,
+        channel: freq.and_then(ScanResult::freq_to_channel),
         signal_dbm: None,
         tx_bitrate_mbps: None,
         rx_bitrate_mbps: None,
     })
+}
+
+/// Interface capability information
+#[derive(Debug, Clone)]
+pub struct InterfaceCapabilities {
+    pub name: String,
+    pub is_wireless: bool,
+    pub is_physical: bool,
+    pub supports_monitor: bool,
+    pub supports_ap: bool,
+    pub supports_injection: bool,
+    pub supports_5ghz: bool,
+    pub supports_2ghz: bool,
+    pub mac_address: Option<String>,
+    pub driver: Option<String>,
+    pub chipset: Option<String>,
+}
+
+/// Query interface capabilities via nl80211 and sysfs
+pub fn query_interface_capabilities(iface: &str) -> Result<InterfaceCapabilities> {
+    // Check if wireless
+    let is_wireless = crate::is_wireless_interface(iface);
+    
+    let mut caps = InterfaceCapabilities {
+        name: iface.to_string(),
+        is_wireless,
+        is_physical: true,
+        supports_monitor: false,
+        supports_ap: false,
+        supports_injection: false,
+        supports_5ghz: false,
+        supports_2ghz: false,
+        mac_address: None,
+        driver: None,
+        chipset: None,
+    };
+    
+    // Get MAC address
+    if let Ok(mac_bytes) = crate::nl80211::get_mac_address(iface) {
+        caps.mac_address = Some(format!(
+            "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+            mac_bytes[0], mac_bytes[1], mac_bytes[2],
+            mac_bytes[3], mac_bytes[4], mac_bytes[5]
+        ));
+    }
+    
+    // Check if virtual interface
+    let sysfs_path = format!("/sys/class/net/{}", iface);
+    let device_path = format!("{}/device", sysfs_path);
+    caps.is_physical = std::path::Path::new(&device_path).exists();
+    
+    if !is_wireless {
+        return Ok(caps);
+    }
+    
+    // Query wireless capabilities via WirelessManager
+    if let Ok(mut mgr) = rustyjack_netlink::WirelessManager::new() {
+        // Check supported interface types (monitor, AP, etc.)
+        if let Ok(phy_caps) = mgr.get_phy_capabilities(iface) {
+            // Check for monitor mode support
+            caps.supports_monitor = phy_caps.supported_modes.contains(&rustyjack_netlink::InterfaceMode::Monitor);
+            
+            // Check for AP mode support
+            caps.supports_ap = phy_caps.supported_modes.contains(&rustyjack_netlink::InterfaceMode::AccessPoint);
+            
+            // Check band support from band names
+            for band_name in &phy_caps.supported_bands {
+                if band_name.contains("2.4") || band_name.contains("2GHz") {
+                    caps.supports_2ghz = true;
+                } else if band_name.contains("5") || band_name.contains("5GHz") {
+                    caps.supports_5ghz = true;
+                }
+            }
+        }
+        
+        // Injection support heuristic:
+        // If monitor mode is supported, assume injection is supported
+        // (actual injection capability requires testing, but monitor is a good proxy)
+        caps.supports_injection = caps.supports_monitor;
+    }
+    
+    // Read driver info from sysfs
+    let uevent_path = format!("{}/device/uevent", sysfs_path);
+    if let Ok(contents) = std::fs::read_to_string(&uevent_path) {
+        for line in contents.lines() {
+            if let Some(driver_line) = line.strip_prefix("DRIVER=") {
+                caps.driver = Some(driver_line.to_string());
+            }
+        }
+    }
+    
+    // Try to identify chipset from driver
+    if let Some(ref driver) = caps.driver {
+        caps.chipset = match driver.as_str() {
+            "ath9k" | "ath9k_htc" => Some("Atheros AR9xxx".to_string()),
+            "rtl8812au" | "rtl8814au" | "88XXau" => Some("Realtek RTL88xxAU".to_string()),
+            "rt2800usb" => Some("Ralink RT2800".to_string()),
+            "mt7601u" => Some("MediaTek MT7601U".to_string()),
+            "brcmfmac" => Some("Broadcom FullMAC".to_string()),
+            _ if driver.starts_with("rtl") => Some(format!("Realtek {}", driver)),
+            _ if driver.starts_with("ath") => Some(format!("Atheros {}", driver)),
+            _ => Some(driver.clone()),
+        };
+    }
+    
+    Ok(caps)
 }
 
 /// Get station info for AP mode
@@ -253,10 +349,7 @@ pub fn get_interface_info(interface: &str) -> Result<InterfaceInfo> {
         }
     };
 
-    let ssid = rustyjack_netlink::WpaManager::new(interface)
-        .ok()
-        .and_then(|wpa| wpa.status().ok())
-        .and_then(|status| status.ssid);
+    let ssid = None;
 
     let iftype = match info.mode {
         Some(rustyjack_netlink::InterfaceMode::Adhoc) => 1,

@@ -36,8 +36,13 @@ rustyjack-encryption = { path = "../rustyjack-encryption" }
 rustyjack-wireless = { path = "../rustyjack-wireless" }
 rustyjack-netlink = { path = "../rustyjack-netlink" }
 tokio = { version = "1.0", features = ["rt", "macros"] }
+zbus = { version = "4.0", default-features = false }
+tracing = "0.1"
 
 [[bin]]
 name = "rustyjack"
 path = "src/main.rs"
 required-features = ["cli"]
+
+[dev-dependencies]
+tempfile = "3.8"

@@ -1,4 +1,4 @@
-use log::{debug, info};
+use tracing::{debug, info};
 
 use crate::auth::PeerCred;
 use rustyjack_ipc::{Endpoint, ErrorCode, ResponseBody, ResponseOk};

@@ -110,6 +110,7 @@ pub struct WifiConnectRequestIpc {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct HotspotStartRequestIpc {
     pub interface: String,
+    pub upstream_interface: String,
     pub ssid: String,
     pub passphrase: Option<String>,
     pub channel: Option<u8>,

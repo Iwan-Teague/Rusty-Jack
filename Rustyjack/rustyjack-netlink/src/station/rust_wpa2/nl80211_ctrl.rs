@@ -102,6 +102,41 @@ pub fn connect(
     Ok(())
 }
 
+pub fn connect_open(
+    interface: &str,
+    ssid: &str,
+    bssid: Option<[u8; 6]>,
+    frequency: Option<u32>,
+) -> Result<()> {
+    let ifindex = interface_index(interface)?;
+    let (mut sock, family_id) = nl80211_socket()?;
+
+    let mut attrs = GenlBuffer::new();
+    attrs.push(neli::genl::Nlattr::new(false, false, NL80211_ATTR_IFINDEX, ifindex).map_err(|e| {
+        NetlinkError::OperationFailed(format!("Failed to build ifindex attr: {}", e))
+    })?);
+    attrs.push(
+        neli::genl::Nlattr::new(false, false, NL80211_ATTR_SSID, ssid.as_bytes()).map_err(|e| {
+            NetlinkError::OperationFailed(format!("Failed to build SSID attr: {}", e))
+        })?,
+    );
+    if let Some(bssid) = bssid {
+        attrs.push(neli::genl::Nlattr::new(false, false, NL80211_ATTR_MAC, &bssid[..]).map_err(
+            |e| NetlinkError::OperationFailed(format!("Failed to build MAC attr: {}", e)),
+        )?);
+    }
+    if let Some(freq) = frequency {
+        attrs.push(
+            neli::genl::Nlattr::new(false, false, NL80211_ATTR_WIPHY_FREQ, freq).map_err(|e| {
+                NetlinkError::OperationFailed(format!("Failed to build frequency attr: {}", e))
+            })?,
+        );
+    }
+
+    send_cmd(&mut sock, family_id, NL80211_CMD_CONNECT, attrs, "CONNECT_OPEN")?;
+    Ok(())
+}
+
 pub fn disconnect(interface: &str) -> Result<()> {
     let ifindex = interface_index(interface)?;
     let (mut sock, family_id) = nl80211_socket()?;

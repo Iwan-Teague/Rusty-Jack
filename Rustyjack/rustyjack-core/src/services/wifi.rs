@@ -52,14 +52,17 @@ where
     
     on_progress(10, "Starting scan");
     
-    // Use the operations layer which handles the actual scanning
     on_progress(50, "Scanning networks");
+    let networks = crate::system::scan_wifi_networks_with_timeout(
+        &req.interface,
+        std::time::Duration::from_millis(req.timeout_ms),
+    )
+        .map_err(|e| ServiceError::OperationFailed(format!("WiFi scan failed: {}", e)))?;
     
-    // For now, return a placeholder until we wire up the actual scan operation
     on_progress(100, "Scan complete");
     Ok(serde_json::json!({
         "interface": req.interface,
-        "networks": []
+        "networks": networks
     }))
 }
 
@@ -76,7 +79,12 @@ where
     
     on_progress(10, "Connecting to network");
     
-    // Use nmcli or wpa_cli for connection - placeholder for now
+    crate::system::connect_wifi_network(
+        &req.interface,
+        &req.ssid,
+        req.psk.as_deref()
+    ).map_err(|e| ServiceError::OperationFailed(format!("WiFi connect failed: {}", e)))?;
+    
     on_progress(100, "Connected");
     Ok(serde_json::json!({
         "interface": req.interface,
@@ -90,6 +98,7 @@ pub fn disconnect(interface: &str) -> Result<bool, ServiceError> {
         return Err(ServiceError::InvalidInput("interface".to_string()));
     }
     
-    // Use nmcli or wpa_cli for disconnection - placeholder for now
+    crate::system::disconnect_wifi_interface(Some(interface.to_string()))
+        .map_err(|e| ServiceError::OperationFailed(format!("WiFi disconnect failed: {}", e)))?;
     Ok(true)
 }

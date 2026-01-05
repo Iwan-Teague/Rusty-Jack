@@ -98,6 +98,7 @@ pub mod stealth {
 // Re-exports for convenience
 pub use capture::{CaptureFilter, CapturedPacket, PacketCapture};
 pub use deauth::{DeauthAttacker, DeauthConfig, DeauthStats};
+pub use nl80211_queries::{InterfaceCapabilities, query_interface_capabilities};
 pub use error::{Result, WirelessError};
 pub use evil_twin::{execute_evil_twin, EvilTwin, EvilTwinConfig, EvilTwinResult, EvilTwinStats};
 pub use frames::{DeauthFrame, DeauthReason, FrameSubtype, FrameType, Ieee80211Frame, MacAddress};

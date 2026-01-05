@@ -1,0 +1,78 @@
+[Unit]
+Description=Rustyjack Portal Service (Unprivileged)
+Documentation=https://github.com/yourusername/rustyjack
+After=rustyjackd.service
+Requires=rustyjackd.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/rustyjack-portal
+Restart=on-failure
+RestartSec=2
+
+# Run as unprivileged user
+User=rustyjack-portal
+Group=rustyjack-portal
+# Supplementary group for daemon socket access
+SupplementaryGroups=rustyjack
+
+# Environment
+Environment=RUSTYJACK_PORTAL_PORT=3000
+Environment=RUSTYJACK_PORTAL_BIND=0.0.0.0
+Environment=RUSTYJACK_DAEMON_SOCKET=/run/rustyjack/rustyjackd.sock
+
+# Filesystem access restrictions
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/rustyjack/portal
+PrivateTmp=true
+
+# Kernel hardening
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectProc=invisible
+
+# Process restrictions
+NoNewPrivileges=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictNamespaces=true
+PrivateDevices=true
+
+# Memory protection
+MemoryDenyWriteExecute=true
+
+# Network restrictions
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+IPAddressDeny=any
+# Allow only local network and specific subnets for portal
+IPAddressAllow=localhost
+IPAddressAllow=192.168.0.0/16
+IPAddressAllow=10.0.0.0/8
+IPAddressAllow=172.16.0.0/12
+
+# Syscall filtering (very restrictive for web server)
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @obsolete @debug
+SystemCallArchitectures=native
+
+# Resource limits (portal is low-resource)
+LimitNOFILE=512
+LimitNPROC=32
+TasksMax=32
+CPUQuota=20%
+MemoryMax=64M
+
+# Working directory
+WorkingDirectory=/var/lib/rustyjack/portal
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=rustyjack-portal
+
+[Install]
+WantedBy=multi-user.target

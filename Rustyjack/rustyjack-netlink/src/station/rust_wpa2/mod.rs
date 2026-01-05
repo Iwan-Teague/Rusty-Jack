@@ -2,13 +2,17 @@ use std::sync::{Arc, Mutex};
 
 use crate::error::{NetlinkError, Result};
 use crate::station::backend::{ScanOutcome, StationBackend};
-use crate::supplicant::{BssCandidate, StationConfig, StationOutcome, StationState};
-use crate::wpa::{WpaState, WpaStatus};
+use crate::supplicant::{
+    score_candidate, security_from_bss, BssCandidate, ScanEntry, StationConfig, StationOutcome,
+    StationState,
+};
+use crate::wpa::{BssInfo, WpaState, WpaStatus};
 
 use crate::station::rust_wpa2::keys::derive_pmk;
 use crate::station::rust_wpa2::l2::EapolSocket;
 use crate::station::rust_wpa2::nl80211_ctrl::{
-    connect as nl_connect, disconnect as nl_disconnect, interface_index, interface_mac,
+    connect as nl_connect, connect_open as nl_connect_open, disconnect as nl_disconnect,
+    interface_index, interface_mac,
 };
 use crate::station::rust_wpa2::state::{run_handshake, HandshakeCtx};
 
@@ -60,9 +64,53 @@ impl StationBackend for RustWpa2Backend {
     }
 
     fn scan(&self, _cfg: &StationConfig) -> Result<ScanOutcome> {
+        let results = crate::scan_wifi_networks(&self.interface, _cfg.scan_timeout)?;
+        let mut candidates = Vec::new();
+
+        for entry in results {
+            let Some(ssid) = entry.ssid.clone() else {
+                continue;
+            };
+            if ssid.trim().is_empty() || ssid != _cfg.ssid {
+                continue;
+            }
+
+            let bssid = format_mac(&entry.bssid);
+            let signal_dbm = entry.signal_mbm.map(|mbm| (mbm / 100) as i32);
+
+            let info = BssInfo {
+                bssid: Some(bssid.clone()),
+                freq: entry.frequency,
+                level: signal_dbm,
+                flags: None,
+                ssid: Some(ssid.clone()),
+                ie: entry.ies.clone(),
+                beacon_ie: None,
+            };
+            let security = security_from_bss(&info);
+
+            let scan_entry = ScanEntry {
+                bssid: bssid.clone(),
+                frequency: entry.frequency,
+                signal_dbm,
+                flags: String::new(),
+                ssid: ssid.clone(),
+            };
+
+            if let Some(score) = score_candidate(_cfg, &scan_entry, &security) {
+                candidates.push(BssCandidate {
+                    bssid,
+                    frequency: entry.frequency,
+                    signal_dbm,
+                    security,
+                    score,
+                });
+            }
+        }
+
         Ok(ScanOutcome {
-            candidates: Vec::new(),
-            used_scan_ssid: true,
+            candidates,
+            used_scan_ssid: false,
         })
     }
 
@@ -71,46 +119,78 @@ impl StationBackend for RustWpa2Backend {
         if cfg.ssid.trim().is_empty() {
             return Err(NetlinkError::InvalidInput("SSID cannot be empty".to_string()));
         }
-        let passphrase = cfg.password.clone().ok_or_else(|| {
-            NetlinkError::InvalidInput("WPA2-PSK requires a passphrase".to_string())
-        })?;
+        let passphrase = cfg
+            .password
+            .as_ref()
+            .map(|p| p.trim())
+            .filter(|p| !p.is_empty())
+            .map(|p| p.to_string());
 
         let bssid = _candidate.and_then(|c| parse_bssid(&c.bssid).ok());
         let freq = _candidate.and_then(|c| c.frequency);
 
-        nl_connect(&self.interface, &cfg.ssid, bssid, freq)?;
+        if let Some(passphrase) = passphrase {
+            nl_connect(&self.interface, &cfg.ssid, bssid, freq)?;
 
-        let ifindex = interface_index(&self.interface)?;
-        let sta = interface_mac(&self.interface)?;
-        let pmk = derive_pmk(&passphrase, &cfg.ssid)?;
+            let ifindex = interface_index(&self.interface)?;
+            let sta = interface_mac(&self.interface)?;
+            let pmk = derive_pmk(&passphrase, &cfg.ssid)?;
 
-        let mut ctx = HandshakeCtx {
-            ssid: cfg.ssid.clone(),
-            bssid: bssid.unwrap_or([0u8; 6]),
-            sta,
-            pmk,
-            ifindex,
-            ptk: None,
-            gtk: None,
-        };
+            let mut ctx = HandshakeCtx {
+                ssid: cfg.ssid.clone(),
+                bssid: bssid.unwrap_or([0u8; 6]),
+                sta,
+                pmk,
+                ifindex,
+                ptk: None,
+                gtk: None,
+            };
 
-        let sock = EapolSocket::open(&self.interface)?;
-        if let Err(err) = run_handshake(&mut ctx, &sock, cfg.stage_timeout) {
-            let _ = nl_disconnect(&self.interface);
-            return Err(err);
+            let sock = EapolSocket::open(&self.interface)?;
+            if let Err(err) = run_handshake(&mut ctx, &sock, cfg.stage_timeout) {
+                let _ = nl_disconnect(&self.interface);
+                return Err(err);
+            }
+
+            let status = WpaStatus {
+                ssid: Some(cfg.ssid.clone()),
+                bssid: Some(format_mac(&ctx.bssid)),
+                freq,
+                mode: Some("station".to_string()),
+                pairwise_cipher: Some("CCMP".to_string()),
+                group_cipher: Some("CCMP".to_string()),
+                key_mgmt: Some("WPA-PSK".to_string()),
+                wpa_state: WpaState::Completed,
+                ip_address: None,
+                address: Some(format_mac(&sta)),
+            };
+            if let Ok(mut guard) = self.status.lock() {
+                *guard = status.clone();
+            }
+
+            return Ok(StationOutcome {
+                status,
+                selected_bssid: Some(format_mac(&ctx.bssid)),
+                selected_freq: freq,
+                attempts: 1,
+                used_scan_ssid: cfg.force_scan_ssid,
+                final_state: StationState::Completed,
+            });
         }
+
+        nl_connect_open(&self.interface, &cfg.ssid, bssid, freq)?;
 
         let status = WpaStatus {
             ssid: Some(cfg.ssid.clone()),
-            bssid: Some(format_mac(&ctx.bssid)),
+            bssid: bssid.map(|b| format_mac(&b)),
             freq,
             mode: Some("station".to_string()),
-            pairwise_cipher: Some("CCMP".to_string()),
-            group_cipher: Some("CCMP".to_string()),
-            key_mgmt: Some("WPA-PSK".to_string()),
+            pairwise_cipher: None,
+            group_cipher: None,
+            key_mgmt: Some("NONE".to_string()),
             wpa_state: WpaState::Completed,
             ip_address: None,
-            address: Some(format_mac(&sta)),
+            address: None,
         };
         if let Ok(mut guard) = self.status.lock() {
             *guard = status.clone();
@@ -118,7 +198,7 @@ impl StationBackend for RustWpa2Backend {
 
         Ok(StationOutcome {
             status,
-            selected_bssid: Some(format_mac(&ctx.bssid)),
+            selected_bssid: bssid.map(|b| format_mac(&b)),
             selected_freq: freq,
             attempts: 1,
             used_scan_ssid: cfg.force_scan_ssid,

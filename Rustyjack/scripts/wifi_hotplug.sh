@@ -1,85 +1,96 @@
 #!/bin/bash
-# WiFi Hotplug Handler - Called by udev when USB WiFi device is inserted/removed
-# This script runs in background and notifies rustyjack-ui
+# Enhanced WiFi Hotplug Handler for Rustyjack
+# Handles USB WiFi adapter insertion/removal with actual RPC calls
+
+set -e
 
 RUSTYJACK_ROOT="${RUSTYJACK_ROOT:-/opt/rustyjack}"
+DAEMON_SOCKET="/run/rustyjackd.socket"
 LOG_FILE="/var/log/rustyjack_wifi_hotplug.log"
-NOTIFY_FIFO="/tmp/rustyjack_wifi_notify"
-EVENT_FILE="/tmp/rustyjack_wifi_event"
 
+# Logging function
 log() {
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$LOG_FILE"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG_FILE"
 }
 
-ACTION="$1"
-DEVICE="$2"
+# Function to call daemon RPC via socat
+call_daemon_rpc() {
+    local payload="$1"
+    
+    if [ ! -S "$DAEMON_SOCKET" ]; then
+        log "ERROR: Daemon socket not found: $DAEMON_SOCKET"
+        return 1
+    fi
+    
+    log "Sending RPC request: $payload"
+    
+    # Send JSON-RPC request via socat with 5s timeout
+    echo "$payload" | timeout 5 socat - UNIX-CONNECT:"$DAEMON_SOCKET" 2>&1 | tee -a "$LOG_FILE"
+    return ${PIPESTATUS[0]}
+}
 
-log "Hotplug event: ACTION=$ACTION DEVICE=$DEVICE"
+# Check for required tools
+for tool in socat iw; do
+    if ! command -v "$tool" &> /dev/null; then
+        log "ERROR: Required tool '$tool' not found"
+        exit 1
+    fi
+done
+
+ACTION="${1:-unknown}"
+DEVICE="${2:-unknown}"
+
+log "========================================"
+log "Hotplug event triggered"
+log "ACTION: $ACTION"
+log "DEVICE: $DEVICE"
+log "========================================"
 
 case "$ACTION" in
     add)
         log "USB WiFi device inserted: $DEVICE"
         
-        # Write event for UI to detect
-        cat > "$EVENT_FILE" << EOF
-{
-    "event": "usb_wifi_inserted",
-    "device": "$DEVICE",
-    "timestamp": "$(date -Iseconds)",
-    "status": "detected"
-}
-EOF
-        
-        # Small delay to let USB settle
+        # Wait for device to settle and driver to load
+        log "Waiting 2s for device initialization..."
         sleep 2
         
-        # Run driver installer in background
-        nohup "$RUSTYJACK_ROOT/scripts/wifi_driver_installer.sh" >> "$LOG_FILE" 2>&1 &
-        INSTALLER_PID=$!
+        # Check if new wireless interface appeared
+        INTERFACES=$(iw dev 2>/dev/null | awk '/Interface/ {print $2}' | tr '\n' ' ')
+        log "Detected wireless interfaces: ${INTERFACES:-none}"
         
-        log "Started driver installer (PID: $INSTALLER_PID)"
+        # Additional delay for driver stabilization
+        log "Waiting additional 2s for driver stabilization..."
+        sleep 2
         
-        # Update event file
-        cat > "$EVENT_FILE" << EOF
-{
-    "event": "driver_installing",
-    "device": "$DEVICE",
-    "timestamp": "$(date -Iseconds)",
-    "status": "installing",
-    "installer_pid": $INSTALLER_PID
-}
-EOF
+        # Call HotplugNotify RPC
+        PAYLOAD='{"jsonrpc":"2.0","method":"HotplugNotify","params":{},"id":1}'
+        
+        if call_daemon_rpc "$PAYLOAD"; then
+            log "SUCCESS: Sent HotplugNotify to daemon"
+        else
+            log "ERROR: Failed to send HotplugNotify to daemon"
+            exit 1
+        fi
         ;;
         
     remove)
         log "USB WiFi device removed: $DEVICE"
         
-        cat > "$EVENT_FILE" << EOF
-{
-    "event": "usb_wifi_removed",
-    "device": "$DEVICE",
-    "timestamp": "$(date -Iseconds)",
-    "status": "removed"
-}
-EOF
-        ;;
+        # Notify daemon immediately
+        PAYLOAD='{"jsonrpc":"2.0","method":"HotplugNotify","params":{},"id":1}'
         
-    interface_add)
-        log "WiFi interface added: $DEVICE"
-        
-        cat > "$EVENT_FILE" << EOF
-{
-    "event": "interface_ready",
-    "interface": "$DEVICE",
-    "timestamp": "$(date -Iseconds)",
-    "status": "ready"
-}
-EOF
+        if call_daemon_rpc "$PAYLOAD"; then
+            log "SUCCESS: Sent HotplugNotify (removal) to daemon"
+        else
+            log "WARNING: Failed to send HotplugNotify (removal) to daemon"
+        fi
         ;;
         
     *)
-        log "Unknown action: $ACTION"
+        log "WARNING: Unknown action: $ACTION"
+        exit 0
         ;;
 esac
 
+log "Hotplug handler completed successfully"
 exit 0

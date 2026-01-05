@@ -331,9 +331,11 @@ PREBUILT_DIR="${PREBUILT_DIR:-prebuilt/arm32}"
 BINARY_NAME="rustyjack-ui"
 PREBUILT_BIN="$PROJECT_ROOT/$PREBUILT_DIR/$BINARY_NAME"
 CLI_NAME="rustyjack"
-PREBUILT_CLI="$PROJECT_ROOT/$PREBUILT_DIR/rustyjack-core"
+PREBUILT_CLI="$PROJECT_ROOT/$PREBUILT_DIR/$CLI_NAME"
 DAEMON_NAME="rustyjackd"
 PREBUILT_DAEMON="$PROJECT_ROOT/$PREBUILT_DIR/$DAEMON_NAME"
+PORTAL_NAME="rustyjack-portal"
+PREBUILT_PORTAL="$PROJECT_ROOT/$PREBUILT_DIR/$PORTAL_NAME"
 
 if [ ! -f "$PREBUILT_BIN" ]; then
   fail "Prebuilt binary not found: $PREBUILT_BIN\nPlace your arm32 binary at $PREBUILT_BIN or set PREBUILT_DIR to its location."
@@ -371,12 +373,13 @@ sudo systemctl stop rustyjackd.service 2>/dev/null || true
 sudo systemctl stop rustyjackd.socket 2>/dev/null || true
 
 step "Removing old binaries (if present)..."
-sudo rm -f /usr/local/bin/$BINARY_NAME /usr/local/bin/$CLI_NAME /usr/local/bin/$DAEMON_NAME
+sudo rm -f /usr/local/bin/$BINARY_NAME /usr/local/bin/$CLI_NAME /usr/local/bin/$DAEMON_NAME /usr/local/bin/$PORTAL_NAME
 
 step "Installing prebuilt binaries to /usr/local/bin/"
 sudo install -Dm755 "$PREBUILT_BIN" /usr/local/bin/$BINARY_NAME || fail "Failed to install binary"
 sudo install -Dm755 "$PREBUILT_CLI" /usr/local/bin/$CLI_NAME || fail "Failed to install CLI binary"
 sudo install -Dm755 "$PREBUILT_DAEMON" /usr/local/bin/$DAEMON_NAME || fail "Failed to install daemon binary"
+sudo install -Dm755 "$PREBUILT_PORTAL" /usr/local/bin/$PORTAL_NAME || fail "Failed to install portal binary"
 
 # Create necessary directories
 step "Creating runtime directories"
@@ -599,6 +602,11 @@ if [ -x /usr/local/bin/$DAEMON_NAME ]; then
   info "[OK] Prebuilt daemon binary installed: $DAEMON_NAME"
 else
   fail "[X] Daemon binary missing or not executable at /usr/local/bin/$DAEMON_NAME"
+fi
+if [ -x /usr/local/bin/$PORTAL_NAME ]; then
+  info "[OK] Prebuilt portal binary installed: $PORTAL_NAME"
+else
+  warn "Portal binary $PORTAL_NAME not executable or missing (optional)."
 fi
 
 # Health-check: hardware

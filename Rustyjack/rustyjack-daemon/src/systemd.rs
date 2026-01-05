@@ -9,7 +9,7 @@ use std::os::unix::net::UnixDatagram;
 use std::path::Path;
 use std::time::Duration;
 
-use log::warn;
+use tracing::warn;
 use tokio::net::UnixListener;
 use tokio::task::JoinHandle;
 use tokio::time;

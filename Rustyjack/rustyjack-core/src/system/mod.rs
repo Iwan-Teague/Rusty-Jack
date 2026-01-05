@@ -25,6 +25,23 @@
 //! All network operations require root privileges (UID 0). Operations will fail with
 //! explicit error messages if not run as root.
 
+pub mod ops;
+pub mod nm;
+pub mod preference;
+pub mod dns;
+pub mod routing;
+pub mod isolation;
+
+pub use ops::{
+    ErrorEntry, IsolationOutcome, NetOps, RealNetOps, RouteOutcome, RouteEntry,
+    InterfaceSummary, DhcpLease as OpsDhcpLease,
+};
+pub use nm::NetworkManagerClient;
+pub use preference::PreferenceManager;
+pub use dns::DnsManager;
+pub use routing::RouteManager;
+pub use isolation::{IsolationEngine, set_hotspot_exception, clear_hotspot_exception};
+
 use std::{
     collections::HashMap,
     env, fs,
@@ -50,7 +67,7 @@ use chrono::Local;
 use ipnet::Ipv4Net;
 use log::{debug, info, warn};
 use rustyjack_netlink::{
-    ArpSpoofConfig, ArpSpoofer, DhcpLease, DhcpTransport, DnsConfig, DnsRule, DnsServer,
+    ArpSpoofConfig, ArpSpoofer, DhcpTransport, DnsConfig, DnsRule, DnsServer,
     IptablesManager,
 };
 use rustyjack_wireless::status_hotspot;
@@ -67,7 +84,7 @@ use crate::netlink_helpers::{
     netlink_bridge_delete, netlink_delete_default_route, netlink_get_interface_index,
     netlink_get_ipv4_addresses, netlink_list_interfaces, netlink_list_routes,
     netlink_set_interface_down, netlink_set_interface_up, process_kill_pattern, process_running,
-    rfkill_block, rfkill_find_index, rfkill_unblock,
+    rfkill_find_index, rfkill_unblock,
 };
 
 const FALLBACK_DNS: [Ipv4Addr; 2] = [Ipv4Addr::new(1, 1, 1, 1), Ipv4Addr::new(9, 9, 9, 9)];
@@ -95,7 +112,7 @@ pub struct DhcpOutcome {
 
 #[derive(Debug)]
 pub enum DhcpAttemptResult {
-    Lease(DhcpLease),
+    Lease(OpsDhcpLease),
     Busy,
     Failed(String),
 }
@@ -132,13 +149,13 @@ fn lock_uplink() -> std::sync::MutexGuard<'static, ()> {
     lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-fn record_lease(interface: &str, lease: &DhcpLease) {
+fn record_lease(interface: &str, lease: &OpsDhcpLease) {
     let cache = LEASE_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     let mut guard = cache.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     guard.insert(
         interface.to_string(),
         LeaseRecord {
-            address: lease.address,
+            address: lease.ip,
             prefix_len: lease.prefix_len,
             gateway: lease.gateway,
             dns_servers: lease.dns_servers.clone(),
@@ -151,13 +168,13 @@ fn record_dhcp_outcome(
     interface: &str,
     success: bool,
     transport: Option<String>,
-    lease: Option<&DhcpLease>,
+    lease: Option<&OpsDhcpLease>,
     error: Option<String>,
 ) {
     let cache = DHCP_OUTCOME_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     let mut guard = cache.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let (address, gateway) = lease
-        .map(|lease| (Some(lease.address), lease.gateway))
+        .map(|lease| (Some(lease.ip), lease.gateway))
         .unwrap_or((None, None));
     guard.insert(
         interface.to_string(),
@@ -250,15 +267,7 @@ pub struct InterfaceStats {
     pub oper_state: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct InterfaceSummary {
-    pub name: String,
-    pub kind: String,
-    pub oper_state: String,
-    pub ip: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Default)]
+#[derive(Default)]
 pub struct WifiLinkInfo {
     pub connected: bool,
     pub ssid: Option<String>,
@@ -1501,11 +1510,14 @@ pub fn list_interface_summaries() -> Result<Vec<InterfaceSummary>> {
             "down" | "dormant" | "lowerlayerdown" => None,
             _ => interface_ipv4(&name),
         };
+        let is_wireless = kind == "wireless";
         summaries.push(InterfaceSummary {
             name,
             kind,
             oper_state,
             ip,
+            is_wireless,
+            capabilities: None,
         });
     }
     Ok(summaries)
@@ -1577,20 +1589,18 @@ pub fn interface_gateway(interface: &str) -> Result<Option<Ipv4Addr>> {
     };
     let routes = netlink_list_routes().with_context(|| format!("querying routes for {interface}"))?;
 
-    let is_default = |route: &rustyjack_netlink::RouteInfo| {
-        if route.prefix_len != 0 {
-            return false;
-        }
+    let is_default = |route: &crate::netlink_helpers::RouteInfo| {
+        // A default route has no specific destination (0.0.0.0/0)
         match route.destination {
-            None => true,
-            Some(std::net::IpAddr::V4(v4)) => v4.octets() == [0, 0, 0, 0],
+            None => true,  // No destination = default route
+            Some(IpAddr::V4(v4)) if v4.octets() == [0, 0, 0, 0] && route.prefix_len == 0 => true,
             _ => false,
         }
     };
 
-    let find_gateway = |route: &rustyjack_netlink::RouteInfo| -> Option<Ipv4Addr> {
+    let find_gateway = |route: &crate::netlink_helpers::RouteInfo| -> Option<Ipv4Addr> {
         route.gateway.and_then(|gw| match gw {
-            std::net::IpAddr::V4(v4) => Some(v4),
+            IpAddr::V4(v4) => Some(v4),
             _ => None,
         })
     };
@@ -1644,16 +1654,23 @@ fn dhcp_acquire_report(interface: &str, hostname: Option<&str>) -> Result<DhcpAt
             Ok(report) => {
                 let transport = Some(dhcp_transport_label(report.transport));
                 if let Some(lease) = report.lease {
-                    record_lease(interface, &lease);
-                    record_dhcp_outcome(interface, true, transport, Some(&lease), None);
+                    // Convert rustyjack_netlink::DhcpLease to OpsDhcpLease
+                    let ops_lease = OpsDhcpLease {
+                        ip: lease.address,
+                        prefix_len: lease.prefix_len,
+                        gateway: lease.gateway,
+                        dns_servers: lease.dns_servers,
+                    };
+                    record_lease(interface, &ops_lease);
+                    record_dhcp_outcome(interface, true, transport, Some(&ops_lease), None);
                     log::info!(
                         "[ROUTE] DHCP lease acquired on {}: {}/{} gateway={:?}",
                         interface,
-                        lease.address,
-                        lease.prefix_len,
-                        lease.gateway
+                        ops_lease.ip,
+                        ops_lease.prefix_len,
+                        ops_lease.gateway
                     );
-                    Ok(DhcpAttemptResult::Lease(lease))
+                    Ok(DhcpAttemptResult::Lease(ops_lease))
                 } else {
                     let error = report
                         .error
@@ -1808,32 +1825,7 @@ fn interface_has_ipv4(interface: &str) -> bool {
 
 #[cfg(target_os = "linux")]
 fn wifi_ready(interface: &str) -> bool {
-    use rustyjack_netlink::WpaManager;
-
-    let mgr = match WpaManager::new(interface) {
-        Ok(mgr) => mgr,
-        Err(err) => {
-            log::debug!(
-                "[ROUTE] WPA status unavailable for {} (no control socket?): {}",
-                interface,
-                err
-            );
-            return false;
-        }
-    };
-
-    let status = match mgr.status() {
-        Ok(status) => status,
-        Err(err) => {
-            log::debug!("[ROUTE] WPA status read failed for {}: {}", interface, err);
-            return false;
-        }
-    };
-
-    matches!(
-        status.wpa_state,
-        rustyjack_netlink::WpaSupplicantState::Completed
-    )
+    interface_has_carrier(interface) || interface_has_ipv4(interface)
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -2027,6 +2019,20 @@ pub fn find_interface_by_mac(mac: &str) -> Option<String> {
 }
 
 pub fn apply_interface_isolation(allowed: &[String]) -> Result<()> {
+    let outcome = apply_interface_isolation_with_ops(&crate::system::ops::RealNetOps, allowed)?;
+    if !outcome.errors.is_empty() {
+        let error_msgs: Vec<String> = outcome.errors.iter()
+            .map(|e| format!("{}: {}", e.interface, e.message))
+            .collect();
+        bail!("Interface isolation errors: {}", error_msgs.join("; "));
+    }
+    Ok(())
+}
+
+pub fn apply_interface_isolation_with_ops(
+    ops: &dyn crate::system::ops::NetOps,
+    allowed: &[String],
+) -> Result<crate::system::ops::IsolationOutcome> {
     use std::collections::HashSet;
 
     let allowed_set: HashSet<String> = allowed
@@ -2042,21 +2048,12 @@ pub fn apply_interface_isolation(allowed: &[String]) -> Result<()> {
     }
     debug!("[NET] Interface isolation allow list: {:?}", allowed_set);
 
-    let entries = fs::read_dir("/sys/class/net").context("reading /sys/class/net")?;
-    let mut interfaces = Vec::new();
+    let interfaces = ops.list_interfaces()?;
+    let mut allowed_vec = Vec::new();
+    let mut blocked_vec = Vec::new();
     let mut errors = Vec::new();
 
-    for entry in entries {
-        let entry = entry.context("iterating interfaces in /sys/class/net")?;
-        let iface = entry.file_name().to_string_lossy().to_string();
-        if iface == "lo" {
-            continue;
-        }
-        let is_wireless = is_wireless_interface(&iface);
-        interfaces.push((iface, is_wireless));
-    }
-
-    if !interfaces.iter().any(|(iface, _)| allowed_set.contains(iface)) {
+    if !interfaces.iter().any(|iface| allowed_set.contains(&iface.name)) {
         let allowed_list = allowed_set.iter().cloned().collect::<Vec<_>>().join(", ");
         warn!(
             "[NET] Interface isolation failed: allowed interfaces missing ({})",
@@ -2068,49 +2065,56 @@ pub fn apply_interface_isolation(allowed: &[String]) -> Result<()> {
         );
     }
 
-    for (iface, is_wireless) in interfaces {
-        let is_allowed = allowed_set.contains(&iface);
+    for iface_info in interfaces {
+        let is_allowed = allowed_set.contains(&iface_info.name);
         debug!(
             "[NET] Interface isolation {} allowed={} wireless={}",
-            iface, is_allowed, is_wireless
+            iface_info.name, is_allowed, iface_info.is_wireless
         );
 
         if is_allowed {
-            // For wireless: unblock rfkill BEFORE bringing interface up
-            if is_wireless {
-                if let Ok(Some(idx)) = rfkill_find_index(&iface) {
-                    let _ = rfkill_unblock(idx);
+            if iface_info.is_wireless {
+                if let Err(e) = ops.set_rfkill_block(&iface_info.name, false) {
+                    errors.push(crate::system::ops::ErrorEntry {
+                        interface: iface_info.name.clone(),
+                        message: format!("rfkill unblock failed: {}", e),
+                    });
                 }
             }
 
-            // Bring interface up (don't fail if wireless can't be brought up)
-            let up_result = netlink_set_interface_up(&iface);
-
-            if let Err(e) = up_result {
-                // For wireless, this is expected if not associated with AP - not an error
-                if !is_wireless {
-                    errors.push(format!("{}: failed to bring up: {}", iface, e));
+            if let Err(e) = ops.bring_up(&iface_info.name) {
+                if !iface_info.is_wireless {
+                    errors.push(crate::system::ops::ErrorEntry {
+                        interface: iface_info.name.clone(),
+                        message: format!("bring up failed: {}", e),
+                    });
                 }
             }
+            
+            if let Err(e) = ops.apply_nm_managed(&iface_info.name, true) {
+                debug!("[NET] NetworkManager set managed=true failed for {}: {}", iface_info.name, e);
+            }
+            
+            allowed_vec.push(iface_info.name);
         } else {
-            // Bring interface down
-            let _ = netlink_set_interface_down(&iface);
-
-            // For wireless: block with rfkill after bringing down
-            if is_wireless {
-                if let Ok(Some(idx)) = rfkill_find_index(&iface) {
-                    let _ = rfkill_block(idx);
-                }
+            let _ = ops.bring_down(&iface_info.name);
+            if iface_info.is_wireless {
+                let _ = ops.set_rfkill_block(&iface_info.name, true);
             }
+            
+            if let Err(e) = ops.apply_nm_managed(&iface_info.name, false) {
+                debug!("[NET] NetworkManager set managed=false failed for {}: {}", iface_info.name, e);
+            }
+            
+            blocked_vec.push(iface_info.name);
         }
     }
 
-    // Only fail if we had errors on non-wireless interfaces
-    if !errors.is_empty() {
-        bail!("Interface isolation errors: {}", errors.join("; "));
-    }
-
-    Ok(())
+    Ok(crate::system::ops::IsolationOutcome {
+        allowed: allowed_vec,
+        blocked: blocked_vec,
+        errors,
+    })
 }
 
 pub fn enforce_single_interface(interface: &str) -> Result<()> {
@@ -2510,6 +2514,13 @@ pub fn select_wifi_interface(preferred: Option<String>) -> Result<String> {
 }
 
 pub fn scan_wifi_networks(interface: &str) -> Result<Vec<WifiNetwork>> {
+    scan_wifi_networks_with_timeout(interface, Duration::from_secs(5))
+}
+
+pub fn scan_wifi_networks_with_timeout(
+    interface: &str,
+    timeout: Duration,
+) -> Result<Vec<WifiNetwork>> {
     check_network_permissions()?;
 
     if interface.trim().is_empty() {
@@ -2527,110 +2538,49 @@ pub fn scan_wifi_networks(interface: &str) -> Result<Vec<WifiNetwork>> {
     let _ = netlink_set_interface_up(interface);
     runtime_sleep(std::time::Duration::from_millis(750));
 
-    if wifi_backend_from_env() != StationBackendKind::ExternalWpa {
-        let rt = crate::runtime::shared_runtime()
-            .with_context(|| "Failed to use tokio runtime for WiFi scan")?;
-        let access_points = rt
-            .block_on(async { rustyjack_netlink::networkmanager::list_wifi_networks(interface).await })
-            .with_context(|| format!("NetworkManager scan failed for {interface}"))?;
-
-        let mut networks = Vec::new();
-        for ap in access_points {
-            let ssid = ap.ssid.trim().to_string();
-            if ssid.is_empty() {
-                continue;
-            }
-            let channel = if ap.frequency > 0 {
-                freq_to_channel(ap.frequency)
-            } else {
-                None
-            };
-            let signal_dbm = if ap.signal_strength == 0 {
-                None
-            } else {
-                Some(ap.signal_strength as i32 - 100)
-            };
-            let encrypted = !ap
-                .security_flags
-                .iter()
-                .any(|flag| flag.eq_ignore_ascii_case("Open"));
-
-            networks.push(WifiNetwork {
-                ssid: Some(ssid),
-                bssid: Some(ap.bssid),
-                quality: Some(format!("{}%", ap.signal_strength)),
-                signal_dbm,
-                channel,
-                encrypted,
-            });
-        }
-
-        if networks.is_empty() {
-            bail!("WiFi scan returned no results for {interface}");
-        }
-
-        return Ok(networks);
-    }
-
-    if let Err(e) = rustyjack_netlink::start_wpa_supplicant(interface, None) {
-        log::warn!("[WIFI] wpa_supplicant not started for {}: {}", interface, e);
-    }
-
-    let control_path =
-        rustyjack_netlink::ensure_wpa_control_socket(interface, None).with_context(|| {
-            format!("ensuring wpa_supplicant control socket for {}", interface)
-        })?;
-    log::info!(
-        "[WIFI] Using wpa_supplicant control socket at {}",
-        control_path.display()
-    );
-
-    let wpa = rustyjack_netlink::WpaManager::new(interface)
-        .with_context(|| format!("opening wpa_supplicant control for {}", interface))?
-        .with_control_path(control_path);
-    wpa.scan()
-        .with_context(|| format!("triggering scan on {}", interface))?;
-
-    let start = std::time::Instant::now();
-    let timeout = std::time::Duration::from_secs(10);
-    let mut results = Vec::new();
-    while start.elapsed() < timeout {
-        if let Ok(scan_results) = wpa.scan_results() {
-            if !scan_results.is_empty() {
-                results = scan_results;
-                break;
-            }
-        }
-        runtime_sleep(std::time::Duration::from_millis(250));
-    }
-
-    if results.is_empty() {
-        bail!("WiFi scan returned no results for {interface}");
-    }
+    let results = rustyjack_netlink::scan_wifi_networks(interface, timeout)
+        .with_context(|| format!("nl80211 scan failed for {interface}"))?;
 
     let mut networks = Vec::new();
     for entry in results {
-        let ssid = entry.get("ssid").cloned().unwrap_or_default();
-        if ssid.is_empty() {
+        let ssid = entry
+            .ssid
+            .as_ref()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        if ssid.is_none() {
             continue;
         }
-        let bssid = entry.get("bssid").cloned();
-        let frequency = entry
-            .get("frequency")
-            .and_then(|v| v.parse::<u32>().ok());
-        let signal_dbm = entry.get("signal").and_then(|v| v.parse::<i32>().ok());
-        let flags = entry.get("flags").cloned().unwrap_or_default();
-        let encrypted = flags.contains("WPA") || flags.contains("RSN") || flags.contains("WEP");
-        let channel = frequency.and_then(freq_to_channel);
+        let bssid = Some(format!(
+            "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+            entry.bssid[0],
+            entry.bssid[1],
+            entry.bssid[2],
+            entry.bssid[3],
+            entry.bssid[4],
+            entry.bssid[5]
+        ));
+        let signal_dbm = entry.signal_mbm.map(|mbm| (mbm / 100) as i32);
+        let channel = entry
+            .frequency
+            .and_then(rustyjack_netlink::WirelessManager::frequency_to_channel);
+        let encrypted = entry
+            .capability
+            .map(|cap| (cap & 0x0010) != 0)
+            .unwrap_or(false);
 
         networks.push(WifiNetwork {
-            ssid: Some(ssid),
+            ssid,
             bssid,
-            quality: None,
+            quality: signal_dbm.map(|dbm| format!("{}%", signal_to_quality(dbm))),
             signal_dbm,
             channel,
             encrypted,
         });
+    }
+
+    if networks.is_empty() {
+        bail!("WiFi scan returned no results for {interface}");
     }
 
     Ok(networks)
@@ -2646,6 +2596,17 @@ fn runtime_sleep(duration: Duration) {
         return;
     }
     std::thread::sleep(duration);
+}
+
+fn signal_to_quality(dbm: i32) -> i32 {
+    // Map RSSI in dBm to a 0-100 quality scale for display.
+    let mut quality = (dbm + 100) * 2;
+    if quality < 0 {
+        quality = 0;
+    } else if quality > 100 {
+        quality = 100;
+    }
+    quality
 }
 
 fn log_wifi_preflight(interface: &str) {
@@ -2698,53 +2659,6 @@ fn log_wifi_preflight(interface: &str) {
         log::info!("[WIFI] Preflight rfkill iface={} idx=none", interface);
     }
 
-    let sockets = rustyjack_netlink::wpa_control_socket_status(interface);
-    if sockets.is_empty() {
-        log::warn!("[WIFI] Preflight ctrl sockets iface={} none", interface);
-    } else {
-        let rendered = sockets
-            .iter()
-            .map(|(path, exists)| {
-                format!("{}={}", path.display(), if *exists { "ok" } else { "missing" })
-            })
-            .collect::<Vec<_>>()
-            .join(", ");
-        log::info!(
-            "[WIFI] Preflight ctrl sockets iface={} {}",
-            interface,
-            rendered
-        );
-    }
-
-    let pm = rustyjack_netlink::ProcessManager::new();
-    match pm.find_by_pattern("wpa_supplicant") {
-        Ok(list) => {
-            let matches: Vec<String> = list
-                .into_iter()
-                .filter(|p| p.cmdline.contains(interface))
-                .map(|p| format!("pid={} cmd={}", p.pid, p.cmdline))
-                .collect();
-            if matches.is_empty() {
-                log::info!(
-                    "[WIFI] Preflight wpa_supplicant iface={} process=none",
-                    interface
-                );
-            } else {
-                log::info!(
-                    "[WIFI] Preflight wpa_supplicant iface={} process={}",
-                    interface,
-                    matches.join(" | ")
-                );
-            }
-        }
-        Err(err) => {
-            log::warn!(
-                "[WIFI] Preflight wpa_supplicant iface={} process lookup error: {}",
-                interface,
-                err
-            );
-        }
-    }
 }
 
 fn freq_to_channel(freq: u32) -> Option<u8> {
@@ -3252,7 +3166,10 @@ fn wifi_backend_from_env() -> StationBackendKind {
         .as_deref()
     {
         Some("external") | Some("wpa") | Some("wpa_supplicant") => {
-            StationBackendKind::ExternalWpa
+            log::warn!(
+                "[WIFI] External wpa_supplicant backend disabled; using RustWpa2 instead"
+            );
+            StationBackendKind::RustWpa2
         }
         Some("rust_open") | Some("open") => StationBackendKind::RustOpen,
         Some("rust_wpa2") | Some("wpa2") => StationBackendKind::RustWpa2,
@@ -3271,6 +3188,12 @@ pub fn connect_wifi_network(interface: &str, ssid: &str, password: Option<&str>)
     if interface.trim().is_empty() {
         bail!("Interface name cannot be empty");
     }
+    if !interface_exists(interface) {
+        bail!("Interface {} does not exist", interface);
+    }
+    if !is_wireless_interface(interface) {
+        bail!("Interface {} is not a wireless device", interface);
+    }
 
     log::info!("Connecting to WiFi: ssid={ssid}, interface={interface}");
 
@@ -3280,9 +3203,7 @@ pub fn connect_wifi_network(interface: &str, ssid: &str, password: Option<&str>)
         .with_context(|| "Failed to use tokio runtime for WiFi connect")?;
 
     let backend = wifi_backend_from_env();
-    if backend != StationBackendKind::ExternalWpa {
-        log::info!("[WIFI] Station backend set to {:?}", backend);
-    }
+    log::info!("[WIFI] Station backend set to {:?}", backend);
 
     // Release DHCP lease
     if let Err(e) = rt.block_on(async { rustyjack_netlink::dhcp_release(interface).await }) {
@@ -3316,26 +3237,17 @@ pub fn connect_wifi_network(interface: &str, ssid: &str, password: Option<&str>)
         .with_context(|| format!("bringing interface {interface} up"))?;
     runtime_sleep(std::time::Duration::from_millis(300));
 
-    // Mark interface unmanaged by NetworkManager (best effort)
-    if let Ok(nm) =
-        rt.block_on(async { rustyjack_netlink::networkmanager::NetworkManagerClient::new().await })
-    {
-        if let Err(e) = rt.block_on(async { nm.set_device_managed(interface, false).await }) {
-            log::debug!(
-                "[WIFI] Could not set {} unmanaged via NetworkManager (continuing): {}",
-                interface,
-                e
-            );
-        }
-    } else {
-        log::debug!("[WIFI] NetworkManager not available; continuing with in-process supplicant");
-    }
+    // Keep the interface managed entirely in-process (no NetworkManager dependency).
 
     let station = StationManager::new_with_backend(interface, backend)
         .with_context(|| format!("Failed to initialize WiFi backend {:?}", backend))?;
+    let password = password
+        .map(|p| p.trim())
+        .filter(|p| !p.is_empty())
+        .map(|p| p.to_string());
     let station_cfg = StationConfig {
         ssid: ssid.to_string(),
-        password: password.map(|p| p.to_string()),
+        password,
         force_scan_ssid: true,
         ..StationConfig::default()
     };
@@ -3356,6 +3268,7 @@ pub fn connect_wifi_network(interface: &str, ssid: &str, password: Option<&str>)
 
     // Request DHCP lease with retry
     let mut dhcp_success = false;
+    let mut last_error: Option<String> = None;
     for attempt in 1..=3 {
         match acquire_dhcp_lease(interface)? {
             DhcpAttemptResult::Lease(lease) => {
@@ -3363,13 +3276,14 @@ pub fn connect_wifi_network(interface: &str, ssid: &str, password: Option<&str>)
                 log::info!(
                     "DHCP lease acquired on attempt {}: {}/{}, gateway: {:?}",
                     attempt,
-                    lease.address,
+                    lease.ip,
                     lease.prefix_len,
                     lease.gateway
                 );
                 break;
             }
             DhcpAttemptResult::Failed(err) => {
+                last_error = Some(err.clone());
                 log::warn!("DHCP attempt {} failed: {}", attempt, err);
             }
             DhcpAttemptResult::Busy => {
@@ -3385,7 +3299,8 @@ pub fn connect_wifi_network(interface: &str, ssid: &str, password: Option<&str>)
     if dhcp_success {
         let _ = select_active_uplink();
     } else {
-        log::warn!("DHCP lease acquisition failed after 3 attempts, but connection may still work");
+        let reason = last_error.unwrap_or_else(|| "no DHCP lease acquired".to_string());
+        bail!("DHCP lease acquisition failed: {}", reason);
     }
 
     log::info!("WiFi connection process completed for {ssid}");
@@ -3406,12 +3321,10 @@ pub fn disconnect_wifi_interface(interface: Option<String>) -> Result<String> {
 
     log::info!("Disconnecting WiFi interface: {iface}");
 
-    let rt = crate::runtime::shared_runtime()
+    let _rt = crate::runtime::shared_runtime()
         .with_context(|| "Failed to use tokio runtime for disconnect")?;
-    if let Err(e) =
-        rt.block_on(async { rustyjack_netlink::networkmanager::disconnect_device(&iface).await })
-    {
-        log::error!("NetworkManager disconnect failed for {iface}: {e}");
+    if let Err(e) = rustyjack_netlink::station_disconnect(&iface) {
+        log::error!("nl80211 disconnect failed for {iface}: {e}");
         bail!("Failed to disconnect {iface}: {e}");
     }
 
@@ -3449,12 +3362,6 @@ fn check_network_permissions() -> Result<()> {
 pub fn cleanup_wifi_interface(interface: &str) -> Result<()> {
     log::info!("Performing cleanup for interface: {interface}");
 
-    if wifi_backend_from_env() == StationBackendKind::ExternalWpa {
-        if let Err(e) = rustyjack_netlink::stop_wpa_supplicant(interface) {
-            log::warn!("Failed to stop wpa_supplicant during cleanup: {}", e);
-        }
-    }
-
     // Release DHCP if any
     let rt = crate::runtime::shared_runtime()
         .with_context(|| "Failed to use tokio runtime for cleanup DHCP release")?;
@@ -3489,21 +3396,30 @@ fn auto_detect_wifi_interface() -> Result<Option<String>> {
 
 pub fn read_wifi_link_info(interface: &str) -> WifiLinkInfo {
     let mut info = WifiLinkInfo::default();
-    let status = match rustyjack_netlink::WpaManager::new(interface) {
-        Ok(wpa) => wpa.status().ok(),
-        Err(_) => None,
-    };
-    let status = match status {
-        Some(status) => status,
-        None => return info,
-    };
-
-    info.connected = matches!(
-        status.wpa_state,
-        rustyjack_netlink::WpaSupplicantState::Completed
-    );
-    info.ssid = status.ssid;
+    info.connected = interface_has_carrier(interface) || interface_has_ipv4(interface);
+    info.ssid = None;
+    info.signal_dbm = read_wireless_signal_dbm(interface);
     info
+}
+
+fn read_wireless_signal_dbm(interface: &str) -> Option<i32> {
+    let contents = std::fs::read_to_string("/proc/net/wireless").ok()?;
+    for line in contents.lines().skip(2) {
+        let trimmed = line.trim_start();
+        if !trimmed.starts_with(interface) {
+            continue;
+        }
+        let mut parts = trimmed.split_whitespace();
+        let _iface = parts.next()?;
+        let _status = parts.next()?;
+        let _link = parts.next()?;
+        let level = parts.next()?;
+        let level = level.trim_end_matches('.');
+        if let Ok(value) = level.parse::<f32>() {
+            return Some(value as i32);
+        }
+    }
+    None
 }
 
 fn wifi_profiles_dir(root: &Path) -> PathBuf {

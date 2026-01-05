@@ -127,13 +127,17 @@ pub use station::backend::StationBackendKind;
 pub use systemd::restart_unit as systemd_restart_unit;
 #[cfg(target_os = "linux")]
 pub use wireless::{
-    ChannelWidth, InterfaceMode, PhyCapabilities, TxPowerSetting, WirelessInfo, WirelessManager,
+    ChannelWidth, InterfaceMode, PhyCapabilities, TxPowerSetting, WifiScanResult, WirelessInfo,
+    WirelessManager,
 };
 #[cfg(target_os = "linux")]
+pub use wpa::{BssInfo, WpaNetworkConfig, WpaStatus};
+#[cfg(target_os = "linux")]
+pub use wpa::WpaState as WpaSupplicantState;
+#[cfg(all(target_os = "linux", feature = "station_external"))]
 pub use wpa::{
     ensure_wpa_control_socket, is_wpa_running, start_wpa_supplicant, stop_wpa_supplicant,
-    wpa_control_socket_status, WpaManager, WpaNetworkConfig, WpaState as WpaSupplicantState,
-    WpaStatus,
+    wpa_control_socket_status, WpaManager,
 };
 
 #[cfg(target_os = "linux")]
@@ -212,6 +216,17 @@ pub async fn delete_default_route() -> Result<()> {
 pub async fn list_routes() -> Result<Vec<RouteInfo>> {
     let mgr = RouteManager::new()?;
     mgr.list_routes().await
+}
+
+#[cfg(target_os = "linux")]
+pub fn station_disconnect(interface: &str) -> Result<()> {
+    station::rust_wpa2::nl80211_ctrl::disconnect(interface)
+}
+
+#[cfg(target_os = "linux")]
+pub fn scan_wifi_networks(interface: &str, timeout: std::time::Duration) -> Result<Vec<WifiScanResult>> {
+    let mut mgr = WirelessManager::new()?;
+    mgr.scan_wifi(interface, timeout)
 }
 
 #[cfg(target_os = "linux")]

@@ -482,3 +482,170 @@ pub fn validate_job_kind(kind: &JobKind) -> Result<(), DaemonError> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rustyjack_ipc::{JobKind, MountStartRequestIpc, ScanModeIpc, ScanRequestIpc, UpdateRequestIpc, WifiConnectRequestIpc};
+
+    #[test]
+    fn test_validate_mount_device_rejects_mmcblk() {
+        let result = validate_mount_device_hint("/dev/mmcblk0p1");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.code, ErrorCode::BadRequest);
+        assert!(err.message.contains("mmcblk"));
+    }
+
+    #[test]
+    fn test_validate_mount_device_rejects_loop() {
+        let result = validate_mount_device_hint("/dev/loop0");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.code, ErrorCode::BadRequest);
+        assert!(err.message.contains("loop"));
+    }
+
+    #[test]
+    fn test_validate_mount_device_requires_dev_prefix() {
+        let result = validate_mount_device_hint("/mnt/usb");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.code, ErrorCode::BadRequest);
+        assert!(err.message.contains("/dev/"));
+    }
+
+    #[test]
+    fn test_validate_mount_device_accepts_sda() {
+        let result = validate_mount_device_hint("/dev/sda1");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validate_filesystem_accepts_common_types() {
+        assert!(validate_filesystem(&Some("ext4".to_string())).is_ok());
+        assert!(validate_filesystem(&Some("vfat".to_string())).is_ok());
+        assert!(validate_filesystem(&Some("exfat".to_string())).is_ok());
+        assert!(validate_filesystem(&Some("ntfs".to_string())).is_ok());
+    }
+
+    #[test]
+    fn test_validate_filesystem_rejects_unknown() {
+        let result = validate_filesystem(&Some("invalid_fs".to_string()));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validate_channel_rejects_zero() {
+        let result = validate_channel(&Some(0));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validate_channel_rejects_out_of_range() {
+        let result = validate_channel(&Some(166));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validate_channel_accepts_valid() {
+        assert!(validate_channel(&Some(1)).is_ok());
+        assert!(validate_channel(&Some(11)).is_ok());
+        assert!(validate_channel(&Some(165)).is_ok());
+    }
+
+    #[test]
+    fn test_validate_port_rejects_privileged() {
+        let result = validate_port(80);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.message.contains("1024"));
+    }
+
+    #[test]
+    fn test_validate_port_accepts_high_ports() {
+        assert!(validate_port(8080).is_ok());
+        assert!(validate_port(3000).is_ok());
+    }
+
+    #[test]
+    fn test_validate_sleep_seconds_rejects_zero() {
+        let result = validate_sleep_seconds(0);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validate_sleep_seconds_rejects_too_large() {
+        let result = validate_sleep_seconds(MAX_SLEEP_SECONDS + 1);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validate_job_kind_mount_rejects_mmcblk() {
+        let kind = JobKind::MountStart {
+            req: MountStartRequestIpc {
+                device: "/dev/mmcblk0p1".to_string(),
+                filesystem: None,
+            },
+        };
+        let result = validate_job_kind(&kind);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validate_job_kind_wifi_connect_requires_valid_ssid() {
+        let kind = JobKind::WifiConnect {
+            req: WifiConnectRequestIpc {
+                interface: "wlan0".to_string(),
+                ssid: "".to_string(),
+                psk: None,
+                timeout_ms: 30000,
+            },
+        };
+        let result = validate_job_kind(&kind);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validate_job_kind_scan_rejects_empty_target() {
+        let kind = JobKind::ScanRun {
+            req: ScanRequestIpc {
+                target: "".to_string(),
+                mode: ScanModeIpc::DiscoveryOnly,
+                ports: None,
+                timeout_ms: 60000,
+            },
+        };
+        let result = validate_job_kind(&kind);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validate_update_service_only_allows_known_services() {
+        assert!(validate_update_service("rustyjack").is_ok());
+        assert!(validate_update_service("rustyjack-ui").is_ok());
+        assert!(validate_update_service("rustyjackd").is_ok());
+        
+        let result = validate_update_service("arbitrary-service");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validate_git_remote_requires_https_or_git() {
+        assert!(validate_git_remote("origin").is_ok());
+        assert!(validate_git_remote("https://github.com/user/repo").is_ok());
+        assert!(validate_git_remote("git@github.com:user/repo").is_ok());
+        
+        let result = validate_git_remote("http://insecure.com/repo");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validate_backup_dir_requires_rustyjack_prefix() {
+        assert!(validate_backup_dir("/var/lib/rustyjack/backups/test").is_ok());
+        assert!(validate_backup_dir("/tmp/rustyjack/backups/test").is_ok());
+        
+        let result = validate_backup_dir("/tmp/evil");
+        assert!(result.is_err());
+    }
+}

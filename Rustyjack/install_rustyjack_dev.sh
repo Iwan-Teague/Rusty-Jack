@@ -469,11 +469,11 @@ if [ ! -f "$PROJECT_ROOT/target/debug/rustyjack-ui" ]; then
 fi
 
 # Build rustyjack-core CLI (used for status/validation)
-info "Building rustyjack-core CLI (debug)..."
-(cd "$PROJECT_ROOT" && cargo build -p rustyjack-core) || fail "Failed to build rustyjack-core"
+info "Building rustyjack CLI (debug with cli feature)..."
+(cd "$PROJECT_ROOT" && cargo build --bin rustyjack --features rustyjack-core/cli) || fail "Failed to build rustyjack"
 
-if [ ! -f "$PROJECT_ROOT/target/debug/rustyjack-core" ]; then
-  fail "rustyjack-core binary not found after build!"
+if [ ! -f "$PROJECT_ROOT/target/debug/rustyjack" ]; then
+  fail "rustyjack binary not found after build!"
 fi
 
 # Build rustyjackd daemon
@@ -484,18 +484,28 @@ if [ ! -f "$PROJECT_ROOT/target/debug/rustyjackd" ]; then
   fail "rustyjackd binary not found after build!"
 fi
 
+# Build rustyjack-portal binary (debug)
+info "Building rustyjack-portal binary (debug)..."
+(cd "$PROJECT_ROOT" && cargo build -p rustyjack-portal) || fail "Failed to build rustyjack-portal"
+
+if [ ! -f "$PROJECT_ROOT/target/debug/rustyjack-portal" ]; then
+  fail "rustyjack-portal binary not found after build!"
+fi
+
 # Install DEBUG binaries
 sudo install -Dm755 "$PROJECT_ROOT/target/debug/rustyjack-ui" /usr/local/bin/rustyjack-ui
-sudo install -Dm755 "$PROJECT_ROOT/target/debug/rustyjack-core" /usr/local/bin/rustyjack
+sudo install -Dm755 "$PROJECT_ROOT/target/debug/rustyjack" /usr/local/bin/rustyjack
 sudo install -Dm755 "$PROJECT_ROOT/target/debug/rustyjackd" /usr/local/bin/rustyjackd
+sudo install -Dm755 "$PROJECT_ROOT/target/debug/rustyjack-portal" /usr/local/bin/rustyjack-portal
 
 # Verify installation
-if [ -x /usr/local/bin/rustyjack-ui ] && [ -x /usr/local/bin/rustyjack ] && [ -x /usr/local/bin/rustyjackd ]; then
+if [ -x /usr/local/bin/rustyjack-ui ] && [ -x /usr/local/bin/rustyjack ] && [ -x /usr/local/bin/rustyjackd ] && [ -x /usr/local/bin/rustyjack-portal ]; then
   info "Installed DEBUG binaries to /usr/local/bin/"
   info "Binary info:"
   ls -la /usr/local/bin/rustyjack-ui
   ls -la /usr/local/bin/rustyjack
   ls -la /usr/local/bin/rustyjackd
+  ls -la /usr/local/bin/rustyjack-portal
 else
   fail "Failed to install binaries to /usr/local/bin/"
 fi
@@ -584,14 +594,28 @@ fi
 if ! getent group rustyjack-ui >/dev/null 2>&1; then
   sudo groupadd --system rustyjack-ui || true
 fi
+if ! getent group rustyjack-portal >/dev/null 2>&1; then
+  sudo groupadd --system rustyjack-portal || true
+fi
 if ! id -u rustyjack-ui >/dev/null 2>&1; then
   sudo useradd --system --home /var/lib/rustyjack --shell /usr/sbin/nologin -g rustyjack-ui rustyjack-ui || true
+fi
+if ! id -u rustyjack-portal >/dev/null 2>&1; then
+  sudo useradd --system --home /nonexistent --shell /usr/sbin/nologin -g rustyjack-portal rustyjack-portal || true
 fi
 for grp in rustyjack gpio spi; do
   if getent group "$grp" >/dev/null 2>&1; then
     sudo usermod -aG "$grp" rustyjack-ui || true
   fi
 done
+
+# Create portal directories with proper ownership
+sudo mkdir -p "$RUNTIME_ROOT/portal/site"
+sudo mkdir -p "$RUNTIME_ROOT/loot/Portal"
+sudo chown -R rustyjack-portal:rustyjack-portal "$RUNTIME_ROOT/portal"
+sudo chown -R rustyjack-portal:rustyjack-portal "$RUNTIME_ROOT/loot/Portal"
+sudo chmod -R 755 "$RUNTIME_ROOT/portal"
+sudo chmod -R 755 "$RUNTIME_ROOT/loot/Portal"
 
 sudo chown -R root:rustyjack "$RUNTIME_ROOT"
 sudo chmod -R g+rwX "$RUNTIME_ROOT"

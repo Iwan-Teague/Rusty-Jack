@@ -18,6 +18,7 @@ where
 
     let request = rustyjack_core::services::hotspot::HotspotStartRequest {
         interface: req.interface,
+        upstream_interface: req.upstream_interface,
         ssid: req.ssid,
         passphrase: req.passphrase,
         channel: req.channel,

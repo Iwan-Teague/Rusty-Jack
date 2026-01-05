@@ -22,6 +22,7 @@ use neli::consts::socket::NlFamily;
 
 const NL80211_GENL_NAME: &str = "nl80211";
 const NLMSG_ERR: u16 = 2; // NLMSG_ERROR
+const NLMSG_DONE: u16 = 3; // NLMSG_DONE
 
 // nl80211 commands
 const NL80211_CMD_GET_WIPHY: u8 = 1;
@@ -30,6 +31,8 @@ const NL80211_CMD_GET_INTERFACE: u8 = 5;
 const NL80211_CMD_SET_INTERFACE: u8 = 6;
 const NL80211_CMD_NEW_INTERFACE: u8 = 7;
 const NL80211_CMD_DEL_INTERFACE: u8 = 8;
+const NL80211_CMD_GET_SCAN: u8 = 32;
+const NL80211_CMD_TRIGGER_SCAN: u8 = 33;
 
 // nl80211 attributes
 const NL80211_ATTR_WIPHY: u16 = 1;
@@ -44,6 +47,8 @@ const NL80211_ATTR_WIPHY_TX_POWER_SETTING: u16 = 58;
 const NL80211_ATTR_WIPHY_TX_POWER_LEVEL: u16 = 59;
 const NL80211_ATTR_SUPPORTED_IFTYPES: u16 = 32;
 const NL80211_ATTR_WIPHY_BANDS: u16 = 22;
+const NL80211_ATTR_SCAN_SSIDS: u16 = 45;
+const NL80211_ATTR_BSS: u16 = 47;
 
 const NL80211_BAND_ATTR_FREQS: u16 = 1;
 const NL80211_BAND_ATTR_RATES: u16 = 2;
@@ -59,6 +64,17 @@ const NL80211_FREQUENCY_ATTR_MAX_TX_POWER: u16 = 6;
 const NL80211_FREQUENCY_ATTR_DFS_STATE: u16 = 7;
 const NL80211_BITRATE_ATTR_RATE: u16 = 1;
 const NLA_TYPE_MASK: u16 = 0x3fff;
+
+const NL80211_BSS_BSSID: u16 = 1;
+const NL80211_BSS_FREQUENCY: u16 = 2;
+const NL80211_BSS_TSF: u16 = 3;
+const NL80211_BSS_BEACON_INTERVAL: u16 = 4;
+const NL80211_BSS_CAPABILITY: u16 = 5;
+const NL80211_BSS_INFORMATION_ELEMENTS: u16 = 6;
+const NL80211_BSS_SIGNAL_MBM: u16 = 7;
+const NL80211_BSS_SIGNAL_UNSPEC: u16 = 8;
+const NL80211_BSS_STATUS: u16 = 9;
+const NL80211_BSS_SEEN_MS_AGO: u16 = 10;
 
 #[allow(dead_code)]
 const NL80211_DFS_UNSET: u8 = 0;
@@ -182,6 +198,19 @@ pub struct WirelessInfo {
     pub frequency: Option<u32>,
     pub channel: Option<u8>,
     pub txpower_mbm: Option<i32>,
+}
+
+/// Wi-Fi scan result entry
+#[derive(Debug, Clone)]
+pub struct WifiScanResult {
+    pub bssid: [u8; 6],
+    pub ssid: Option<String>,
+    pub frequency: Option<u32>,
+    pub signal_mbm: Option<i32>,
+    pub seen_ms_ago: Option<u32>,
+    pub capability: Option<u16>,
+    pub beacon_interval: Option<u16>,
+    pub ies: Option<Vec<u8>>,
 }
 
 /// PHY capabilities
@@ -1005,6 +1034,280 @@ impl WirelessManager {
         }
 
         Ok(info)
+    }
+
+    /// Trigger a Wi-Fi scan and return observed access points.
+    pub fn scan_wifi(&mut self, interface: &str, timeout: Duration) -> Result<Vec<WifiScanResult>> {
+        let ifindex = self.get_ifindex(interface)?;
+        self.trigger_scan(ifindex)?;
+
+        let start = std::time::Instant::now();
+        loop {
+            let results = self.get_scan_results(ifindex)?;
+            if !results.is_empty() || start.elapsed() >= timeout {
+                return Ok(results);
+            }
+            std::thread::sleep(Duration::from_millis(250));
+        }
+    }
+
+    fn trigger_scan(&mut self, ifindex: u32) -> Result<()> {
+        let mut attrs = GenlBuffer::new();
+        attrs.push(
+            Nlattr::new(false, false, NL80211_ATTR_IFINDEX, ifindex).map_err(|e| {
+                NetlinkError::OperationFailed(format!("Failed to create ifindex attr: {}", e))
+            })?,
+        );
+
+        let ssid_payload = Self::build_scan_ssids_payload();
+        attrs.push(
+            Nlattr::new(true, false, NL80211_ATTR_SCAN_SSIDS, ssid_payload).map_err(|e| {
+                NetlinkError::OperationFailed(format!("Failed to create scan SSIDs attr: {}", e))
+            })?,
+        );
+
+        let genlhdr = Genlmsghdr::new(NL80211_CMD_TRIGGER_SCAN, 1, attrs);
+        let nlhdr = Nlmsghdr::new(
+            None,
+            self.family_id,
+            NlmFFlags::new(&[NlmF::Request, NlmF::Ack]),
+            None,
+            None,
+            NlPayload::Payload(genlhdr),
+        );
+
+        self.socket.send(nlhdr).map_err(|e| {
+            NetlinkError::OperationFailed(format!("Failed to send trigger scan request: {}", e))
+        })?;
+
+        set_recv_timeout(&self.socket, Duration::from_millis(800));
+        let response: Nlmsghdr<u16, Genlmsghdr<u8, u16>> = match self.socket.recv() {
+            Ok(Some(msg)) => msg,
+            Ok(None) => {
+                return Err(NetlinkError::OperationFailed(
+                    "No response received for trigger scan".to_string(),
+                ))
+            }
+            Err(e) => {
+                return Err(NetlinkError::OperationFailed(format!(
+                    "Failed to receive trigger scan response: {}",
+                    e
+                )))
+            }
+        };
+
+        if response.nl_type == NLMSG_ERR {
+            let handle_error = |err_code: i32| -> Result<()> {
+                if err_code == 0 {
+                    return Ok(());
+                }
+                let errno = err_code.abs();
+                if errno == libc::EBUSY {
+                    debug!("[WIFI] Scan already in progress (EBUSY)");
+                    return Ok(());
+                }
+                let io_err = io::Error::from_raw_os_error(errno);
+                Err(NetlinkError::OperationFailed(format!(
+                    "Trigger scan failed: {} (errno {})",
+                    io_err, errno
+                )))
+            };
+
+            match response.nl_payload {
+                NlPayload::Err(err) => handle_error(err.error)?,
+                NlPayload::Ack(ack) => handle_error(ack.error)?,
+                other => {
+                    return Err(NetlinkError::OperationFailed(format!(
+                        "Trigger scan unexpected response: {:?}",
+                        other
+                    )));
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn get_scan_results(&mut self, ifindex: u32) -> Result<Vec<WifiScanResult>> {
+        let mut attrs = GenlBuffer::new();
+        attrs.push(
+            Nlattr::new(false, false, NL80211_ATTR_IFINDEX, ifindex).map_err(|e| {
+                NetlinkError::OperationFailed(format!("Failed to create ifindex attr: {}", e))
+            })?,
+        );
+
+        let genlhdr = Genlmsghdr::new(NL80211_CMD_GET_SCAN, 1, attrs);
+        let nlhdr = Nlmsghdr::new(
+            None,
+            self.family_id,
+            NlmFFlags::new(&[NlmF::Request, NlmF::Dump]),
+            None,
+            None,
+            NlPayload::Payload(genlhdr),
+        );
+
+        self.socket.send(nlhdr).map_err(|e| {
+            NetlinkError::OperationFailed(format!("Failed to send get_scan request: {}", e))
+        })?;
+
+        set_recv_timeout(&self.socket, Duration::from_millis(800));
+
+        let mut results = Vec::new();
+        loop {
+            let msg: Nlmsghdr<u16, Genlmsghdr<u8, u16>> = match self.socket.recv() {
+                Ok(Some(msg)) => msg,
+                Ok(None) => break,
+                Err(e) => {
+                    return Err(NetlinkError::OperationFailed(format!(
+                        "Failed to receive scan results: {}",
+                        e
+                    )))
+                }
+            };
+
+            if msg.nl_type == NLMSG_DONE {
+                break;
+            }
+
+            if msg.nl_type == NLMSG_ERR {
+                if let NlPayload::Err(err) = msg.nl_payload {
+                    let errno = err.error.abs();
+                    let io_err = io::Error::from_raw_os_error(errno);
+                    return Err(NetlinkError::OperationFailed(format!(
+                        "Scan results error: {} (errno {})",
+                        io_err, errno
+                    )));
+                }
+                break;
+            }
+
+            if let NlPayload::Payload(genl) = msg.nl_payload {
+                let attrs = genl.get_attr_handle();
+                for attr in attrs.iter() {
+                    if attr.nla_type.nla_type != NL80211_ATTR_BSS {
+                        continue;
+                    }
+                    if let Some(entry) = Self::parse_bss(attr.payload().as_ref()) {
+                        results.push(entry);
+                    }
+                }
+            }
+        }
+
+        Ok(results)
+    }
+
+    fn parse_bss(payload: &[u8]) -> Option<WifiScanResult> {
+        let mut bssid: Option<[u8; 6]> = None;
+        let mut frequency: Option<u32> = None;
+        let mut signal_mbm: Option<i32> = None;
+        let mut seen_ms_ago: Option<u32> = None;
+        let mut capability: Option<u16> = None;
+        let mut beacon_interval: Option<u16> = None;
+        let mut ies: Option<&[u8]> = None;
+
+        for attr in Self::parse_nested_attrs(payload) {
+            match attr.nla_type {
+                NL80211_BSS_BSSID => {
+                    if attr.payload.len() == 6 {
+                        bssid = Some([
+                            attr.payload[0],
+                            attr.payload[1],
+                            attr.payload[2],
+                            attr.payload[3],
+                            attr.payload[4],
+                            attr.payload[5],
+                        ]);
+                    }
+                }
+                NL80211_BSS_FREQUENCY => {
+                    if attr.payload.len() >= 4 {
+                        frequency = Some(u32::from_ne_bytes([
+                            attr.payload[0],
+                            attr.payload[1],
+                            attr.payload[2],
+                            attr.payload[3],
+                        ]));
+                    }
+                }
+                NL80211_BSS_SIGNAL_MBM => {
+                    if attr.payload.len() >= 4 {
+                        signal_mbm = Some(i32::from_ne_bytes([
+                            attr.payload[0],
+                            attr.payload[1],
+                            attr.payload[2],
+                            attr.payload[3],
+                        ]));
+                    }
+                }
+                NL80211_BSS_SEEN_MS_AGO => {
+                    if attr.payload.len() >= 4 {
+                        seen_ms_ago = Some(u32::from_ne_bytes([
+                            attr.payload[0],
+                            attr.payload[1],
+                            attr.payload[2],
+                            attr.payload[3],
+                        ]));
+                    }
+                }
+                NL80211_BSS_CAPABILITY => {
+                    if attr.payload.len() >= 2 {
+                        capability = Some(u16::from_ne_bytes([attr.payload[0], attr.payload[1]]));
+                    }
+                }
+                NL80211_BSS_BEACON_INTERVAL => {
+                    if attr.payload.len() >= 2 {
+                        beacon_interval =
+                            Some(u16::from_ne_bytes([attr.payload[0], attr.payload[1]]));
+                    }
+                }
+                NL80211_BSS_INFORMATION_ELEMENTS => {
+                    ies = Some(attr.payload);
+                }
+                _ => {}
+            }
+        }
+
+        let bssid = bssid?;
+        let ssid = ies.and_then(Self::parse_ssid_from_ies).filter(|s| !s.is_empty());
+
+        Some(WifiScanResult {
+            bssid,
+            ssid,
+            frequency,
+            signal_mbm,
+            seen_ms_ago,
+            capability,
+            beacon_interval,
+            ies: ies.map(|bytes| bytes.to_vec()),
+        })
+    }
+
+    fn parse_ssid_from_ies(payload: &[u8]) -> Option<String> {
+        let mut offset = 0usize;
+        while payload.len().saturating_sub(offset) >= 2 {
+            let id = payload[offset];
+            let len = payload[offset + 1] as usize;
+            offset += 2;
+            if payload.len().saturating_sub(offset) < len {
+                break;
+            }
+            if id == 0 {
+                let bytes = &payload[offset..offset + len];
+                return Some(String::from_utf8_lossy(bytes).to_string());
+            }
+            offset = offset.saturating_add(len);
+        }
+        None
+    }
+
+    fn build_scan_ssids_payload() -> Vec<u8> {
+        let len: u16 = 4;
+        let nla_type: u16 = 0;
+        let mut bytes = Vec::with_capacity(4);
+        bytes.extend_from_slice(&len.to_ne_bytes());
+        bytes.extend_from_slice(&nla_type.to_ne_bytes());
+        bytes
     }
 
     /// Get PHY capabilities

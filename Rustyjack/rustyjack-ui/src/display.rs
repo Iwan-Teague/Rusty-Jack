@@ -1279,9 +1279,7 @@ impl Display {
     pub fn draw_toolbar(&mut self, status: &StatusOverlay) -> Result<()> {
         println!(
             "[status] {:.0} °C | {}",
-            status.temp_c,
-            ap_status,
-            status.text.as_str()
+            status.temp_c, status.text.as_str()
         );
         Ok(())
     }

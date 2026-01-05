@@ -11,7 +11,11 @@ use rustyjack_ipc::{
     JobCancelResponse, JobKind, JobSpec, JobStartRequest, JobStarted, JobStatusRequest,
     JobStatusResponse, RequestBody, RequestEnvelope, ResponseBody, ResponseEnvelope, ResponseOk,
     StatusResponse, SystemActionResponse, SystemLogsResponse, SystemStatusResponse, VersionResponse,
-    WifiCapabilitiesRequest, WifiCapabilitiesResponse, MAX_FRAME, PROTOCOL_VERSION,
+    ActiveInterfaceClearResponse, ActiveInterfaceResponse, InterfaceStatusRequest,
+    InterfaceStatusResponse, WifiCapabilitiesRequest, WifiCapabilitiesResponse, BridgeCommand,
+    DnsSpoofCommand, EthernetCommand, HardwareCommand, HotspotCommand, LootCommand, MitmCommand,
+    NotifyCommand, ProcessCommand, ReverseCommand, ScanCommand, StatusCommand, SystemCommand,
+    WifiCommand, MAX_FRAME, PROTOCOL_VERSION,
 };
 use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -19,7 +23,6 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
 use tokio::time::{sleep, timeout};
 
-const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(2);
 const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const LONG_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 const MAX_RETRY_ATTEMPTS: u32 = 3;
@@ -135,7 +138,7 @@ impl DaemonClient {
         let hello_bytes = serde_json::to_vec(&hello)?;
         write_frame(&mut stream, &hello_bytes, MAX_FRAME).await?;
 
-        let ack_bytes = timeout(HANDSHAKE_TIMEOUT, read_frame(&mut stream, MAX_FRAME))
+        let ack_bytes = tokio::time::timeout(Duration::from_secs(5), read_frame(&mut stream, MAX_FRAME))
             .await
             .context("handshake timed out")??;
         let ack: HelloAck = serde_json::from_slice(&ack_bytes)?;
@@ -373,6 +376,33 @@ impl DaemonClient {
         }
     }
 
+    pub async fn active_interface(&mut self) -> Result<ActiveInterfaceResponse> {
+        match self.request(RequestBody::ActiveInterfaceGet).await? {
+            ResponseBody::Ok(ResponseOk::ActiveInterface(resp)) => Ok(resp),
+            ResponseBody::Err(err) => Err(daemon_error(err)),
+            _ => Err(anyhow!("unexpected response body")),
+        }
+    }
+
+    pub async fn clear_active_interface(&mut self) -> Result<ActiveInterfaceClearResponse> {
+        match self.request(RequestBody::ActiveInterfaceClear).await? {
+            ResponseBody::Ok(ResponseOk::ActiveInterfaceCleared(resp)) => Ok(resp),
+            ResponseBody::Err(err) => Err(daemon_error(err)),
+            _ => Err(anyhow!("unexpected response body")),
+        }
+    }
+
+    pub async fn interface_status(&mut self, interface: &str) -> Result<InterfaceStatusResponse> {
+        let body = RequestBody::InterfaceStatusGet(InterfaceStatusRequest {
+            interface: interface.to_string(),
+        });
+        match self.request(body).await? {
+            ResponseBody::Ok(ResponseOk::InterfaceStatus(resp)) => Ok(resp),
+            ResponseBody::Err(err) => Err(daemon_error(err)),
+            _ => Err(anyhow!("unexpected response body")),
+        }
+    }
+
     pub async fn wifi_capabilities(
         &mut self,
         interface: &str,
@@ -502,9 +532,17 @@ impl DaemonClient {
         }
     }
 
-    pub async fn hotspot_start(&mut self, interface: &str, ssid: &str, passphrase: Option<String>, channel: Option<u8>) -> Result<JobStarted> {
+    pub async fn hotspot_start(
+        &mut self,
+        interface: &str,
+        upstream_interface: &str,
+        ssid: &str,
+        passphrase: Option<String>,
+        channel: Option<u8>,
+    ) -> Result<JobStarted> {
         let body = RequestBody::HotspotStart(rustyjack_ipc::HotspotStartRequest {
             interface: interface.to_string(),
+            upstream_interface: upstream_interface.to_string(),
             ssid: ssid.to_string(),
             passphrase,
             channel,
@@ -583,10 +621,147 @@ impl DaemonClient {
         }
     }
 
+    pub async fn status_command(&mut self, command: StatusCommand) -> Result<CoreDispatchResponse> {
+        let body = RequestBody::StatusCommand(command);
+        match self.request_long(body).await? {
+            ResponseBody::Ok(ResponseOk::StatusCommand(resp)) => Ok(resp),
+            ResponseBody::Err(err) => Err(daemon_error(err)),
+            _ => Err(anyhow!("unexpected response body")),
+        }
+    }
+
+    pub async fn wifi_command(&mut self, command: WifiCommand) -> Result<CoreDispatchResponse> {
+        let body = RequestBody::WifiCommand(command);
+        match self.request_long(body).await? {
+            ResponseBody::Ok(ResponseOk::WifiCommand(resp)) => Ok(resp),
+            ResponseBody::Err(err) => Err(daemon_error(err)),
+            _ => Err(anyhow!("unexpected response body")),
+        }
+    }
+
+    pub async fn ethernet_command(&mut self, command: EthernetCommand) -> Result<CoreDispatchResponse> {
+        let body = RequestBody::EthernetCommand(command);
+        match self.request_long(body).await? {
+            ResponseBody::Ok(ResponseOk::EthernetCommand(resp)) => Ok(resp),
+            ResponseBody::Err(err) => Err(daemon_error(err)),
+            _ => Err(anyhow!("unexpected response body")),
+        }
+    }
+
+    pub async fn loot_command(&mut self, command: LootCommand) -> Result<CoreDispatchResponse> {
+        let body = RequestBody::LootCommand(command);
+        match self.request_long(body).await? {
+            ResponseBody::Ok(ResponseOk::LootCommand(resp)) => Ok(resp),
+            ResponseBody::Err(err) => Err(daemon_error(err)),
+            _ => Err(anyhow!("unexpected response body")),
+        }
+    }
+
+    pub async fn notify_command(&mut self, command: NotifyCommand) -> Result<CoreDispatchResponse> {
+        let body = RequestBody::NotifyCommand(command);
+        match self.request_long(body).await? {
+            ResponseBody::Ok(ResponseOk::NotifyCommand(resp)) => Ok(resp),
+            ResponseBody::Err(err) => Err(daemon_error(err)),
+            _ => Err(anyhow!("unexpected response body")),
+        }
+    }
+
+    pub async fn system_command(&mut self, command: SystemCommand) -> Result<CoreDispatchResponse> {
+        let body = RequestBody::SystemCommand(command);
+        match self.request_long(body).await? {
+            ResponseBody::Ok(ResponseOk::SystemCommand(resp)) => Ok(resp),
+            ResponseBody::Err(err) => Err(daemon_error(err)),
+            _ => Err(anyhow!("unexpected response body")),
+        }
+    }
+
+    pub async fn hardware_command(&mut self, command: HardwareCommand) -> Result<CoreDispatchResponse> {
+        let body = RequestBody::HardwareCommand(command);
+        match self.request_long(body).await? {
+            ResponseBody::Ok(ResponseOk::HardwareCommand(resp)) => Ok(resp),
+            ResponseBody::Err(err) => Err(daemon_error(err)),
+            _ => Err(anyhow!("unexpected response body")),
+        }
+    }
+
+    pub async fn dnsspoof_command(&mut self, command: DnsSpoofCommand) -> Result<CoreDispatchResponse> {
+        let body = RequestBody::DnsSpoofCommand(command);
+        match self.request_long(body).await? {
+            ResponseBody::Ok(ResponseOk::DnsSpoofCommand(resp)) => Ok(resp),
+            ResponseBody::Err(err) => Err(daemon_error(err)),
+            _ => Err(anyhow!("unexpected response body")),
+        }
+    }
+
+    pub async fn mitm_command(&mut self, command: MitmCommand) -> Result<CoreDispatchResponse> {
+        let body = RequestBody::MitmCommand(command);
+        match self.request_long(body).await? {
+            ResponseBody::Ok(ResponseOk::MitmCommand(resp)) => Ok(resp),
+            ResponseBody::Err(err) => Err(daemon_error(err)),
+            _ => Err(anyhow!("unexpected response body")),
+        }
+    }
+
+    pub async fn reverse_command(&mut self, command: ReverseCommand) -> Result<CoreDispatchResponse> {
+        let body = RequestBody::ReverseCommand(command);
+        match self.request_long(body).await? {
+            ResponseBody::Ok(ResponseOk::ReverseCommand(resp)) => Ok(resp),
+            ResponseBody::Err(err) => Err(daemon_error(err)),
+            _ => Err(anyhow!("unexpected response body")),
+        }
+    }
+
+    pub async fn hotspot_command(&mut self, command: HotspotCommand) -> Result<CoreDispatchResponse> {
+        let body = RequestBody::HotspotCommand(command);
+        match self.request_long(body).await? {
+            ResponseBody::Ok(ResponseOk::HotspotCommand(resp)) => Ok(resp),
+            ResponseBody::Err(err) => Err(daemon_error(err)),
+            _ => Err(anyhow!("unexpected response body")),
+        }
+    }
+
+    pub async fn scan_command(&mut self, command: ScanCommand) -> Result<CoreDispatchResponse> {
+        let body = RequestBody::ScanCommand(command);
+        match self.request_long(body).await? {
+            ResponseBody::Ok(ResponseOk::ScanCommand(resp)) => Ok(resp),
+            ResponseBody::Err(err) => Err(daemon_error(err)),
+            _ => Err(anyhow!("unexpected response body")),
+        }
+    }
+
+    pub async fn bridge_command(&mut self, command: BridgeCommand) -> Result<CoreDispatchResponse> {
+        let body = RequestBody::BridgeCommand(command);
+        match self.request_long(body).await? {
+            ResponseBody::Ok(ResponseOk::BridgeCommand(resp)) => Ok(resp),
+            ResponseBody::Err(err) => Err(daemon_error(err)),
+            _ => Err(anyhow!("unexpected response body")),
+        }
+    }
+
+    pub async fn process_command(&mut self, command: ProcessCommand) -> Result<CoreDispatchResponse> {
+        let body = RequestBody::ProcessCommand(command);
+        match self.request_long(body).await? {
+            ResponseBody::Ok(ResponseOk::ProcessCommand(resp)) => Ok(resp),
+            ResponseBody::Err(err) => Err(daemon_error(err)),
+            _ => Err(anyhow!("unexpected response body")),
+        }
+    }
+
     pub async fn core_dispatch(&mut self, legacy: rustyjack_ipc::LegacyCommand, args: Value) -> Result<CoreDispatchResponse> {
         let body = RequestBody::CoreDispatch(CoreDispatchRequest { legacy, args });
-        match self.request(body).await? {
+        match self.request_long(body).await? {
             ResponseBody::Ok(ResponseOk::CoreDispatch(resp)) => Ok(resp),
+            ResponseBody::Err(err) => Err(daemon_error(err)),
+            _ => Err(anyhow!("unexpected response body")),
+        }
+    }
+
+    pub async fn set_active_interface(&mut self, interface: &str) -> Result<rustyjack_ipc::SetActiveInterfaceResponse> {
+        let body = RequestBody::SetActiveInterface(rustyjack_ipc::SetActiveInterfaceRequest {
+            interface: interface.to_string(),
+        });
+        match self.request(body).await? {
+            ResponseBody::Ok(ResponseOk::SetActiveInterface(resp)) => Ok(resp),
             ResponseBody::Err(err) => Err(daemon_error(err)),
             _ => Err(anyhow!("unexpected response body")),
         }

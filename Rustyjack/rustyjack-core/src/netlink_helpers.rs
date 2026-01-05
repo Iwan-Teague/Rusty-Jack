@@ -2,6 +2,21 @@ use anyhow::Result;
 use std::net::IpAddr;
 
 #[cfg(target_os = "linux")]
+pub use rustyjack_netlink::{AddressInfo, InterfaceInfo, RouteInfo};
+
+#[cfg(not(target_os = "linux"))]
+#[derive(Debug, Clone)]
+pub struct RouteInfo {}
+
+#[cfg(not(target_os = "linux"))]
+#[derive(Debug, Clone)]
+pub struct AddressInfo {}
+
+#[cfg(not(target_os = "linux"))]
+#[derive(Debug, Clone)]
+pub struct InterfaceInfo {}
+
+#[cfg(target_os = "linux")]
 pub fn netlink_set_interface_up(interface: &str) -> Result<()> {
     tokio::runtime::Handle::try_current()
         .map(|handle| {
@@ -98,7 +113,7 @@ pub fn netlink_add_address(interface: &str, addr: IpAddr, prefix_len: u8) -> Res
 }
 
 #[cfg(target_os = "linux")]
-pub fn netlink_list_interfaces() -> Result<Vec<rustyjack_netlink::InterfaceInfo>> {
+pub fn netlink_list_interfaces() -> Result<Vec<InterfaceInfo>> {
     tokio::runtime::Handle::try_current()
         .map(|handle| {
             handle.block_on(async {
@@ -119,7 +134,7 @@ pub fn netlink_list_interfaces() -> Result<Vec<rustyjack_netlink::InterfaceInfo>
 #[cfg(target_os = "linux")]
 pub fn netlink_get_ipv4_addresses(
     interface: &str,
-) -> Result<Vec<rustyjack_netlink::AddressInfo>> {
+) -> Result<Vec<AddressInfo>> {
     tokio::runtime::Handle::try_current()
         .map(|handle| {
             handle.block_on(async {
@@ -177,7 +192,7 @@ pub fn netlink_get_interface_index(interface: &str) -> Result<u32> {
 }
 
 #[cfg(target_os = "linux")]
-pub fn netlink_list_routes() -> Result<Vec<rustyjack_netlink::RouteInfo>> {
+pub fn netlink_list_routes() -> Result<Vec<RouteInfo>> {
     tokio::runtime::Handle::try_current()
         .map(|handle| {
             handle.block_on(async {
@@ -493,12 +508,22 @@ pub fn netlink_set_interface_down(_interface: &str) -> Result<()> {
 }
 
 #[cfg(not(target_os = "linux"))]
+pub fn netlink_set_interface_up(_interface: &str) -> Result<()> {
+    anyhow::bail!("netlink operations only supported on Linux")
+}
+
+#[cfg(not(target_os = "linux"))]
 pub fn netlink_flush_addresses(_interface: &str) -> Result<()> {
     anyhow::bail!("netlink operations only supported on Linux")
 }
 
 #[cfg(not(target_os = "linux"))]
-pub fn netlink_get_ipv4_addresses(_interface: &str) -> Result<Vec<rustyjack_netlink::AddressInfo>> {
+pub fn netlink_list_interfaces() -> Result<Vec<InterfaceInfo>> {
+    anyhow::bail!("netlink operations only supported on Linux")
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn netlink_get_ipv4_addresses(_interface: &str) -> Result<Vec<AddressInfo>> {
     anyhow::bail!("netlink operations only supported on Linux")
 }
 
@@ -508,7 +533,7 @@ pub fn netlink_get_interface_index(_interface: &str) -> Result<u32> {
 }
 
 #[cfg(not(target_os = "linux"))]
-pub fn netlink_list_routes() -> Result<Vec<rustyjack_netlink::RouteInfo>> {
+pub fn netlink_list_routes() -> Result<Vec<RouteInfo>> {
     anyhow::bail!("netlink operations only supported on Linux")
 }
 

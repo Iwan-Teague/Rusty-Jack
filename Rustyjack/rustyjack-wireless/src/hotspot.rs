@@ -259,27 +259,7 @@ impl Drop for HotspotCleanup {
             let _ = netlink_flush_addresses(&self.ap_interface);
         }
 
-        if self.restore_nm_on_stop && self.nm_unmanaged {
-            if let Ok(rt) = tokio::runtime::Runtime::new() {
-                if let Err(err) = rt.block_on(async {
-                    rustyjack_netlink::networkmanager::set_device_managed(
-                        &self.ap_interface,
-                        true,
-                    )
-                    .await
-                }) {
-                    log::warn!(
-                        "Failed to restore NetworkManager management on {}: {}",
-                        self.ap_interface,
-                        err
-                    );
-                    record_hotspot_warning(format!(
-                        "Failed to restore NetworkManager management on {}: {}",
-                        self.ap_interface, err
-                    ));
-                }
-            }
-        }
+        let _ = (self.restore_nm_on_stop, self.nm_unmanaged);
     }
 }
 
@@ -392,61 +372,9 @@ pub fn start_hotspot(config: HotspotConfig) -> Result<HotspotState> {
     let _ = pkill_pattern("hostapd");
     std::thread::sleep(std::time::Duration::from_millis(500));
 
-    // Stop wpa_supplicant on the AP interface to prevent interference
-    eprintln!(
-        "[HOTSPOT] Stopping wpa_supplicant on {}...",
-        config.ap_interface
-    );
-    if let Err(e) = rustyjack_netlink::stop_wpa_supplicant(&config.ap_interface) {
-        log::debug!(
-            "Failed to stop wpa_supplicant on {}: {}",
-            config.ap_interface,
-            e
-        );
-    }
-    std::thread::sleep(std::time::Duration::from_millis(500));
-
-    // Set interface to unmanaged by NetworkManager to prevent interference
-    eprintln!(
-        "[HOTSPOT] Setting {} to unmanaged by NetworkManager...",
-        config.ap_interface
-    );
-
-    let rt = tokio::runtime::Runtime::new().map_err(|e| {
-        WirelessError::System(format!(
-            "Failed to create tokio runtime for NetworkManager unmanaged: {e}"
-        ))
-    })?;
-    let mut nm_error: Option<String> = None;
-    let nm_result = rt.block_on(async {
-        rustyjack_netlink::networkmanager::set_device_managed(&config.ap_interface, false).await
-    });
-
-    match nm_result {
-        Ok(()) => {
-            eprintln!("[HOTSPOT] Interface set to unmanaged successfully");
-            log::info!("Set {} to unmanaged by NetworkManager", config.ap_interface);
-            cleanup.nm_unmanaged = true;
-        }
-        Err(e) => {
-            eprintln!(
-                "[HOTSPOT] WARNING: Failed to set interface unmanaged: {}",
-                e
-            );
-            log::warn!(
-                "Could not set {} unmanaged: may not have NetworkManager or D-Bus unavailable",
-                config.ap_interface
-            );
-            let warning = format!(
-                "NetworkManager unmanaged failed on {}: {}",
-                config.ap_interface, e
-            );
-            nm_error = Some(warning.clone());
-            record_hotspot_warning(warning);
-        }
-    }
-
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    // Rust-only mode: skip wpa_supplicant and NetworkManager integration.
+    eprintln!("[HOTSPOT] Rust-only mode: skipping external wpa_supplicant/NetworkManager");
+    let nm_error: Option<String> = None;
 
     // Unblock rfkill for all wireless devices - AGGRESSIVELY
     eprintln!("[HOTSPOT] Unblocking rfkill for all wireless devices...");
@@ -858,28 +786,7 @@ pub fn stop_hotspot() -> Result<()> {
 
         if s.restore_nm_on_stop {
             eprintln!(
-                "[HOTSPOT] Restoring NetworkManager management on {}...",
-                s.ap_interface
-            );
-            if let Ok(rt) = tokio::runtime::Runtime::new() {
-                if let Err(err) = rt.block_on(async {
-                    rustyjack_netlink::networkmanager::set_device_managed(&s.ap_interface, true)
-                        .await
-                }) {
-                    log::warn!(
-                        "Failed to restore NetworkManager management on {}: {}",
-                        s.ap_interface,
-                        err
-                    );
-                    record_hotspot_warning(format!(
-                        "Failed to restore NetworkManager management on {}: {}",
-                        s.ap_interface, err
-                    ));
-                }
-            }
-        } else {
-            eprintln!(
-                "[HOTSPOT] Leaving {} unmanaged to prevent RF-kill issues...",
+                "[HOTSPOT] Skipping NetworkManager restore for {} (rust-only mode)",
                 s.ap_interface
             );
         }

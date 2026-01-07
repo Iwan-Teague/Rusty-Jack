@@ -87,12 +87,17 @@ validate_network_status() {
     if [ -n "$output" ]; then
       local active=""
       active=$(echo "$output" | sed -n 's/.*"active_uplink":"\\([^"]*\\)".*/\\1/p' | head -n1)
+      local route_iface=""
+      route_iface=$(echo "$output" | sed -n 's/.*"default_route":{[^}]*"interface":"\\([^"]*\\)".*/\\1/p' | head -n1)
       if [ -z "$active" ]; then
+        if [ -n "$route_iface" ] && echo "$output" | grep -Eq "\"name\":\"${route_iface}\"[^}]*\"ip\":\"[^\"]+\"[^}]*\"gateway\":\"[^\"]+\"" && \
+           ! echo "$output" | grep -q '"dns_servers":\\[\\]' && echo "$output" | grep -q '"dns_servers":\\['; then
+          info "[OK] Default route $route_iface has DNS and gateway; assuming active uplink"
+          return 0
+        fi
         sleep 1
         continue
       fi
-      local route_iface=""
-      route_iface=$(echo "$output" | sed -n 's/.*"default_route":{[^}]*"interface":"\\([^"]*\\)".*/\\1/p' | head -n1)
       if [ "$route_iface" != "$active" ]; then
         sleep 1
         continue

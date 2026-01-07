@@ -6,5 +6,6 @@
 /target/
 /target-32/
 /target-64/
-/prebuilt/
+target-check/
+prebuilt/
 .DS_Store

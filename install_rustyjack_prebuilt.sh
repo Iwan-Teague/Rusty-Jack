@@ -685,7 +685,8 @@ UNIT
 sudo tee "$DAEMON_SERVICE" >/dev/null <<UNIT
 [Unit]
 Description=Rustyjack privileged daemon
-After=local-fs.target network.target
+Requires=rustyjackd.socket
+After=local-fs.target network.target rustyjackd.socket
 Wants=network.target
 
 [Service]
@@ -748,6 +749,8 @@ UNIT
 sudo systemctl daemon-reload
 sudo systemctl enable rustyjackd.socket
 sudo systemctl start rustyjackd.socket 2>/dev/null || true
+sudo systemctl enable rustyjackd.service
+sudo systemctl start rustyjackd.service 2>/dev/null || warn "Failed to start rustyjackd.service - check journalctl -u rustyjackd"
 sudo systemctl enable rustyjack-ui.service
 info "Rustyjack service enabled"
 

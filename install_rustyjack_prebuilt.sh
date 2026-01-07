@@ -746,13 +746,52 @@ WantedBy=multi-user.target
 Alias=rustyjack.service
 UNIT
 
+PORTAL_SERVICE=/etc/systemd/system/rustyjack-portal.service
+step "Installing portal service $PORTAL_SERVICE..."
+
+sudo tee "$PORTAL_SERVICE" >/dev/null <<UNIT
+[Unit]
+Description=Rustyjack Portal Service (Unprivileged)
+After=rustyjackd.service
+Requires=rustyjackd.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/rustyjack-portal
+Restart=on-failure
+RestartSec=2
+User=rustyjack-portal
+Group=rustyjack-portal
+SupplementaryGroups=rustyjack
+Environment=RUSTYJACK_PORTAL_PORT=3000
+Environment=RUSTYJACK_PORTAL_BIND=0.0.0.0
+Environment=RUSTYJACK_DAEMON_SOCKET=/run/rustyjack/rustyjackd.sock
+Environment=RUSTYJACK_ROOT=$RUNTIME_ROOT
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=$RUNTIME_ROOT/portal $RUNTIME_ROOT/loot/Portal $RUNTIME_ROOT/logs
+PrivateTmp=true
+NoNewPrivileges=true
+RestrictRealtime=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+WorkingDirectory=$RUNTIME_ROOT/portal
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=rustyjack-portal
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
 sudo systemctl daemon-reload
 sudo systemctl enable rustyjackd.socket
 sudo systemctl start rustyjackd.socket 2>/dev/null || true
 sudo systemctl enable rustyjackd.service
 sudo systemctl start rustyjackd.service 2>/dev/null || warn "Failed to start rustyjackd.service - check journalctl -u rustyjackd"
 sudo systemctl enable rustyjack-ui.service
-info "Rustyjack service enabled"
+sudo systemctl enable rustyjack-portal.service
+info "Rustyjack services enabled"
 
 # Finalize network ownership after installs/builds are complete
 step "Finalizing network ownership..."
@@ -760,8 +799,9 @@ preserve_default_route_interface
 purge_network_manager
 disable_conflicting_services
 
-# Start the service now
-sudo systemctl start rustyjack-ui.service && info "Rustyjack service started successfully" || warn "Failed to start service - check 'systemctl status rustyjack-ui'"
+# Start the services now
+sudo systemctl start rustyjack-ui.service && info "Rustyjack UI service started successfully" || warn "Failed to start UI service - check 'systemctl status rustyjack-ui'"
+sudo systemctl start rustyjack-portal.service && info "Rustyjack Portal service started successfully" || warn "Failed to start Portal service - check 'systemctl status rustyjack-portal'"
 
 # Final adjustments
 claim_resolv_conf

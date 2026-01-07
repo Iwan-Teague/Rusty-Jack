@@ -227,6 +227,26 @@ is_mountpoint() {
   fi
 }
 
+progress_bar() {
+  local current="$1"
+  local total="$2"
+  local width=10
+  if [ "$total" -le 0 ]; then
+    return 0
+  fi
+  local filled=$((current * width / total))
+  local empty=$((width - filled))
+  local i
+  printf "\r["
+  for ((i=0;i<filled;i++)); do printf "="; done
+  if [ "$filled" -lt "$width" ]; then
+    printf ">"
+    empty=$((empty - 1))
+  fi
+  for ((i=0;i<empty;i++)); do printf " "; done
+  printf "] %d/%d" "$current" "$total"
+}
+
 find_usb_partition() {
   if [ -n "${USB_DEVICE:-}" ]; then
     echo "$USB_DEVICE"
@@ -278,9 +298,9 @@ find_prebuilt_dir_on_mounts() {
   local base=""
   for base in "${USB_MOUNT_POINT:-/mnt/usb}" /media /mnt /run/media; do
     [ -d "$base" ] || continue
-    local candidate=""
-    for candidate in \
-      "$base"/Rustyjack/Prebuilt/arm32 \
+  local candidate=""
+  for candidate in \
+    "$base"/Rustyjack/Prebuilt/arm32 \
       "$base"/Rustyjack/prebuilt/arm32 \
       "$base"/rustyjack/Prebuilt/arm32 \
       "$base"/rustyjack/prebuilt/arm32; do
@@ -300,6 +320,19 @@ find_prebuilt_dir_on_mounts() {
   return 1
 }
 
+default_route_interface() {
+  if ! cmd ip; then
+    return 1
+  fi
+  local dev
+  dev=$(ip route show default 2>/dev/null | awk '/default/ {for (i=1; i<=NF; ++i) if ($i=="dev") print $(i+1); exit}')
+  if [ -n "$dev" ]; then
+    printf "%s" "$dev"
+    return 0
+  fi
+  return 1
+}
+
 copy_prebuilt_from_usb() {
   local dest_dir="$PROJECT_ROOT/prebuilt/arm32"
   local src_dir=""
@@ -316,17 +349,25 @@ copy_prebuilt_from_usb() {
 
   info "Found prebuilt binaries on USB: $src_dir"
   sudo mkdir -p "$dest_dir"
+  info "Copying prebuilt binaries to $dest_dir"
 
   local copied=0
+  local bins=("$BINARY_NAME" "$CLI_NAME" "$DAEMON_NAME" "$PORTAL_NAME")
+  local total="${#bins[@]}"
+  local current=0
+  progress_bar 0 "$total"
   local bin=""
-  for bin in "$BINARY_NAME" "$CLI_NAME" "$DAEMON_NAME" "$PORTAL_NAME"; do
+  for bin in "${bins[@]}"; do
     if [ -f "$src_dir/$bin" ]; then
       sudo install -Dm755 "$src_dir/$bin" "$dest_dir/$bin"
       copied=1
     else
       warn "Missing $bin in $src_dir"
     fi
+    current=$((current + 1))
+    progress_bar "$current" "$total"
   done
+  printf "\n"
 
   if [ "$copied" -eq 1 ]; then
     info "Copied prebuilt binaries into $dest_dir"
@@ -734,8 +775,14 @@ check_resolv_conf
 
 step "Validating network status..."
 if cmd rustyjack; then
-  info "Ensuring active uplink via rustyjack ensure-route..."
-  RUSTYJACK_ROOT="$RUNTIME_ROOT" rustyjack ensure-route >/dev/null 2>&1 || warn "ensure-route failed; continuing to validation"
+  local route_iface
+  if route_iface=$(default_route_interface); then
+    info "Ensuring active uplink via rustyjack wifi route ensure --interface $route_iface"
+  else
+    route_iface="eth0"
+    warn "Unable to detect default interface; falling back to $route_iface for ensure-route"
+  fi
+  RUSTYJACK_ROOT="$RUNTIME_ROOT" rustyjack wifi route ensure --interface "$route_iface" >/dev/null 2>&1 || warn "ensure-route failed; continuing to validation"
 else
   warn "rustyjack CLI not found; skipping ensure-route"
 fi

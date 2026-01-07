@@ -86,7 +86,20 @@
 **Progress**:
 - Portal service now derives bind IP from the selected interface and falls back to 0.0.0.0 if unavailable.
 
-## PHASE 6: Comprehensive Testing
+## PHASE 6: Status LED Behavior (LOW PRIORITY)
+**Status**: Implemented; requires device validation
+
+### Tasks:
+1. Add `status_led_pin` to `gui_conf.json` with default BCM23
+2. Drive LED on when any non-loopback interface has an IP
+3. Allow disabling by setting `status_led_pin: 0`
+
+**Progress**:
+- Added status LED pin to GUI config defaults.
+- UI sampler drives GPIO output; LED on when any interface has an IP, off otherwise.
+- Hardware docs updated to reflect connectivity-based behavior.
+
+## PHASE 7: Comprehensive Testing
 1. Test each operation end-to-end
 2. Verify preflight checks block invalid operations
 3. Verify hardware isolation works
@@ -95,5 +108,5 @@
 6. Repair or replace broken tests (currently Linux-only assumptions and recursive test client import)
 
 ---
-## Current Focus: START WITH PHASE 2 (Preflight Checks)
-User specifically requested systematic preflight check implementation.
+## Current Focus: Phase 7 (Comprehensive Testing)
+Start device validation and end-to-end testing on Pi hardware.

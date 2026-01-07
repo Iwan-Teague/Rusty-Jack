@@ -775,8 +775,8 @@ check_resolv_conf
 
 step "Validating network status..."
 if cmd rustyjack; then
-  local route_iface
-  if route_iface=$(default_route_interface); then
+  route_iface=$(default_route_interface)
+  if [ -n "$route_iface" ]; then
     info "Ensuring active uplink via rustyjack wifi route ensure --interface $route_iface"
   else
     route_iface="eth0"
